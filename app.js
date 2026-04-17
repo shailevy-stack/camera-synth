@@ -1,5 +1,5 @@
 // Camera Synth — v1.1.0
-var VERSION = "2.3.0";
+var VERSION = "2.5.0";
 
 var useState    = React.useState;
 var useEffect   = React.useEffect;
@@ -337,96 +337,111 @@ function makeSynthEngine() {
 
   // ── Looper ──────────────────────────────────────────────────
   var MAX_LOOP_SECS = 10;
-  eng._loopRecording  = false;
-  eng._loopChunks     = [];
-  eng._loopNode       = null;
-  eng._loopGain       = null;
+  eng._loopProc      = null;
+  eng._loopChunks    = [];
+  eng._loopNode      = null;
+  eng._loopGain      = null;
+  eng._loopRecording = false;
 
   eng.startLoopRecord = function() {
     if (!eng.ctx) return;
+    // Stop any existing loop first
+    eng.stopLoop();
     eng._loopRecording = true;
     eng._loopChunks    = [];
-    var bufSize    = 4096;
-    var maxSamples = eng.ctx.sampleRate * MAX_LOOP_SECS;
+    var sr         = eng.ctx.sampleRate;
+    var maxSamples = sr * MAX_LOOP_SECS;
     var captured   = 0;
+    var bufSize    = 4096;
     var proc = eng.ctx.createScriptProcessor(bufSize, 2, 2);
-    proc.onaudioprocess = function(e) {
+    proc.onaudioprocess = function(ev) {
       if (!eng._loopRecording) return;
-      if (captured >= maxSamples) { eng.commitLoop(); return; }
-      var L = new Float32Array(e.inputBuffer.getChannelData(0));
-      var R = new Float32Array(e.inputBuffer.getChannelData(1));
+      if (captured >= maxSamples) {
+        eng._loopRecording = false;
+        return;
+      }
+      // Copy — don't hold reference to the buffer (it gets reused)
+      var L = new Float32Array(ev.inputBuffer.getChannelData(0));
+      var R = new Float32Array(ev.inputBuffer.getChannelData(1));
       eng._loopChunks.push({ L: L, R: R });
       captured += L.length;
     };
     eng.limiterNode.connect(proc);
     proc.connect(eng.ctx.destination);
     eng._loopProc = proc;
+    console.log("[loop] recording started");
   };
 
   eng.commitLoop = function() {
-    if (!eng._loopRecording) return;
+    // Stop capturing
     eng._loopRecording = false;
-
-    // Disconnect capture processor
-    try { eng.limiterNode.disconnect(eng._loopProc); eng._loopProc.disconnect(); } catch(e) {}
+    if (eng._loopProc) {
+      try { eng.limiterNode.disconnect(eng._loopProc); eng._loopProc.disconnect(); } catch(ex) {}
+      eng._loopProc = null;
+    }
 
     var chunks = eng._loopChunks;
-    if (!chunks.length) return;
+    console.log("[loop] committing, chunks=", chunks.length);
+    if (!chunks.length) return false;
 
     var sr      = eng.ctx.sampleRate;
     var nFrames = chunks.reduce(function(s,c){ return s+c.L.length; }, 0);
-    var buf     = eng.ctx.createBuffer(2, nFrames, sr);
-    var outL    = buf.getChannelData(0);
-    var outR    = buf.getChannelData(1);
-    var off     = 0;
+    if (nFrames < 512) return false; // too short
+
+    var buf  = eng.ctx.createBuffer(2, nFrames, sr);
+    var outL = buf.getChannelData(0);
+    var outR = buf.getChannelData(1);
+    var off  = 0;
     for (var i = 0; i < chunks.length; i++) {
       outL.set(chunks[i].L, off);
       outR.set(chunks[i].R, off);
       off += chunks[i].L.length;
     }
 
-    // Crossfade seam: fade out last N samples, fade in first N samples
-    var fadeLen = Math.min(Math.floor(sr * 0.008), nFrames / 2); // 8ms
+    // 8ms crossfade at seam
+    var fadeLen = Math.min(Math.floor(sr * 0.008), Math.floor(nFrames / 4));
     for (var j = 0; j < fadeLen; j++) {
-      var tIn  = j / fadeLen;                  // 0→1
-      var tOut = 1 - tIn;                      // 1→0
-      var iIn  = j;
-      var iOut = nFrames - fadeLen + j;
-      // Fade in head
-      outL[iIn]  *= tIn;  outR[iIn]  *= tIn;
-      // Fade out tail
-      outL[iOut] *= tOut; outR[iOut] *= tOut;
+      var fi = j / fadeLen;
+      outL[j] *= fi; outR[j] *= fi;
+      outL[nFrames-fadeLen+j] *= (1-fi);
+      outR[nFrames-fadeLen+j] *= (1-fi);
     }
 
-    // Silence live synth, play loop
+    // Mute live synth
     eng.masterGain.gain.value = 0;
 
-    var loopGain = eng.ctx.createGain();
-    loopGain.gain.value = 0.85;
-    loopGain.connect(eng.limiterNode);
-
+    // Play loop
+    var lg = eng.ctx.createGain();
+    lg.gain.value = 0.85;
+    lg.connect(eng.limiterNode);
     var src = eng.ctx.createBufferSource();
     src.buffer = buf;
     src.loop   = true;
-    src.connect(loopGain);
-    src.start();
-
+    src.connect(lg);
+    src.start(0);
     eng._loopNode = src;
-    eng._loopGain = loopGain;
+    eng._loopGain = lg;
+    console.log("[loop] playing, frames=", nFrames, "dur=", (nFrames/sr).toFixed(2)+"s");
+    return true;
   };
 
   eng.stopLoop = function() {
+    eng._loopRecording = false;
+    if (eng._loopProc) {
+      try { eng.limiterNode.disconnect(eng._loopProc); eng._loopProc.disconnect(); } catch(ex) {}
+      eng._loopProc = null;
+    }
     if (eng._loopNode) {
-      try { eng._loopNode.stop(); eng._loopNode.disconnect(); } catch(e) {}
+      try { eng._loopNode.stop(); eng._loopNode.disconnect(); } catch(ex) {}
       eng._loopNode = null;
     }
     if (eng._loopGain) {
-      try { eng._loopGain.disconnect(); } catch(e) {}
+      try { eng._loopGain.disconnect(); } catch(ex) {}
       eng._loopGain = null;
     }
     eng._loopChunks = [];
-    // Restore live synth gain
     if (eng.active) eng.masterGain.gain.value = 0.7;
+    console.log("[loop] stopped");
   };
 
   eng.isLooping = function() { return !!eng._loopNode; };
@@ -686,61 +701,86 @@ function App() {
 
   var handleFlip   = useCallback(function() { setFacingMode(function(f){return f==="environment"?"user":"environment";}); }, []);
 
-  function stopLoopPlayback() {
-    var eng = synthRef.current;
-    if (eng) eng.stopLoop();
-    setLooping(false);
-    setLoopCapturing(false);
-    clearInterval(loopVidTimerRef.current);
-    loopFramesRef.current = [];
-    loopFrameIdxRef.current = 0;
-    var ov = loopOverlayRef.current;
-    if (ov) { var octx = ov.getContext("2d"); octx.clearRect(0,0,ov.width,ov.height); }
-  }
-
-  function commitLoopPlayback() {
-    var eng = synthRef.current;
-    if (!eng || !eng._loopRecording) return;
-    eng.commitLoop();
-    setLoopCapturing(false);
-    setLooping(true);
-    var frames = loopFramesRef.current;
-    if (frames.length > 0) {
-      loopFrameIdxRef.current = 0;
-      var ov = loopOverlayRef.current;
-      loopVidTimerRef.current = setInterval(function() {
-        if (!ov || frames.length === 0) return;
-        ov.width  = frames[0].width;
-        ov.height = frames[0].height;
-        var octx = ov.getContext("2d");
-        octx.putImageData(frames[loopFrameIdxRef.current % frames.length], 0, 0);
-        loopFrameIdxRef.current++;
-      }, 100);
-    }
-  }
-
-  var loopingRef = useRef(false);
-  // Keep ref in sync with state so event listeners can read current value
+  var loopingRef       = useRef(false);
+  var loopCapturingRef = useRef(false);
+  var loopPressTimeRef = useRef(0);   // timestamp of press start
+  var MIN_LOOP_MS      = 200;         // minimum hold to count as record
   useEffect(function() { loopingRef.current = looping; }, [looping]);
+  useEffect(function() { loopCapturingRef.current = loopCapturing; }, [loopCapturing]);
 
   var handleLoopStart = useCallback(function(e) {
     e.preventDefault();
     e.stopPropagation();
     var eng = synthRef.current;
     if (!eng || !eng.ctx) return;
+
+    // If loop is playing, any press stops it
     if (loopingRef.current) {
-      stopLoopPlayback();
+      eng.stopLoop();
+      setLooping(false);
+      setLoopCapturing(false);
+      clearInterval(loopVidTimerRef.current);
+      loopFramesRef.current = [];
+      var ov = loopOverlayRef.current;
+      if (ov) ov.getContext("2d").clearRect(0,0,ov.width,ov.height);
       return;
     }
-    setLoopCapturing(true);
+
+    // Record press time — don't start capturing yet, wait for MIN_LOOP_MS
+    loopPressTimeRef.current = Date.now();
+    // Start engine capture immediately so we don't lose audio frames,
+    // but only commit if hold was long enough
     loopFramesRef.current = [];
     eng.startLoopRecord();
+
+    // Show blink only after short delay so quick taps never show it
+    setTimeout(function() {
+      if (loopCapturingRef.current === false && eng._loopRecording) {
+        setLoopCapturing(true);
+      }
+    }, MIN_LOOP_MS);
   }, []);
 
   var handleLoopEnd = useCallback(function(e) {
     e.preventDefault();
     e.stopPropagation();
-    commitLoopPlayback();
+    var eng = synthRef.current;
+    if (!eng) return;
+
+    var held = Date.now() - loopPressTimeRef.current;
+
+    // Too short — abort, don't loop
+    if (held < MIN_LOOP_MS) {
+      eng.stopLoop(); // cleans up proc
+      setLoopCapturing(false);
+      return;
+    }
+
+    if (!eng._loopRecording && !loopCapturingRef.current) return;
+
+    var ok = eng.commitLoop();
+    setLoopCapturing(false);
+
+    if (!ok) {
+      setLooping(false);
+      return;
+    }
+    setLooping(true);
+
+    // Start video loop
+    var frames = loopFramesRef.current;
+    if (frames.length > 0) {
+      loopFrameIdxRef.current = 0;
+      var ov = loopOverlayRef.current;
+      clearInterval(loopVidTimerRef.current);
+      loopVidTimerRef.current = setInterval(function() {
+        if (!ov || !frames.length) return;
+        ov.width  = frames[0].width;
+        ov.height = frames[0].height;
+        ov.getContext("2d").putImageData(frames[loopFrameIdxRef.current % frames.length], 0, 0);
+        loopFrameIdxRef.current++;
+      }, 100);
+    }
   }, []);
 
   var handleCamToggle = useCallback(function() {
@@ -793,7 +833,7 @@ function App() {
       .cb.rec{border-color:#ff4444;color:#ff4444;background:rgba(255,68,68,.08);}
       .cb.dng{border-color:#ff4444;color:#ff4444;}
       @keyframes blink{0%,100%{opacity:1}50%{opacity:0.25}}
-      .cb.blink{animation:blink 0.6s infinite;}
+      .cb.blink{border-color:#ff4444;color:#ff4444;background:rgba(255,68,68,.08);animation:blink 0.6s infinite;}
       .sg{background:transparent;border:1px solid #1e1e1e;color:#444;font-family:'IBM Plex Mono',monospace;font-size:9px;padding:3px 7px;cursor:pointer;-webkit-tap-highlight-color:transparent;touch-action:manipulation;transition:all .1s;}
       .sg.sel{border-color:#7fff6a;color:#7fff6a;background:rgba(127,255,106,.06);}
       .sr{display:flex;align-items:center;justify-content:space-between;padding:7px 0;border-bottom:1px solid #141414;}
@@ -884,7 +924,7 @@ function App() {
     ),
 
     // Settings drawer
-    showSettings && el("div", { style:{ padding:"8px 14px 14px", paddingBottom:"max(env(safe-area-inset-bottom, 14px), 14px)", borderTop:"1px solid #141414", background:"#0c0c0d", overflowY:"auto", flexShrink:0, maxHeight:"36vh" } },
+    showSettings && el("div", { style:{ padding:"8px 14px 14px", borderTop:"1px solid #141414", background:"#0c0c0d", overflowY:"auto", flexShrink:0, maxHeight:"38vh" } },
 
       el("div", { className:"sr" },
         el("label",null,"Voices"),
