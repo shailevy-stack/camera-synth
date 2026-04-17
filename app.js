@@ -1,5 +1,5 @@
 // Camera Synth — v1.1.0
-var VERSION = "2.5.0";
+var VERSION = "2.6.0";
 
 var useState    = React.useState;
 var useEffect   = React.useEffect;
@@ -565,7 +565,7 @@ function App() {
   var r14 = useState(false);  var loopCapturing = r14[0], setLoopCapturing = r14[1];
   var r10 = useState(null);   var frameData    = r10[0], setFrameData   = r10[1];
 
-  var r11 = useState({ voices:1, detune:12, quantize:false, scale:"pentatonic", rootNote:48, pitchMin:36, pitchMax:72, reverbMix:0.3, fps:10 });
+  var r11 = useState({ voices:1, detune:12, quantize:false, scale:"pentatonic", rootNote:48, pitchMin:36, pitchMax:72, reverbMix:0.3, fps:10, showScales:false });
   var settings = r11[0], setSettings = r11[1];
 
   function setSetting(k, v) { setSettings(function(s) { var n=Object.assign({},s); n[k]=v; return n; }); }
@@ -728,6 +728,12 @@ function App() {
 
     // Record press time — don't start capturing yet, wait for MIN_LOOP_MS
     loopPressTimeRef.current = Date.now();
+    // Ensure sound is on — loop needs audio running
+    if (!eng.active) {
+      if (!engReady) { eng.init(); setEngReady(true); }
+      eng.setSoundOn(true);
+      setSoundOn(true);
+    }
     // Start engine capture immediately so we don't lose audio frames,
     // but only commit if hold was long enough
     loopFramesRef.current = [];
@@ -836,10 +842,10 @@ function App() {
       .cb.blink{border-color:#ff4444;color:#ff4444;background:rgba(255,68,68,.08);animation:blink 0.6s infinite;}
       .sg{background:transparent;border:1px solid #1e1e1e;color:#444;font-family:'IBM Plex Mono',monospace;font-size:9px;padding:3px 7px;cursor:pointer;-webkit-tap-highlight-color:transparent;touch-action:manipulation;transition:all .1s;}
       .sg.sel{border-color:#7fff6a;color:#7fff6a;background:rgba(127,255,106,.06);}
-      .sr{display:flex;align-items:center;justify-content:space-between;padding:7px 0;border-bottom:1px solid #141414;}
+      .sr{display:flex;align-items:center;justify-content:space-between;padding:5px 0;border-bottom:1px solid #141414;}
       .sr label{font-size:9px;letter-spacing:.1em;color:#444;text-transform:uppercase;}
-      input[type=range]{-webkit-appearance:none;width:100%;height:28px;background:transparent;outline:none;cursor:pointer;margin:0;}
-      input[type=range]::-webkit-slider-runnable-track{height:2px;background:#1e1e1e;border-radius:1px;margin-top:13px;}
+      input[type=range]{-webkit-appearance:none;width:100%;height:22px;background:transparent;outline:none;cursor:pointer;margin:0;}
+      input[type=range]::-webkit-slider-runnable-track{height:2px;background:#1e1e1e;border-radius:1px;margin-top:10px;}
       input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:20px;height:20px;background:#7fff6a;border-radius:50%;cursor:pointer;margin-top:-9px;}
       input[type=range]::-moz-range-track{height:2px;background:#1e1e1e;border-radius:1px;}
       input[type=range]::-moz-range-thumb{width:20px;height:20px;background:#7fff6a;border-radius:50%;border:none;cursor:pointer;}
@@ -933,7 +939,7 @@ function App() {
         )
       ),
 
-      el("div", { className:"sr", style:{flexDirection:"column",alignItems:"flex-start",gap:5} },
+      el("div", { className:"sr", style:{flexDirection:"column",alignItems:"flex-start",gap:3} },
         el("div", { style:{display:"flex",width:"100%",justifyContent:"space-between"} },
           el("label",null,"Detune"),
           el("span",{style:{fontSize:9,color:"#7fff6a"}},settings.detune+" ct")
@@ -942,18 +948,33 @@ function App() {
       ),
 
       el("div", { className:"sr" },
-        el("label",null,"Quantize pitch"),
-        el("button",{className:cx("sg",settings.quantize&&"sel"),onClick:function(){setSetting("quantize",!settings.quantize);}}, settings.quantize?"ON":"OFF")
-      ),
-
-      settings.quantize && el("div", { className:"sr", style:{flexDirection:"column",alignItems:"flex-start",gap:5} },
         el("label",null,"Scale"),
-        el("div", { style:{display:"flex",flexWrap:"wrap",gap:2,marginTop:2} },
-          SCALE_NAMES.map(function(s){ return el("button",{key:s,className:cx("sg",settings.scale===s&&"sel"),onClick:function(){setSetting("scale",s);}},s); })
+        el("div", { style:{display:"flex",gap:2,alignItems:"center"} },
+          el("span", { style:{fontSize:9,color:"#7fff6a",marginRight:4} }, settings.quantize ? settings.scale : "off"),
+          el("button", {
+            className:cx("sg", settings.showScales&&"sel"),
+            onClick:function(){ setSetting("showScales", !settings.showScales); }
+          }, settings.showScales ? "▲" : "▼")
         )
       ),
 
-      el("div", { className:"sr", style:{flexDirection:"column",alignItems:"flex-start",gap:5} },
+      settings.showScales && el("div", { style:{paddingBottom:4,borderBottom:"1px solid #141414"} },
+        el("div", { style:{display:"flex",flexWrap:"wrap",gap:2,paddingTop:4} },
+          el("button", {
+            className:cx("sg", !settings.quantize&&"sel"),
+            onClick:function(){ setSetting("quantize",false); setSetting("showScales",false); }
+          }, "off"),
+          SCALE_NAMES.map(function(s){
+            return el("button",{
+              key:s,
+              className:cx("sg", settings.quantize&&settings.scale===s&&"sel"),
+              onClick:function(){ setSetting("scale",s); setSetting("quantize",true); setSetting("showScales",false); }
+            }, s);
+          })
+        )
+      ),
+
+      el("div", { className:"sr", style:{flexDirection:"column",alignItems:"flex-start",gap:3} },
         el("div", { style:{display:"flex",width:"100%",justifyContent:"space-between"} },
           el("label",null,"Pitch range"),
           el("span",{style:{fontSize:9,color:"#7fff6a"}}, NOTE_NAMES[settings.pitchMin%12]+(Math.floor(settings.pitchMin/12)-1)+" \u2192 "+NOTE_NAMES[settings.pitchMax%12]+(Math.floor(settings.pitchMax/12)-1))
@@ -964,7 +985,7 @@ function App() {
         )
       ),
 
-      el("div", { className:"sr", style:{flexDirection:"column",alignItems:"flex-start",gap:5} },
+      el("div", { className:"sr", style:{flexDirection:"column",alignItems:"flex-start",gap:3} },
         el("div", { style:{display:"flex",width:"100%",justifyContent:"space-between"} },
           el("label",null,"Reverb mix"),
           el("span",{style:{fontSize:9,color:"#7fff6a"}},Math.round(settings.reverbMix*100)+"%")
