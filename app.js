@@ -1,5 +1,5 @@
 // Camera Synth — v1.1.0
-var VERSION = "1.5.0";
+var VERSION = "1.8.0";
 
 var useState    = React.useState;
 var useEffect   = React.useEffect;
@@ -18,7 +18,7 @@ var SCALES = {
 var SCALE_NAMES   = Object.keys(SCALES);
 var VOICE_OPTIONS = [1, 2, 4];
 var FPS_OPTIONS   = [5, 10, 20, 30];
-var ANALYSIS_RES  = 32;
+var ANALYSIS_RES  = 256;
 var NOTE_NAMES    = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
 
 function midiToHz(midi) {
@@ -39,12 +39,28 @@ function quantizePitch(rawMidi, scale, rootNote) {
 
 // ── Synth Engine ─────────────────────────────────────────────────────────────
 function makeSynthEngine() {
+  // Pre-build reverb IR now (before any user gesture) so init() is instant
+  var REVERB_IR = (function() {
+    var sr  = 44100;
+    var len = sr * 2;
+    var L   = new Float32Array(len);
+    var R   = new Float32Array(len);
+    for (var i = 0; i < len; i++) {
+      var decay = Math.pow(1 - i / len, 2.5);
+      L[i] = (Math.random() * 2 - 1) * decay;
+      R[i] = (Math.random() * 2 - 1) * decay;
+    }
+    return { L: L, R: R, len: len };
+  }());
+
   var eng = {
     ctx: null, voices: [],
     filterNode: null, reverbNode: null, reverbGain: null,
     dryGain: null, masterGain: null, limiterNode: null, analyserNode: null,
     active: false, currentPitchMidi: 60,
-    wavetableData: new Float32Array(ANALYSIS_RES),
+    wavetableData:    new Float32Array(ANALYSIS_RES),
+    morphedWavetable: new Float32Array(ANALYSIS_RES), // smoothly interpolated
+    lastWavetable:    new Float32Array(ANALYSIS_RES), // previous frame
     settings: {
       voices: 1, detune: 12,
       quantize: false, scale: "pentatonic", rootNote: 48,
@@ -52,21 +68,20 @@ function makeSynthEngine() {
     },
   };
 
-  eng.init = function(cb) {
+  // init() must be called synchronously inside a user gesture on iOS.
+  // Keep it minimal — no loops, no allocation, just wire nodes.
+  eng.init = function() {
+    if (eng.ctx) return; // already initialised
     try {
-      var AC = window.AudioContext || window.webkitAudioContext;
+      var AC  = window.AudioContext || window.webkitAudioContext;
       eng.ctx = new AC();
-      eng.ctx.resume(); // unlock on iOS immediately inside gesture
 
+      // Load pre-built reverb IR into an AudioBuffer at the real sample rate
       var sr  = eng.ctx.sampleRate;
-      var len = sr * 2;
+      var len = REVERB_IR.len;
       var buf = eng.ctx.createBuffer(2, len, sr);
-      for (var c = 0; c < 2; c++) {
-        var d = buf.getChannelData(c);
-        for (var i = 0; i < len; i++) {
-          d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 2.5);
-        }
-      }
+      buf.getChannelData(0).set(REVERB_IR.L);
+      buf.getChannelData(1).set(REVERB_IR.R);
       eng.reverbNode = eng.ctx.createConvolver();
       eng.reverbNode.buffer = buf;
 
@@ -103,17 +118,9 @@ function makeSynthEngine() {
       eng.limiterNode.connect(eng.analyserNode);
       eng.analyserNode.connect(eng.ctx.destination);
 
-      // iOS Safari: play silent buffer inside gesture to unlock audio
-      var unlock = eng.ctx.createBuffer(1, 1, eng.ctx.sampleRate);
-      var unlockSrc = eng.ctx.createBufferSource();
-      unlockSrc.buffer = unlock;
-      unlockSrc.connect(eng.ctx.destination);
-      unlockSrc.start(0);
-
       eng.spawnVoices();
-      if (cb) cb(null);
     } catch(e) {
-      if (cb) cb(e);
+      console.error("[CamSynth] init failed", e);
     }
   };
 
@@ -132,7 +139,6 @@ function makeSynthEngine() {
     }
     eng.voices = [];
     var n = eng.settings.voices;
-    // Check if wavetable has any non-zero data
     var hasData = false;
     for (var k = 0; k < eng.wavetableData.length; k++) {
       if (eng.wavetableData[k] !== 0) { hasData = true; break; }
@@ -156,14 +162,34 @@ function makeSynthEngine() {
     }
   };
 
+  // Smoothly ramp detune on existing voices without respawning
+  eng.updateDetune = function(detune) {
+    eng.settings.detune = detune;
+    if (!eng.ctx || eng.voices.length === 0) return;
+    var n = eng.voices.length;
+    var t = eng.ctx.currentTime;
+    for (var i = 0; i < n; i++) {
+      var spread = n === 1 ? 0 : ((i / (n - 1)) - 0.5) * detune * 2;
+      eng.voices[i].osc.detune.setTargetAtTime(spread, t, 0.08);
+    }
+  };
+
+  // Morph speed: how fast we interpolate toward new wavetable (0=instant, 1=never)
+  eng.morphAlpha = 0.15; // per-frame lerp factor (~200ms at 10fps)
+
   eng.updateWavetable = function(data) {
     eng.wavetableData = data;
     if (!eng.ctx) return;
+    // Lerp morphedWavetable toward new data
+    var alpha = eng.morphAlpha;
     var hasData = false;
-    for (var k = 0; k < data.length; k++) { if (data[k] !== 0) { hasData = true; break; } }
+    for (var k = 0; k < data.length; k++) {
+      eng.morphedWavetable[k] = eng.morphedWavetable[k] * (1 - alpha) + data[k] * alpha;
+      if (data[k] !== 0) hasData = true;
+    }
     if (!hasData) return;
     try {
-      var wave = eng.makeWavetable(data);
+      var wave = eng.makeWavetable(eng.morphedWavetable);
       for (var i = 0; i < eng.voices.length; i++) {
         try { eng.voices[i].osc.setPeriodicWave(wave); } catch(e) { eng.voices[i].osc.type = "sine"; }
       }
@@ -192,16 +218,20 @@ function makeSynthEngine() {
 
   eng.setSoundOn = function(on) {
     if (!eng.ctx) return;
-    console.log("[CamSynth] setSoundOn", on, "ctx.state=", eng.ctx.state, "gain=", eng.masterGain.gain.value);
-    eng.ctx.resume().then(function() {
-      console.log("[CamSynth] ctx resumed, state=", eng.ctx.state);
-      var t = eng.ctx.currentTime;
-      eng.masterGain.gain.cancelScheduledValues(t);
+    eng.ctx.resume();
+    var t = eng.ctx.currentTime;
+    eng.masterGain.gain.cancelScheduledValues(t);
+    if (on) {
       eng.masterGain.gain.setValueAtTime(0.001, t);
-      eng.masterGain.gain.exponentialRampToValueAtTime(on ? 0.85 : 0.001, t + 0.3);
-      if (!on) setTimeout(function() { eng.masterGain.gain.setValueAtTime(0, eng.ctx.currentTime); }, 350);
-      console.log("[CamSynth] gain ramped, voices=", eng.voices.length);
-    });
+      eng.masterGain.gain.exponentialRampToValueAtTime(0.85, t + 0.4);
+    } else {
+      var cur = eng.masterGain.gain.value;
+      eng.masterGain.gain.setValueAtTime(cur > 0.001 ? cur : 0.001, t);
+      eng.masterGain.gain.exponentialRampToValueAtTime(0.001, t + 0.2);
+      setTimeout(function() {
+        if (eng.ctx) eng.masterGain.gain.setValueAtTime(0, eng.ctx.currentTime);
+      }, 250);
+    }
     eng.active = on;
   };
 
@@ -216,6 +246,60 @@ function makeSynthEngine() {
     if (!eng.analyserNode) return null;
     var buf = new Float32Array(eng.analyserNode.frequencyBinCount);
     eng.analyserNode.getFloatTimeDomainData(buf);
+    return buf;
+  };
+
+  // WAV recording via raw PCM capture
+  eng.startRecording = function() {
+    if (!eng.ctx) return;
+    var bufSize  = 4096;
+    var chunks   = [];
+    var recorder = eng.ctx.createScriptProcessor(bufSize, 2, 2);
+    recorder.onaudioprocess = function(e) {
+      var L = new Float32Array(e.inputBuffer.getChannelData(0));
+      var R = new Float32Array(e.inputBuffer.getChannelData(1));
+      chunks.push({ L: L, R: R });
+    };
+    eng.limiterNode.connect(recorder);
+    recorder.connect(eng.ctx.destination);
+    eng._recorder   = recorder;
+    eng._recChunks  = chunks;
+  };
+
+  eng.stopRecording = function() {
+    if (!eng._recorder) return null;
+    eng.limiterNode.disconnect(eng._recorder);
+    eng._recorder.disconnect();
+    var chunks = eng._recChunks;
+    eng._recorder  = null;
+    eng._recChunks = null;
+
+    // Encode WAV
+    var sr      = eng.ctx.sampleRate;
+    var nFrames = chunks.reduce(function(s, c) { return s + c.L.length; }, 0);
+    var nCh     = 2;
+    var bitsPS  = 16;
+    var bytesPF = nCh * (bitsPS / 8);
+    var dataLen = nFrames * bytesPF;
+    var buf     = new ArrayBuffer(44 + dataLen);
+    var view    = new DataView(buf);
+    function str(off, s) { for (var i=0;i<s.length;i++) view.setUint8(off+i, s.charCodeAt(i)); }
+    function u32(off, v) { view.setUint32(off, v, true); }
+    function u16(off, v) { view.setUint16(off, v, true); }
+    str(0,"RIFF"); u32(4, 36+dataLen); str(8,"WAVE");
+    str(12,"fmt "); u32(16,16); u16(20,1); u16(22,nCh);
+    u32(24,sr); u32(28,sr*bytesPF); u16(32,bytesPF); u16(34,bitsPS);
+    str(36,"data"); u32(40,dataLen);
+    var off = 44;
+    for (var ci=0; ci<chunks.length; ci++) {
+      var L = chunks[ci].L, R = chunks[ci].R;
+      for (var fi=0; fi<L.length; fi++) {
+        var ls = Math.max(-1,Math.min(1,L[fi]));
+        var rs = Math.max(-1,Math.min(1,R[fi]));
+        view.setInt16(off,   ls < 0 ? ls*0x8000 : ls*0x7FFF, true); off+=2;
+        view.setInt16(off,   rs < 0 ? rs*0x8000 : rs*0x7FFF, true); off+=2;
+      }
+    }
     return buf;
   };
 
@@ -261,11 +345,31 @@ function analyseFrame(canvas, ctx2d) {
   var comX = comW>0 ? comXw/comW : 0.5;
   var comY = comW>0 ? comYw/comW : 0.5;
 
-  var midY = Math.floor(h/2);
-  var wt   = new Float32Array(ANALYSIS_RES);
-  for (var j = 0; j < ANALYSIS_RES; j++) {
-    var wpx = Math.floor((j/ANALYSIS_RES)*w);
-    wt[j] = (px[(midY*w+wpx)*4] / 127.5 - 1) * 0.8;
+  // Full-frame block-average wavetable scan: divide image into ANALYSIS_RES blocks,
+  // average luminance of all pixels in each block → one wavetable sample.
+  // Scans left→right, top→bottom. Block averaging = natural anti-aliasing.
+  var wt        = new Float32Array(ANALYSIS_RES);
+  var blockW    = w / ANALYSIS_RES;  // each block spans blockW columns
+  var blockH    = h;                 // full height per block (vertical strip)
+  var blockSize = Math.max(1, Math.floor(blockW * blockH));
+
+  for (var b = 0; b < ANALYSIS_RES; b++) {
+    var xStart = Math.floor(b * blockW);
+    var xEnd   = Math.floor((b + 1) * blockW);
+    var sum    = 0;
+    var count  = 0;
+    for (var row = 0; row < h; row++) {
+      for (var col = xStart; col < xEnd; col++) {
+        var idx = (row * w + col) * 4;
+        var lr  = px[idx]   / 255;
+        var lg  = px[idx+1] / 255;
+        var lb  = px[idx+2] / 255;
+        sum += 0.2126*lr + 0.7152*lg + 0.0722*lb;
+        count++;
+      }
+    }
+    // Map luma 0..1 → waveform -1..1, scaled for audible amplitude
+    wt[b] = ((count > 0 ? sum / count : 0.5) * 2 - 1) * 0.9;
   }
 
   return { luma: luma, hue: hue/360, saturation: sat, comX: comX, comY: comY, wavetable: wt };
@@ -304,6 +408,7 @@ function App() {
   var r7  = useState(false);  var camReady     = r7[0], setCamReady     = r7[1];
   var r8  = useState(null);   var camError     = r8[0], setCamError     = r8[1];
   var r9  = useState(false);  var engReady     = r9[0], setEngReady     = r9[1];
+  var r12 = useState(true);   var camOn        = r12[0], setCamOn       = r12[1];
   var r10 = useState(null);   var frameData    = r10[0], setFrameData   = r10[1];
 
   var r11 = useState({ voices:1, detune:12, quantize:false, scale:"pentatonic", rootNote:48, pitchMin:36, pitchMax:72, reverbMix:0.3, fps:10 });
@@ -325,6 +430,7 @@ function App() {
   }, [settings]);
 
   useEffect(function() {
+    if (!camOn) return;
     var alive = true;
     setCamReady(false); setCamError(null);
     if (streamRef.current) streamRef.current.getTracks().forEach(function(t){t.stop();});
@@ -348,7 +454,7 @@ function App() {
       alive = false;
       if (streamRef.current) streamRef.current.getTracks().forEach(function(t){t.stop();});
     };
-  }, [facingMode]);
+  }, [facingMode, camOn]);
 
   useEffect(function() {
     if (!camReady) return;
@@ -401,19 +507,15 @@ function App() {
   var handleSound = useCallback(function() {
     var eng = synthRef.current;
     if (!eng) return;
-    if (!engReady) {
-      eng.init(function(err) {
-        if (err) { console.error(err); return; }
-        setEngReady(true);
-        eng.setSoundOn(true);
-        setSoundOn(true);
-      });
-    } else {
-      var next = !soundOn;
-      eng.setSoundOn(next);
-      setSoundOn(next);
+    // Both init() and setSoundOn() must run synchronously inside this gesture handler
+    if (!eng.ctx) {
+      eng.init();
+      setEngReady(true);
     }
-  }, [soundOn, engReady]);
+    var next = !soundOn;
+    eng.setSoundOn(next);
+    setSoundOn(next);
+  }, [soundOn]);
 
   var handlePanic = useCallback(function() {
     var eng = synthRef.current;
@@ -433,30 +535,36 @@ function App() {
   }, []);
 
   var handleFlip   = useCallback(function() { setFacingMode(function(f){return f==="environment"?"user":"environment";}); }, []);
+
+  var handleCamToggle = useCallback(function() {
+    setCamOn(function(on) {
+      var next = !on;
+      if (!next) {
+        // Stop stream
+        if (streamRef.current) streamRef.current.getTracks().forEach(function(t){t.stop();});
+        streamRef.current = null;
+        setCamReady(false);
+      }
+      return next;
+    });
+  }, []);
   var handleReload = useCallback(function() { window.location.reload(); }, []);
 
   var handleRecord = useCallback(function() {
     var eng = synthRef.current;
     if (recording) {
-      if (mrRef.current) mrRef.current.stop();
+      // Stop and export WAV
+      var wavBuf = eng ? eng.stopRecording() : null;
+      if (wavBuf) {
+        var blob = new Blob([wavBuf], { type: "audio/wav" });
+        var url  = URL.createObjectURL(blob);
+        var a    = document.createElement("a");
+        a.href = url; a.download = "camsynth-" + Date.now() + ".wav"; a.click();
+      }
       setRecording(false);
     } else {
       if (!eng || !eng.ctx) return;
-      var dest = eng.ctx.createMediaStreamDestination();
-      eng.limiterNode.connect(dest);
-      var chunks = [];
-      chunksRef.current = chunks;
-      var mr = new MediaRecorder(dest.stream);
-      mr.ondataavailable = function(e) { chunks.push(e.data); };
-      mr.onstop = function() {
-        var blob = new Blob(chunks, {type:"audio/webm"});
-        var url  = URL.createObjectURL(blob);
-        var a    = document.createElement("a");
-        a.href=url; a.download="camsynth-"+Date.now()+".webm"; a.click();
-        try { eng.limiterNode.disconnect(dest); } catch(e) {}
-      };
-      mr.start();
-      mrRef.current = mr;
+      eng.startRecording();
       setRecording(true);
     }
   }, [recording]);
@@ -498,7 +606,7 @@ function App() {
           ),
           el("div", { style:{ width:8, height:8, borderRadius:"50%", background:hueCSS, boxShadow:"0 0 5px "+hueCSS, flexShrink:0 } })
         ),
-        el("button", { className:"cb", onClick:handleFlip }, "\u21c4"),
+        camOn && el("button", { className:"cb", onClick:handleFlip }, "\u21c4"),
         el("button", { className:"cb", onClick:handleReload }, "\u21ba")
       )
     ),
@@ -513,7 +621,10 @@ function App() {
         el("div",null,"SAT "+(frameData.saturation*100).toFixed(1)),
         el("div",null,"COM "+frameData.comX.toFixed(2)+"\xb7"+frameData.comY.toFixed(2))
       ),
-      !camReady && !camError && el("div", { style:{ position:"absolute", inset:0, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:8 } },
+      !camOn && el("div", { style:{ position:"absolute", inset:0, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:8, background:"#050505" } },
+        el("span", { style:{ color:"#2a2a2a", fontSize:10, letterSpacing:"0.2em" } }, "CAMERA OFF")
+      ),
+      camOn && !camReady && !camError && el("div", { style:{ position:"absolute", inset:0, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:8 } },
         el("span", { style:{ color:"#2a2a2a", fontSize:10, letterSpacing:"0.2em" } }, "AWAITING CAMERA"),
         el("span", { style:{ color:"#1e1e1e", fontSize:8, letterSpacing:"0.1em" } }, "grant permission when prompted")
       ),
@@ -548,6 +659,7 @@ function App() {
     el("div", { style:{ display:"flex", gap:5, padding:"7px 14px", flexShrink:0 } },
       el("button", { className:cx("cb", soundOn&&"on"), onClick:handleSound, style:{ flex:2, fontSize:11, padding:"10px 0", letterSpacing:"0.1em" } }, soundOn ? "\u25fc ON" : "\u25b6 OFF"),
       el("button", { className:cx("cb", recording&&"rec"), onClick:handleRecord, style:{ flex:1 } }, recording ? "\u25cf REC" : "\u25cb REC"),
+      el("button", { className:cx("cb", camOn&&"on"), onClick:handleCamToggle, style:{ flex:1 } }, "\u25a3 CAM"),
       el("button", { className:cx("cb", showScope&&"on"), onClick:function(){setShowScope(function(s){return !s;});}, style:{ flex:1 } }, "\u223f"),
       el("button", { className:cx("cb", showSettings&&"on"), onClick:function(){setShowSettings(function(s){return !s;});}, style:{ flex:1 } }, "\u2699")
     ),
@@ -567,7 +679,7 @@ function App() {
           el("label",null,"Detune"),
           el("span",{style:{fontSize:9,color:"#7fff6a"}},settings.detune+" ct")
         ),
-        el("input",{type:"range",min:0,max:50,value:settings.detune,onChange:function(e){setSetting("detune",+e.target.value);}})
+        el("input",{type:"range",min:0,max:50,value:settings.detune,onChange:function(e){var v=+e.target.value; setSetting("detune",v); var eng=synthRef.current; if(eng) eng.updateDetune(v);}})
       ),
 
       el("div", { className:"sr" },
@@ -601,12 +713,7 @@ function App() {
         el("input",{type:"range",min:0,max:100,value:Math.round(settings.reverbMix*100),onChange:function(e){setSetting("reverbMix",e.target.value/100);}})
       ),
 
-      el("div", { className:"sr" },
-        el("label",null,"Analysis rate"),
-        el("div", { style:{display:"flex",gap:2} },
-          FPS_OPTIONS.map(function(f){ return el("button",{key:f,className:cx("sg",settings.fps===f&&"sel"),onClick:function(){setSetting("fps",f);}},f+"fps"); })
-        )
-      ),
+
 
       el("div", { style:{paddingTop:10,textAlign:"right"} },
         el("span",{style:{fontSize:8,color:"#1e1e1e",letterSpacing:"0.15em"}},"v"+VERSION)
