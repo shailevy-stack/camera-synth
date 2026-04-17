@@ -1,5 +1,5 @@
 // Camera Synth — v1.1.0
-var VERSION = "2.8.0";
+var VERSION = "2.9.0";
 
 var useState    = React.useState;
 var useEffect   = React.useEffect;
@@ -680,38 +680,18 @@ function App() {
 
   var handleFlip   = useCallback(function() { setFacingMode(function(f){return f==="environment"?"user":"environment";}); }, []);
 
-  var handleLoopStart = useCallback(function(e) {
-    e.preventDefault();
-    e.stopPropagation();
-    var eng = synthRef.current;
-    if (!eng || !eng.ctx) return;
-    // If looping — stop
-    if (eng.isLooping()) {
-      eng.stopLoop();
-      setLooping(false);
-      setLoopCapturing(false);
-      clearInterval(loopVidTimerRef.current);
-      loopFramesRef.current = [];
-      var ov = loopOverlayRef.current;
-      if (ov) ov.getContext("2d").clearRect(0,0,ov.width,ov.height);
-      return;
-    }
-    // Start recording
-    loopFramesRef.current = [];
-    eng.startLoopRecord();
-    setLoopCapturing(true);
-  }, []);
+  // Loop uses document-level pointerup so iOS can't swallow the end event
+  var loopActiveRef = useRef(false);
 
-  var handleLoopEnd = useCallback(function(e) {
-    e.preventDefault();
-    e.stopPropagation();
+  function doLoopEnd() {
+    if (!loopActiveRef.current) return;
+    loopActiveRef.current = false;
     var eng = synthRef.current;
     if (!eng || !eng._loopRecording) return;
     var ok = eng.commitLoop();
     setLoopCapturing(false);
     if (!ok) return;
     setLooping(true);
-    // Video loop
     var frames = loopFramesRef.current;
     if (frames.length > 0) {
       loopFrameIdxRef.current = 0;
@@ -725,6 +705,42 @@ function App() {
         loopFrameIdxRef.current++;
       }, 100);
     }
+  }
+
+  // Register document-level pointer up once
+  useEffect(function() {
+    function onUp() { doLoopEnd(); }
+    document.addEventListener("pointerup", onUp);
+    document.addEventListener("touchend", onUp);
+    return function() {
+      document.removeEventListener("pointerup", onUp);
+      document.removeEventListener("touchend", onUp);
+    };
+  }, []);
+
+  var handleLoopStart = useCallback(function(e) {
+    e.preventDefault();
+    var eng = synthRef.current;
+    if (!eng || !eng.ctx) return;
+    if (eng.isLooping()) {
+      eng.stopLoop();
+      setLooping(false);
+      setLoopCapturing(false);
+      clearInterval(loopVidTimerRef.current);
+      loopFramesRef.current = [];
+      var ov = loopOverlayRef.current;
+      if (ov) ov.getContext("2d").clearRect(0,0,ov.width,ov.height);
+      return;
+    }
+    loopActiveRef.current = true;
+    loopFramesRef.current = [];
+    eng.startLoopRecord();
+    setLoopCapturing(true);
+  }, []);
+
+  var handleLoopEnd = useCallback(function(e) {
+    e.preventDefault();
+    doLoopEnd();
   }, []);
 
   var handleCamToggle = useCallback(function() {
@@ -859,10 +875,10 @@ function App() {
         className:cx("cb", loopCapturing&&"blink", looping&&"on"),
         onMouseDown:handleLoopStart, onMouseUp:handleLoopEnd,
         onTouchStart:handleLoopStart, onTouchEnd:handleLoopEnd,
-        style:{ flex:1, position:"relative", touchAction:"none" }
+        style:{ flex:1, position:"relative" }
       }, loopCapturing ? "\u25cf LOOP" : looping ? "\u21ba LOOP" : "\u25cb LOOP"),
       el("button", { className:cx("cb", recording&&"rec"), onClick:handleRecord, style:{ flex:1 } }, recording ? "\u25cf REC" : "\u25cb REC"),
-      el("button", { className:cx("cb", !camOn&&"rec"), onClick:handleCamToggle, style:{ flex:1 } }, "\u25a3 CAM"),
+      el("button", { className:cx("cb", camOn&&"on"), onClick:handleCamToggle, style:{ flex:1 } }, "\u25a3 CAM"),
       el("button", { className:cx("cb", showScope&&"on"), onClick:function(){setShowScope(function(s){return !s;});}, style:{ flex:1 } }, "\u223f"),
       el("button", { className:cx("cb", showSettings&&"on"), onClick:function(){setShowSettings(function(s){return !s;});}, style:{ flex:1 } }, "\u2699")
     ),
@@ -914,16 +930,12 @@ function App() {
 
             el("div", { className:"sr", style:{flexDirection:"column",alignItems:"flex-start",gap:3} },
         el("div", { style:{display:"flex",width:"100%",justifyContent:"space-between"} },
-          el("label",null,"Pitch min"),
-          el("span",{style:{fontSize:9,color:"#7fff6a"}}, NOTE_NAMES[settings.pitchMin%12]+(Math.floor(settings.pitchMin/12)-1))
+          el("label",null,"Pitch range"),
+          el("span",{style:{fontSize:9,color:"#7fff6a"}},
+            NOTE_NAMES[settings.pitchMin%12]+(Math.floor(settings.pitchMin/12)-1)+" \u2192 "+NOTE_NAMES[settings.pitchMax%12]+(Math.floor(settings.pitchMax/12)-1)
+          )
         ),
-        el("input",{type:"range",min:24,max:60,value:settings.pitchMin,onChange:function(e){setSetting("pitchMin",Math.min(+e.target.value,settings.pitchMax-4));}})
-      ),
-      el("div", { className:"sr", style:{flexDirection:"column",alignItems:"flex-start",gap:3} },
-        el("div", { style:{display:"flex",width:"100%",justifyContent:"space-between"} },
-          el("label",null,"Pitch max"),
-          el("span",{style:{fontSize:9,color:"#7fff6a"}}, NOTE_NAMES[settings.pitchMax%12]+(Math.floor(settings.pitchMax/12)-1))
-        ),
+        el("input",{type:"range",min:24,max:60,value:settings.pitchMin,onChange:function(e){setSetting("pitchMin",Math.min(+e.target.value,settings.pitchMax-4));}}),
         el("input",{type:"range",min:48,max:84,value:settings.pitchMax,onChange:function(e){setSetting("pitchMax",Math.max(+e.target.value,settings.pitchMin+4));}})
       ),
 
