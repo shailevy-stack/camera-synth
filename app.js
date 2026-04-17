@@ -943,11 +943,8 @@ function App() {
       }, loopCapturing ? "\u25cf LOOP" : looping ? "\u21ba LOOP" : "\u25cb LOOP"),
       el("button", { className:cx("cb", recording&&"rec"), onClick:handleRecord, style:{ flex:1 } }, recording ? "\u25cf REC" : "\u25cb REC"),
       el("button", { className:cx("cb", camOn&&"on"), onClick:handleCamToggle, style:{ flex:1 } }, "\u25a3 CAM"),
-      el("button", { className:cx("cb", showScope&&"on"), onClick:function(){setShowScope(function(s){return !s;});}, style:{ flex:1, display:"flex", flexDirection:"column", alignItems:"center", gap:1, padding:"6px 4px" } },
-        el("span", { style:{ fontSize:16, lineHeight:1 } }, "\u223f"),
-        el("span", { style:{ fontSize:8, letterSpacing:"0.08em" } }, "OSC")
-      ),
-      el("button", { className:cx("cb", showSettings&&"on"), onClick:function(){setShowSettings(function(s){return !s;});}, style:{ flex:1, fontSize:18 } }, "\u2699")
+      el("button", { className:cx("cb", showScope&&"on"), onClick:function(){setShowScope(function(s){return !s;});}, style:{ flex:1 } }, "\u223f OSC"),
+      el("button", { className:cx("cb", showSettings&&"on"), onClick:function(){setShowSettings(function(s){return !s;});}, style:{ flex:1 } }, "\u2699")
     ),
 
     // Settings drawer
