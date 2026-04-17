@@ -1,5 +1,5 @@
 // Camera Synth — v1.1.0
-var VERSION = "1.9.0";
+var VERSION = "2.0.0";
 
 var useState    = React.useState;
 var useEffect   = React.useEffect;
@@ -300,6 +300,102 @@ function makeSynthEngine() {
     return buf;
   };
 
+  // ── Looper ──────────────────────────────────────────────────
+  var MAX_LOOP_SECS = 10;
+  eng._loopRecording  = false;
+  eng._loopChunks     = [];
+  eng._loopNode       = null;
+  eng._loopGain       = null;
+
+  eng.startLoopRecord = function() {
+    if (!eng.ctx) return;
+    eng._loopRecording = true;
+    eng._loopChunks    = [];
+    var bufSize    = 4096;
+    var maxSamples = eng.ctx.sampleRate * MAX_LOOP_SECS;
+    var captured   = 0;
+    var proc = eng.ctx.createScriptProcessor(bufSize, 2, 2);
+    proc.onaudioprocess = function(e) {
+      if (!eng._loopRecording) return;
+      if (captured >= maxSamples) { eng.commitLoop(); return; }
+      var L = new Float32Array(e.inputBuffer.getChannelData(0));
+      var R = new Float32Array(e.inputBuffer.getChannelData(1));
+      eng._loopChunks.push({ L: L, R: R });
+      captured += L.length;
+    };
+    eng.limiterNode.connect(proc);
+    proc.connect(eng.ctx.destination);
+    eng._loopProc = proc;
+  };
+
+  eng.commitLoop = function() {
+    if (!eng._loopRecording) return;
+    eng._loopRecording = false;
+
+    // Disconnect capture processor
+    try { eng.limiterNode.disconnect(eng._loopProc); eng._loopProc.disconnect(); } catch(e) {}
+
+    var chunks = eng._loopChunks;
+    if (!chunks.length) return;
+
+    var sr      = eng.ctx.sampleRate;
+    var nFrames = chunks.reduce(function(s,c){ return s+c.L.length; }, 0);
+    var buf     = eng.ctx.createBuffer(2, nFrames, sr);
+    var outL    = buf.getChannelData(0);
+    var outR    = buf.getChannelData(1);
+    var off     = 0;
+    for (var i = 0; i < chunks.length; i++) {
+      outL.set(chunks[i].L, off);
+      outR.set(chunks[i].R, off);
+      off += chunks[i].L.length;
+    }
+
+    // Crossfade seam: fade out last N samples, fade in first N samples
+    var fadeLen = Math.min(Math.floor(sr * 0.008), nFrames / 2); // 8ms
+    for (var j = 0; j < fadeLen; j++) {
+      var tIn  = j / fadeLen;                  // 0→1
+      var tOut = 1 - tIn;                      // 1→0
+      var iIn  = j;
+      var iOut = nFrames - fadeLen + j;
+      // Fade in head
+      outL[iIn]  *= tIn;  outR[iIn]  *= tIn;
+      // Fade out tail
+      outL[iOut] *= tOut; outR[iOut] *= tOut;
+    }
+
+    // Silence live synth, play loop
+    eng.masterGain.gain.value = 0;
+
+    var loopGain = eng.ctx.createGain();
+    loopGain.gain.value = 0.85;
+    loopGain.connect(eng.limiterNode);
+
+    var src = eng.ctx.createBufferSource();
+    src.buffer = buf;
+    src.loop   = true;
+    src.connect(loopGain);
+    src.start();
+
+    eng._loopNode = src;
+    eng._loopGain = loopGain;
+  };
+
+  eng.stopLoop = function() {
+    if (eng._loopNode) {
+      try { eng._loopNode.stop(); eng._loopNode.disconnect(); } catch(e) {}
+      eng._loopNode = null;
+    }
+    if (eng._loopGain) {
+      try { eng._loopGain.disconnect(); } catch(e) {}
+      eng._loopGain = null;
+    }
+    eng._loopChunks = [];
+    // Restore live synth gain
+    if (eng.active) eng.masterGain.gain.value = 0.7;
+  };
+
+  eng.isLooping = function() { return !!eng._loopNode; };
+
   eng.destroy = function() {
     eng.panic();
     for (var i = 0; i < eng.voices.length; i++) { try { eng.voices[i].osc.stop(); } catch(e) {} }
@@ -392,6 +488,10 @@ function cx() {
 function App() {
   var videoRef         = useRef(null);
   var captureRef       = useRef(null);
+  var loopFramesRef    = useRef([]);   // captured video frames for loop
+  var loopOverlayRef   = useRef(null); // canvas overlay for video loop playback
+  var loopVidTimerRef  = useRef(null); // setInterval for video loop playback
+  var loopFrameIdxRef  = useRef(0);
   var scopeRef         = useRef(null);
   var ribbonRef        = useRef(null);
   var synthRef         = useRef(null);
@@ -411,6 +511,8 @@ function App() {
   var r8  = useState(null);   var camError     = r8[0], setCamError     = r8[1];
   var r9  = useState(false);  var engReady     = r9[0], setEngReady     = r9[1];
   var r12 = useState(true);   var camOn        = r12[0], setCamOn       = r12[1];
+  var r13 = useState(false);  var looping      = r13[0], setLooping     = r13[1];
+  var r14 = useState(false);  var loopCapturing = r14[0], setLoopCapturing = r14[1];
   var r10 = useState(null);   var frameData    = r10[0], setFrameData   = r10[1];
 
   var r11 = useState({ voices:1, detune:12, quantize:false, scale:"pentatonic", rootNote:48, pitchMin:36, pitchMax:72, reverbMix:0.3, fps:10 });
@@ -472,6 +574,13 @@ function App() {
         setFrameData(data);
         var eng = synthRef.current;
         if (eng && eng.ctx) { eng.updateFromCamera(data.hue, data.saturation); eng.updateWavetable(data.wavetable); }
+        // Capture video frames while loop recording
+        if (eng && eng._loopRecording) {
+          var MAX_FRAMES = 100;
+          if (loopFramesRef.current.length < MAX_FRAMES) {
+            loopFramesRef.current.push(ctx2d.getImageData(0, 0, c.width, c.height));
+          }
+        }
       }
     }, ms);
     return function() { clearInterval(timerRef.current); };
@@ -538,6 +647,57 @@ function App() {
 
   var handleFlip   = useCallback(function() { setFacingMode(function(f){return f==="environment"?"user":"environment";}); }, []);
 
+  var handleLoopStart = useCallback(function(e) {
+    e.preventDefault();
+    var eng = synthRef.current;
+    if (!eng || !eng.ctx) return;
+
+    // If already looping, stop and return to live
+    if (looping) {
+      eng.stopLoop();
+      setLooping(false);
+      setLoopCapturing(false);
+      // Stop video loop
+      clearInterval(loopVidTimerRef.current);
+      loopFramesRef.current = [];
+      loopFrameIdxRef.current = 0;
+      // Hide overlay
+      var ov = loopOverlayRef.current;
+      if (ov) { var octx = ov.getContext("2d"); octx.clearRect(0,0,ov.width,ov.height); }
+      return;
+    }
+
+    // Start capturing
+    setLoopCapturing(true);
+    loopFramesRef.current = [];
+    eng.startLoopRecord();
+  }, [looping]);
+
+  var handleLoopEnd = useCallback(function(e) {
+    e.preventDefault();
+    var eng = synthRef.current;
+    if (!eng || !eng._loopRecording) return;
+
+    eng.commitLoop();
+    setLoopCapturing(false);
+    setLooping(true);
+
+    // Start video loop playback
+    var frames = loopFramesRef.current;
+    if (frames.length > 0) {
+      loopFrameIdxRef.current = 0;
+      var ov = loopOverlayRef.current;
+      loopVidTimerRef.current = setInterval(function() {
+        if (!ov || frames.length === 0) return;
+        ov.width  = frames[0].width;
+        ov.height = frames[0].height;
+        var octx = ov.getContext("2d");
+        octx.putImageData(frames[loopFrameIdxRef.current % frames.length], 0, 0);
+        loopFrameIdxRef.current++;
+      }, 100); // ~10fps video loop
+    }
+  }, []);
+
   var handleCamToggle = useCallback(function() {
     setCamOn(function(on) {
       var next = !on;
@@ -586,6 +746,8 @@ function App() {
       .cb.on{border-color:#7fff6a;color:#7fff6a;}
       .cb.rec{border-color:#ff4444;color:#ff4444;background:rgba(255,68,68,.08);}
       .cb.dng{border-color:#ff4444;color:#ff4444;}
+      @keyframes blink{0%,100%{opacity:1}50%{opacity:0.2}}
+      .cb.rec{animation:blink 0.6s infinite;}
       .sg{background:transparent;border:1px solid #1e1e1e;color:#444;font-family:'IBM Plex Mono',monospace;font-size:9px;padding:3px 7px;cursor:pointer;-webkit-tap-highlight-color:transparent;touch-action:manipulation;transition:all .1s;}
       .sg.sel{border-color:#7fff6a;color:#7fff6a;background:rgba(127,255,106,.06);}
       .sr{display:flex;align-items:center;justify-content:space-between;padding:7px 0;border-bottom:1px solid #141414;}
@@ -634,7 +796,8 @@ function App() {
         el("span", { style:{ color:"#ff4444", fontSize:10, letterSpacing:"0.15em" } }, camError),
         el("button", { className:"cb", onClick:handleReload, style:{ fontSize:9 } }, "\u21ba reload & retry")
       ),
-      el("canvas", { ref:captureRef, style:{ display:"none" } })
+      el("canvas", { ref:captureRef, style:{ display:"none" } }),
+      el("canvas", { ref:loopOverlayRef, style:{ position:"absolute", inset:0, width:"100%", height:"100%", pointerEvents:"none", display: looping ? "block" : "none" } })
     ),
 
     // Pitch Ribbon
@@ -660,6 +823,12 @@ function App() {
     // Controls
     el("div", { style:{ display:"flex", gap:5, padding:"7px 14px", flexShrink:0 } },
       el("button", { className:cx("cb", soundOn&&"on"), onClick:handleSound, style:{ flex:2, fontSize:11, padding:"10px 0", letterSpacing:"0.1em" } }, soundOn ? "\u25fc ON" : "\u25b6 OFF"),
+      el("button", {
+        className:cx("cb", loopCapturing&&"rec", looping&&"on"),
+        onMouseDown:handleLoopStart, onMouseUp:handleLoopEnd,
+        onTouchStart:handleLoopStart, onTouchEnd:handleLoopEnd,
+        style:{ flex:1, position:"relative" }
+      }, loopCapturing ? "\u25cf LOOP" : looping ? "\u21ba LOOP" : "\u25cb LOOP"),
       el("button", { className:cx("cb", recording&&"rec"), onClick:handleRecord, style:{ flex:1 } }, recording ? "\u25cf REC" : "\u25cb REC"),
       el("button", { className:cx("cb", camOn&&"on"), onClick:handleCamToggle, style:{ flex:1 } }, "\u25a3 CAM"),
       el("button", { className:cx("cb", showScope&&"on"), onClick:function(){setShowScope(function(s){return !s;});}, style:{ flex:1 } }, "\u223f"),
