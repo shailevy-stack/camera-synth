@@ -244,11 +244,63 @@ function makeSynthEngine() {
     }
   };
 
-  eng.updateFromCamera = function(hue, sat) {
+  // LFO state — runs in audio engine, driven by camera
+  eng._lfoNode      = null;
+  eng._lfoGain      = null;
+  eng._prevHue      = 0;
+  eng._prevHueTime  = 0;
+
+  eng.initLFO = function() {
+    if (!eng.ctx || eng._lfoNode) return;
+    // LFO oscillator → gain node → filter frequency offset
+    eng._lfoNode = eng.ctx.createOscillator();
+    eng._lfoNode.type = "sine";
+    eng._lfoNode.frequency.value = 0.2; // start slow
+    eng._lfoGain = eng.ctx.createGain();
+    eng._lfoGain.gain.value = 0;        // start silent
+    eng._lfoNode.connect(eng._lfoGain);
+    eng._lfoGain.connect(eng.filterNode.frequency);
+    eng._lfoNode.start();
+  };
+
+  eng.updateFromCamera = function(luma, hue, chromaContrast) {
     if (!eng.ctx || !eng.filterNode) return;
     var t = eng.ctx.currentTime;
-    eng.filterNode.frequency.setTargetAtTime(200 + hue * 7800, t, 0.15);
-    eng.filterNode.Q.setTargetAtTime(0.5 + sat * 11.5, t, 0.15);
+
+    // Init LFO on first camera data
+    if (!eng._lfoNode) eng.initLFO();
+
+    // Luma → filter base cutoff (brighter = brighter/more open sound)
+    // Map luma 0..1 → 150Hz..6000Hz
+    var cutoff = 150 + luma * 5850;
+    eng.filterNode.frequency.setTargetAtTime(cutoff, t, 0.2);
+
+    // Chroma contrast → resonance (more color contrast = more resonant)
+    var q = 0.5 + chromaContrast * 14;
+    eng.filterNode.Q.setTargetAtTime(q, t, 0.2);
+
+    // Hue velocity → LFO rate
+    // Measure how fast hue is changing between frames
+    var now      = eng.ctx.currentTime;
+    var dt       = now - eng._prevHueTime;
+    var hueDelta = 0;
+    if (dt > 0 && dt < 2) {
+      // Circular delta — handle 0/1 wraparound
+      hueDelta = Math.abs(hue - eng._prevHue);
+      if (hueDelta > 0.5) hueDelta = 1 - hueDelta;
+      hueDelta = hueDelta / dt; // per-second rate
+    }
+    eng._prevHue     = hue;
+    eng._prevHueTime = now;
+
+    // Map hue velocity → LFO frequency 0.05..2 Hz
+    var lfoRate = 0.05 + Math.min(hueDelta * 4, 1) * 1.95;
+    eng._lfoNode.frequency.setTargetAtTime(lfoRate, t, 0.5);
+
+    // Chroma contrast → LFO depth (vibrant scene = deeper wobble)
+    // Depth scaled so max swing is ±1500Hz around the cutoff
+    var lfoDepth = chromaContrast * 1500;
+    eng._lfoGain.gain.setTargetAtTime(lfoDepth, t, 0.3);
   };
 
   eng.setSoundOn = function(on) {
@@ -427,6 +479,7 @@ function makeSynthEngine() {
 
   eng.destroy = function() {
     eng.panic();
+    if (eng._lfoNode) { try { eng._lfoNode.stop(); } catch(e) {} }
     for (var i = 0; i < eng.voices.length; i++) { try { eng.voices[i].osc.stop(); } catch(e) {} }
     if (eng.ctx) eng.ctx.close();
   };
@@ -499,7 +552,42 @@ function analyseFrame(canvas, ctx2d) {
     }
   }
 
-  return { luma: luma, hue: hue/360, saturation: sat, comX: comX, comY: comY, wavetable: wt };
+  // Chroma contrast: divide frame into 4x4 grid, measure hue variance between cells
+  // High variance = vivid contrasting colors side by side → high resonance
+  var gridN   = 4;
+  var cellHues = [];
+  for (var gy = 0; gy < gridN; gy++) {
+    for (var gx = 0; gx < gridN; gx++) {
+      var xS = Math.floor(gx * w / gridN);
+      var xE = Math.floor((gx+1) * w / gridN);
+      var yS = Math.floor(gy * h / gridN);
+      var yE = Math.floor((gy+1) * h / gridN);
+      var cR = 0, cG = 0, cB = 0, cN = 0;
+      for (var cy = yS; cy < yE; cy += 4) {   // stride 4 for speed
+        for (var cx = xS; cx < xE; cx += 4) {
+          var ci = (cy * w + cx) * 4;
+          cR += px[ci]/255; cG += px[ci+1]/255; cB += px[ci+2]/255; cN++;
+        }
+      }
+      if (cN > 0) { cR/=cN; cG/=cN; cB/=cN; }
+      var cMax = Math.max(cR,cG,cB), cMin = Math.min(cR,cG,cB), cD = cMax-cMin;
+      var cHue = 0;
+      if (cD > 0.05) { // only count cells with meaningful color
+        if (cMax===cR)      cHue = ((cG-cB)/cD+6) % 6;
+        else if (cMax===cG) cHue = (cB-cR)/cD + 2;
+        else                cHue = (cR-cG)/cD + 4;
+        cellHues.push(cHue / 6); // normalize 0..1
+      }
+    }
+  }
+  var chromaContrast = 0;
+  if (cellHues.length > 1) {
+    var hMean = cellHues.reduce(function(s,v){return s+v;},0) / cellHues.length;
+    var hVar  = cellHues.reduce(function(s,v){return s+Math.pow(v-hMean,2);},0) / cellHues.length;
+    chromaContrast = Math.min(1, hVar * 8); // scale variance to 0..1
+  }
+
+  return { luma: luma, hue: hue/360, saturation: sat, chromaContrast: chromaContrast, comX: comX, comY: comY, wavetable: wt };
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -602,7 +690,7 @@ function App() {
       if (data) {
         setFrameData(data);
         var eng = synthRef.current;
-        if (eng && eng.ctx) { eng.updateFromCamera(data.hue, data.saturation); eng.updateWavetable(data.wavetable); }
+        if (eng && eng.ctx) { eng.updateFromCamera(data.luma, data.hue, data.chromaContrast); eng.updateWavetable(data.wavetable); }
         // Capture video frames while loop recording
         if (eng && eng._loopRecording) {
           var MAX_FRAMES = 100;
@@ -812,7 +900,7 @@ function App() {
       frameData && el("div", { style:{ position:"absolute", top:8, left:8, fontSize:8, color:"rgba(127,255,106,0.35)", letterSpacing:"0.1em", lineHeight:2, pointerEvents:"none" } },
         el("div",null,"LMA "+(frameData.luma*100).toFixed(1)),
         el("div",null,"HUE "+Math.round(frameData.hue*360)+"\xb0"),
-        el("div",null,"SAT "+(frameData.saturation*100).toFixed(1)),
+        el("div",null,"CHR "+(frameData.chromaContrast*100).toFixed(1)),
         el("div",null,"COM "+frameData.comX.toFixed(2)+"\xb7"+frameData.comY.toFixed(2))
       ),
       !camOn && el("div", { style:{ position:"absolute", inset:0, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:8, background:"#050505" } },
