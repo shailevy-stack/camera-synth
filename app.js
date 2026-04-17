@@ -1,5 +1,5 @@
 // Camera Synth — v1.1.0
-var VERSION = "1.3.0";
+var VERSION = "1.4.0";
 
 var useState    = React.useState;
 var useEffect   = React.useEffect;
@@ -131,11 +131,19 @@ function makeSynthEngine() {
       try { eng.voices[i].osc.stop(); eng.voices[i].osc.disconnect(); eng.voices[i].gain.disconnect(); } catch(e) {}
     }
     eng.voices = [];
-    var n    = eng.settings.voices;
-    var wave = eng.makeWavetable(eng.wavetableData);
+    var n = eng.settings.voices;
+    // Check if wavetable has any non-zero data
+    var hasData = false;
+    for (var k = 0; k < eng.wavetableData.length; k++) {
+      if (eng.wavetableData[k] !== 0) { hasData = true; break; }
+    }
     for (var i = 0; i < n; i++) {
-      var osc    = eng.ctx.createOscillator();
-      osc.setPeriodicWave(wave);
+      var osc = eng.ctx.createOscillator();
+      if (hasData) {
+        try { osc.setPeriodicWave(eng.makeWavetable(eng.wavetableData)); } catch(e) { osc.type = "sine"; }
+      } else {
+        osc.type = "sine";
+      }
       var spread = n === 1 ? 0 : ((i / (n - 1)) - 0.5) * eng.settings.detune * 2;
       osc.detune.value    = spread;
       osc.frequency.value = midiToHz(eng.currentPitchMidi);
@@ -151,10 +159,15 @@ function makeSynthEngine() {
   eng.updateWavetable = function(data) {
     eng.wavetableData = data;
     if (!eng.ctx) return;
-    var wave = eng.makeWavetable(data);
-    for (var i = 0; i < eng.voices.length; i++) {
-      try { eng.voices[i].osc.setPeriodicWave(wave); } catch(e) {}
-    }
+    var hasData = false;
+    for (var k = 0; k < data.length; k++) { if (data[k] !== 0) { hasData = true; break; } }
+    if (!hasData) return;
+    try {
+      var wave = eng.makeWavetable(data);
+      for (var i = 0; i < eng.voices.length; i++) {
+        try { eng.voices[i].osc.setPeriodicWave(wave); } catch(e) { eng.voices[i].osc.type = "sine"; }
+      }
+    } catch(e) {}
   };
 
   eng.updatePitch = function(rx) {

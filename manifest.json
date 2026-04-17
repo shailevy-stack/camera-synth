@@ -2,7 +2,7 @@
   "name": "Camera Synth",
   "short_name": "CamSynth",
   "description": "Live camera to drone synthesizer",
-  "start_url": "/",
+  "start_url": "./",
   "display": "standalone",
   "orientation": "portrait",
   "background_color": "#0a0a0b",
