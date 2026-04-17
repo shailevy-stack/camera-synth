@@ -1,5 +1,5 @@
 // Camera Synth — v1.1.0
-var VERSION = "1.4.0";
+var VERSION = "1.5.0";
 
 var useState    = React.useState;
 var useEffect   = React.useEffect;
@@ -192,16 +192,16 @@ function makeSynthEngine() {
 
   eng.setSoundOn = function(on) {
     if (!eng.ctx) return;
-    eng.ctx.resume();
-    var t = eng.ctx.currentTime;
-    eng.masterGain.gain.cancelScheduledValues(t);
-    if (on) {
-      eng.masterGain.gain.setValueAtTime(0, t);
-      eng.masterGain.gain.linearRampToValueAtTime(0.85, t + 0.3);
-    } else {
-      eng.masterGain.gain.setValueAtTime(eng.masterGain.gain.value, t);
-      eng.masterGain.gain.linearRampToValueAtTime(0, t + 0.1);
-    }
+    console.log("[CamSynth] setSoundOn", on, "ctx.state=", eng.ctx.state, "gain=", eng.masterGain.gain.value);
+    eng.ctx.resume().then(function() {
+      console.log("[CamSynth] ctx resumed, state=", eng.ctx.state);
+      var t = eng.ctx.currentTime;
+      eng.masterGain.gain.cancelScheduledValues(t);
+      eng.masterGain.gain.setValueAtTime(0.001, t);
+      eng.masterGain.gain.exponentialRampToValueAtTime(on ? 0.85 : 0.001, t + 0.3);
+      if (!on) setTimeout(function() { eng.masterGain.gain.setValueAtTime(0, eng.ctx.currentTime); }, 350);
+      console.log("[CamSynth] gain ramped, voices=", eng.voices.length);
+    });
     eng.active = on;
   };
 
@@ -486,10 +486,10 @@ function App() {
     `),
 
     // Header
-    el("div", { style:{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"10px 14px 6px", flexShrink:0 } },
+    el("div", { style:{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"10px 14px 6px", paddingTop:"max(env(safe-area-inset-top, 10px), 10px)", flexShrink:0 } },
       el("div", { style:{ display:"flex", alignItems:"baseline", gap:7 } },
-        el("span", { style:{ fontSize:10, letterSpacing:"0.2em", color:"#2a2a2a", textTransform:"uppercase" } }, "CamSynth"),
-        el("span", { style:{ fontSize:8, color:"#1e1e1e", letterSpacing:"0.1em" } }, "v"+VERSION)
+        el("span", { style:{ fontSize:10, letterSpacing:"0.2em", color:"#7fff6a", textTransform:"uppercase" } }, "CamSynth"),
+        el("span", { style:{ fontSize:8, color:"#888888", letterSpacing:"0.1em" } }, "v"+VERSION)
       ),
       el("div", { style:{ display:"flex", gap:4, alignItems:"center" } },
         frameData && el("div", { style:{ display:"flex", gap:5, alignItems:"center" } },
@@ -504,7 +504,7 @@ function App() {
     ),
 
     // Camera — fixed height, crops rather than expands
-    el("div", { style:{ position:"relative", background:"#050505", overflow:"hidden", borderTop:"1px solid #141414", borderBottom:"1px solid #141414", flexShrink:0, height:"55vh" } },
+    el("div", { style:{ position:"relative", background:"#050505", overflow:"hidden", borderTop:"1px solid #141414", borderBottom:"1px solid #141414", flexShrink:0, height:"44vh" } },
       el("video", { ref:videoRef, playsInline:true, muted:true, autoPlay:true, style:{ width:"100%", height:"100%", objectFit:"cover", display:"block", transform:facingMode==="user"?"scaleX(-1)":"none" } }),
       showScope && el("canvas", { ref:scopeRef, width:480, height:80, style:{ position:"absolute", bottom:0, left:0, width:"100%", height:60, pointerEvents:"none" } }),
       frameData && el("div", { style:{ position:"absolute", top:8, left:8, fontSize:8, color:"rgba(127,255,106,0.35)", letterSpacing:"0.1em", lineHeight:2, pointerEvents:"none" } },
@@ -553,7 +553,7 @@ function App() {
     ),
 
     // Settings drawer
-    showSettings && el("div", { style:{ padding:"8px 14px 14px", borderTop:"1px solid #141414", background:"#0c0c0d", overflowY:"auto", flexShrink:0, maxHeight:"30vh" } },
+    showSettings && el("div", { style:{ padding:"8px 14px 14px", paddingBottom:"max(env(safe-area-inset-bottom, 14px), 14px)", borderTop:"1px solid #141414", background:"#0c0c0d", overflowY:"auto", flexShrink:0, maxHeight:"36vh" } },
 
       el("div", { className:"sr" },
         el("label",null,"Voices"),
