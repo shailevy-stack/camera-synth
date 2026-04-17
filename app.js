@@ -1,5 +1,5 @@
 // Camera Synth — v1.1.0
-var VERSION = "2.2.0";
+var VERSION = "2.3.0";
 
 var useState    = React.useState;
 var useEffect   = React.useEffect;
@@ -686,42 +686,24 @@ function App() {
 
   var handleFlip   = useCallback(function() { setFacingMode(function(f){return f==="environment"?"user":"environment";}); }, []);
 
-  var handleLoopStart = useCallback(function(e) {
-    e.preventDefault();
+  function stopLoopPlayback() {
     var eng = synthRef.current;
-    if (!eng || !eng.ctx) return;
-
-    // If already looping, stop and return to live
-    if (looping) {
-      eng.stopLoop();
-      setLooping(false);
-      setLoopCapturing(false);
-      // Stop video loop
-      clearInterval(loopVidTimerRef.current);
-      loopFramesRef.current = [];
-      loopFrameIdxRef.current = 0;
-      // Hide overlay
-      var ov = loopOverlayRef.current;
-      if (ov) { var octx = ov.getContext("2d"); octx.clearRect(0,0,ov.width,ov.height); }
-      return;
-    }
-
-    // Start capturing
-    setLoopCapturing(true);
+    if (eng) eng.stopLoop();
+    setLooping(false);
+    setLoopCapturing(false);
+    clearInterval(loopVidTimerRef.current);
     loopFramesRef.current = [];
-    eng.startLoopRecord();
-  }, [looping]);
+    loopFrameIdxRef.current = 0;
+    var ov = loopOverlayRef.current;
+    if (ov) { var octx = ov.getContext("2d"); octx.clearRect(0,0,ov.width,ov.height); }
+  }
 
-  var handleLoopEnd = useCallback(function(e) {
-    e.preventDefault();
+  function commitLoopPlayback() {
     var eng = synthRef.current;
     if (!eng || !eng._loopRecording) return;
-
     eng.commitLoop();
     setLoopCapturing(false);
     setLooping(true);
-
-    // Start video loop playback
     var frames = loopFramesRef.current;
     if (frames.length > 0) {
       loopFrameIdxRef.current = 0;
@@ -733,8 +715,32 @@ function App() {
         var octx = ov.getContext("2d");
         octx.putImageData(frames[loopFrameIdxRef.current % frames.length], 0, 0);
         loopFrameIdxRef.current++;
-      }, 100); // ~10fps video loop
+      }, 100);
     }
+  }
+
+  var loopingRef = useRef(false);
+  // Keep ref in sync with state so event listeners can read current value
+  useEffect(function() { loopingRef.current = looping; }, [looping]);
+
+  var handleLoopStart = useCallback(function(e) {
+    e.preventDefault();
+    e.stopPropagation();
+    var eng = synthRef.current;
+    if (!eng || !eng.ctx) return;
+    if (loopingRef.current) {
+      stopLoopPlayback();
+      return;
+    }
+    setLoopCapturing(true);
+    loopFramesRef.current = [];
+    eng.startLoopRecord();
+  }, []);
+
+  var handleLoopEnd = useCallback(function(e) {
+    e.preventDefault();
+    e.stopPropagation();
+    commitLoopPlayback();
   }, []);
 
   var handleCamToggle = useCallback(function() {
@@ -786,16 +792,17 @@ function App() {
       .cb.on{border-color:#7fff6a;color:#7fff6a;}
       .cb.rec{border-color:#ff4444;color:#ff4444;background:rgba(255,68,68,.08);}
       .cb.dng{border-color:#ff4444;color:#ff4444;}
-      @keyframes blink{0%,100%{opacity:1}50%{opacity:0.2}}
-      .cb.rec{animation:blink 0.6s infinite;}
+      @keyframes blink{0%,100%{opacity:1}50%{opacity:0.25}}
+      .cb.blink{animation:blink 0.6s infinite;}
       .sg{background:transparent;border:1px solid #1e1e1e;color:#444;font-family:'IBM Plex Mono',monospace;font-size:9px;padding:3px 7px;cursor:pointer;-webkit-tap-highlight-color:transparent;touch-action:manipulation;transition:all .1s;}
       .sg.sel{border-color:#7fff6a;color:#7fff6a;background:rgba(127,255,106,.06);}
       .sr{display:flex;align-items:center;justify-content:space-between;padding:7px 0;border-bottom:1px solid #141414;}
       .sr label{font-size:9px;letter-spacing:.1em;color:#444;text-transform:uppercase;}
-      input[type=range]{-webkit-appearance:none;width:100%;height:2px;background:#1e1e1e;outline:none;border-radius:1px;padding:14px 0;margin:-14px 0;box-sizing:content-box;cursor:pointer;}
-      input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:18px;height:18px;background:#7fff6a;border-radius:50%;cursor:pointer;}
-      input[type=range]::-moz-range-thumb{width:18px;height:18px;background:#7fff6a;border-radius:50%;border:none;cursor:pointer;}
-      input[type=range]::-webkit-slider-runnable-track{height:2px;background:#1e1e1e;border-radius:1px;}
+      input[type=range]{-webkit-appearance:none;width:100%;height:28px;background:transparent;outline:none;cursor:pointer;margin:0;}
+      input[type=range]::-webkit-slider-runnable-track{height:2px;background:#1e1e1e;border-radius:1px;margin-top:13px;}
+      input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:20px;height:20px;background:#7fff6a;border-radius:50%;cursor:pointer;margin-top:-9px;}
+      input[type=range]::-moz-range-track{height:2px;background:#1e1e1e;border-radius:1px;}
+      input[type=range]::-moz-range-thumb{width:20px;height:20px;background:#7fff6a;border-radius:50%;border:none;cursor:pointer;}
     `),
 
     // Header
@@ -818,7 +825,7 @@ function App() {
 
     // Camera — fixed height, crops rather than expands
     el("div", { style:{ position:"relative", background:"#050505", overflow:"hidden", borderTop:"1px solid #141414", borderBottom:"1px solid #141414", flexShrink:0, height:"44vh" } },
-      el("video", { ref:videoRef, playsInline:true, muted:true, autoPlay:true, style:{ width:"100%", height:"100%", objectFit:"cover", display:"block", transform:facingMode==="user"?"scaleX(-1)":"none" } }),
+      el("video", { ref:videoRef, playsInline:true, muted:true, autoPlay:true, controls:false, style:{ width:"100%", height:"100%", objectFit:"cover", display:"block", transform:facingMode==="user"?"scaleX(-1)":"none" } }),
       showScope && el("canvas", { ref:scopeRef, width:480, height:80, style:{ position:"absolute", bottom:0, left:0, width:"100%", height:60, pointerEvents:"none" } }),
       frameData && el("div", { style:{ position:"absolute", top:8, left:8, fontSize:8, color:"rgba(127,255,106,0.35)", letterSpacing:"0.1em", lineHeight:2, pointerEvents:"none" } },
         el("div",null,"LMA "+(frameData.luma*100).toFixed(1)),
@@ -865,10 +872,10 @@ function App() {
     el("div", { style:{ display:"flex", gap:5, padding:"7px 14px", flexShrink:0 } },
       el("button", { className:cx("cb", soundOn&&"on"), onClick:handleSound, style:{ flex:2, fontSize:11, padding:"10px 0", letterSpacing:"0.1em" } }, soundOn ? "\u25fc ON" : "\u25b6 OFF"),
       el("button", {
-        className:cx("cb", loopCapturing&&"rec", looping&&"on"),
+        className:cx("cb", loopCapturing&&"blink", looping&&"on"),
         onMouseDown:handleLoopStart, onMouseUp:handleLoopEnd,
         onTouchStart:handleLoopStart, onTouchEnd:handleLoopEnd,
-        style:{ flex:1, position:"relative" }
+        style:{ flex:1, position:"relative", touchAction:"none" }
       }, loopCapturing ? "\u25cf LOOP" : looping ? "\u21ba LOOP" : "\u25cb LOOP"),
       el("button", { className:cx("cb", recording&&"rec"), onClick:handleRecord, style:{ flex:1 } }, recording ? "\u25cf REC" : "\u25cb REC"),
       el("button", { className:cx("cb", camOn&&"on"), onClick:handleCamToggle, style:{ flex:1 } }, "\u25a3 CAM"),
