@@ -882,12 +882,7 @@ function App() {
         el("span", { style:{ fontSize:8, color:"#888888", letterSpacing:"0.1em" } }, "v"+VERSION)
       ),
       el("div", { style:{ display:"flex", gap:4, alignItems:"center" } },
-        frameData && el("div", { style:{ display:"flex", gap:5, alignItems:"center" } },
-          el("div", { style:{ width:36, height:2, background:"#1a1a1a", borderRadius:1, overflow:"hidden" } },
-            el("div", { style:{ height:"100%", width:(frameData.luma*100).toFixed(0)+"%", background:"#7fff6a", transition:"width 0.1s" } })
-          ),
-          el("div", { style:{ width:8, height:8, borderRadius:"50%", background:hueCSS, boxShadow:"0 0 5px "+hueCSS, flexShrink:0 } })
-        ),
+
         camOn && el("button", { className:"cb", onClick:handleFlip }, "\u21c4"),
         el("button", { className:"cb", onClick:handleReload }, "\u21ba")
       )
@@ -948,8 +943,11 @@ function App() {
       }, loopCapturing ? "\u25cf LOOP" : looping ? "\u21ba LOOP" : "\u25cb LOOP"),
       el("button", { className:cx("cb", recording&&"rec"), onClick:handleRecord, style:{ flex:1 } }, recording ? "\u25cf REC" : "\u25cb REC"),
       el("button", { className:cx("cb", camOn&&"on"), onClick:handleCamToggle, style:{ flex:1 } }, "\u25a3 CAM"),
-      el("button", { className:cx("cb", showScope&&"on"), onClick:function(){setShowScope(function(s){return !s;});}, style:{ flex:1 } }, "\u223f"),
-      el("button", { className:cx("cb", showSettings&&"on"), onClick:function(){setShowSettings(function(s){return !s;});}, style:{ flex:1 } }, "\u2699")
+      el("button", { className:cx("cb", showScope&&"on"), onClick:function(){setShowScope(function(s){return !s;});}, style:{ flex:1, display:"flex", flexDirection:"column", alignItems:"center", gap:1, padding:"6px 4px" } },
+        el("span", { style:{ fontSize:16, lineHeight:1 } }, "\u223f"),
+        el("span", { style:{ fontSize:8, letterSpacing:"0.08em" } }, "OSC")
+      ),
+      el("button", { className:cx("cb", showSettings&&"on"), onClick:function(){setShowSettings(function(s){return !s;});}, style:{ flex:1, fontSize:18 } }, "\u2699")
     ),
 
     // Settings drawer
