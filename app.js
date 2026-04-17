@@ -1,5 +1,5 @@
 // Camera Synth — v1.1.0
-var VERSION = "1.1.0";
+var VERSION = "1.2.0";
 
 var useState    = React.useState;
 var useEffect   = React.useEffect;
@@ -56,6 +56,7 @@ function makeSynthEngine() {
     try {
       var AC = window.AudioContext || window.webkitAudioContext;
       eng.ctx = new AC();
+      eng.ctx.resume(); // unlock on iOS immediately inside gesture
 
       var sr  = eng.ctx.sampleRate;
       var len = sr * 2;
@@ -171,8 +172,9 @@ function makeSynthEngine() {
 
   eng.setSoundOn = function(on) {
     if (!eng.ctx) return;
+    eng.ctx.resume(); // always call — Safari suspends ctx after inactivity
     var t = eng.ctx.currentTime;
-    if (on) { eng.ctx.resume(); eng.masterGain.gain.setTargetAtTime(0.85, t, 0.15); }
+    if (on) { eng.masterGain.gain.setTargetAtTime(0.85, t, 0.15); }
     else     { eng.masterGain.gain.setTargetAtTime(0, t, 0.08); }
     eng.active = on;
   };
@@ -580,13 +582,8 @@ function App() {
         )
       ),
 
-      el("div", { style:{marginTop:10,display:"flex",gap:5} },
-        el("button",{className:"cb dng",onClick:handlePanic,style:{flex:1,padding:"9px 0",letterSpacing:"0.1em"}},"\u25a0 PANIC"),
-        el("button",{className:"cb",onClick:handleReload,style:{flex:1,padding:"9px 0",letterSpacing:"0.1em"}},"\u21ba RELOAD")
-      ),
-
-      el("div", { style:{marginTop:10,textAlign:"center"} },
-        el("span",{style:{fontSize:8,color:"#1a1a1a",letterSpacing:"0.15em"}},"CAMERA SYNTH v"+VERSION)
+      el("div", { style:{paddingTop:10,textAlign:"right"} },
+        el("span",{style:{fontSize:8,color:"#1e1e1e",letterSpacing:"0.15em"}},"v"+VERSION)
       )
     )
   );
