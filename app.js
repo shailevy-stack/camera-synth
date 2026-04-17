@@ -1,5 +1,5 @@
 // Camera Synth — v1.1.0
-var VERSION = "1.2.0";
+var VERSION = "1.3.0";
 
 var useState    = React.useState;
 var useEffect   = React.useEffect;
@@ -103,6 +103,13 @@ function makeSynthEngine() {
       eng.limiterNode.connect(eng.analyserNode);
       eng.analyserNode.connect(eng.ctx.destination);
 
+      // iOS Safari: play silent buffer inside gesture to unlock audio
+      var unlock = eng.ctx.createBuffer(1, 1, eng.ctx.sampleRate);
+      var unlockSrc = eng.ctx.createBufferSource();
+      unlockSrc.buffer = unlock;
+      unlockSrc.connect(eng.ctx.destination);
+      unlockSrc.start(0);
+
       eng.spawnVoices();
       if (cb) cb(null);
     } catch(e) {
@@ -172,10 +179,16 @@ function makeSynthEngine() {
 
   eng.setSoundOn = function(on) {
     if (!eng.ctx) return;
-    eng.ctx.resume(); // always call — Safari suspends ctx after inactivity
+    eng.ctx.resume();
     var t = eng.ctx.currentTime;
-    if (on) { eng.masterGain.gain.setTargetAtTime(0.85, t, 0.15); }
-    else     { eng.masterGain.gain.setTargetAtTime(0, t, 0.08); }
+    eng.masterGain.gain.cancelScheduledValues(t);
+    if (on) {
+      eng.masterGain.gain.setValueAtTime(0, t);
+      eng.masterGain.gain.linearRampToValueAtTime(0.85, t + 0.3);
+    } else {
+      eng.masterGain.gain.setValueAtTime(eng.masterGain.gain.value, t);
+      eng.masterGain.gain.linearRampToValueAtTime(0, t + 0.1);
+    }
     eng.active = on;
   };
 
