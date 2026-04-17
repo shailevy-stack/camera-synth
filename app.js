@@ -1,5 +1,5 @@
 // Camera Synth — v1.1.0
-var VERSION = "2.0.0";
+var VERSION = "2.2.0";
 
 var useState    = React.useState;
 var useEffect   = React.useEffect;
@@ -135,7 +135,13 @@ function makeSynthEngine() {
 
   eng.spawnVoices = function() {
     for (var i = 0; i < eng.voices.length; i++) {
-      try { eng.voices[i].osc.stop(); eng.voices[i].osc.disconnect(); eng.voices[i].gain.disconnect(); } catch(e) {}
+      try {
+        eng.voices[i].osc.stop();
+        eng.voices[i].osc.disconnect();
+        eng.voices[i].gain.disconnect();
+        if (eng.voices[i].panner) eng.voices[i].panner.disconnect();
+        if (eng.voices[i].delay)  eng.voices[i].delay.disconnect();
+      } catch(e) {}
     }
     eng.voices = [];
     var n = eng.settings.voices;
@@ -143,6 +149,7 @@ function makeSynthEngine() {
     for (var k = 0; k < eng.wavetableData.length; k++) {
       if (eng.wavetableData[k] !== 0) { hasData = true; break; }
     }
+
     for (var i = 0; i < n; i++) {
       var osc = eng.ctx.createOscillator();
       if (hasData) {
@@ -153,12 +160,40 @@ function makeSynthEngine() {
       var spread = n === 1 ? 0 : ((i / (n - 1)) - 0.5) * eng.settings.detune * 2;
       osc.detune.value    = spread;
       osc.frequency.value = midiToHz(eng.currentPitchMidi);
+
       var gain = eng.ctx.createGain();
       gain.gain.value = 0.55 / n;
+
+      // Pan each voice across stereo field
+      var panner = eng.ctx.createStereoPanner();
+      panner.pan.value = n === 1 ? 0 : ((i / (n - 1)) * 2 - 1); // -1 to +1
+
       osc.connect(gain);
-      gain.connect(eng.filterNode);
+      gain.connect(panner);
+      panner.connect(eng.filterNode);
       osc.start();
-      eng.voices.push({ osc: osc, gain: gain });
+      eng.voices.push({ osc: osc, gain: gain, panner: panner });
+    }
+
+    // Single voice: add Haas delay for stereo width
+    // A ~20ms delay on one channel creates psychoacoustic width without phase issues
+    if (n === 1 && eng.voices.length === 1) {
+      var delay = eng.ctx.createDelay(0.05);
+      delay.delayTime.value = 0.018; // 18ms Haas delay
+      var delayGain = eng.ctx.createGain();
+      delayGain.gain.value = 0.6;
+      var delayPan = eng.ctx.createStereoPanner();
+      delayPan.pan.value = 0.8; // delayed signal panned right
+      // Direct signal panned slightly left
+      eng.voices[0].panner.pan.value = -0.5;
+      // Tap off the voice gain → delay → pan right → filter
+      eng.voices[0].gain.connect(delay);
+      delay.connect(delayGain);
+      delayGain.connect(delayPan);
+      delayPan.connect(eng.filterNode);
+      eng.voices[0].delay     = delay;
+      eng.voices[0].delayGain = delayGain;
+      eng.voices[0].delayPan  = delayPan;
     }
   };
 
@@ -600,13 +635,17 @@ function App() {
       var eng = synthRef.current;
       var wd  = eng ? eng.getAnalyserData() : null;
       if (!wd || !soundOn) return;
-      ctx.strokeStyle = "rgba(127,255,106,0.7)";
+      // Find peak for normalization — makes scope fill display regardless of amplitude
+      var peak = 0.001;
+      for (var p=0; p<wd.length; p++) { var a=Math.abs(wd[p]); if(a>peak) peak=a; }
+      var scale = Math.min(1/peak, 8); // normalize, cap at 8x to avoid noise blow-up
+      ctx.strokeStyle = "rgba(127,255,106,0.85)";
       ctx.lineWidth = 1.5;
-      ctx.shadowColor = "#7fff6a"; ctx.shadowBlur = 6;
+      ctx.shadowColor = "#7fff6a"; ctx.shadowBlur = 8;
       ctx.beginPath();
       var sl = W / wd.length;
       for (var i=0; i<wd.length; i++) {
-        var x=i*sl, y=H/2+wd[i]*H*0.4;
+        var x=i*sl, y=H/2+wd[i]*scale*H*0.42;
         if(i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
       }
       ctx.stroke();
@@ -741,7 +780,8 @@ function App() {
     el("style", null, `
       @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500&display=swap');
       *{box-sizing:border-box;}
-      .cb{background:transparent;border:1px solid #222;color:#777;font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.08em;padding:6px 10px;cursor:pointer;text-transform:uppercase;-webkit-tap-highlight-color:transparent;touch-action:manipulation;transition:border-color .15s,color .15s;}
+      .cb{background:transparent;border:1px solid #222;color:#777;font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.08em;padding:6px 10px;cursor:pointer;text-transform:uppercase;-webkit-tap-highlight-color:transparent;-webkit-touch-callout:none;user-select:none;-webkit-user-select:none;touch-action:manipulation;transition:border-color .15s,color .15s;}
+      .sg{-webkit-touch-callout:none;user-select:none;-webkit-user-select:none;}
       .cb:active{background:#111;}
       .cb.on{border-color:#7fff6a;color:#7fff6a;}
       .cb.rec{border-color:#ff4444;color:#ff4444;background:rgba(255,68,68,.08);}
@@ -752,9 +792,10 @@ function App() {
       .sg.sel{border-color:#7fff6a;color:#7fff6a;background:rgba(127,255,106,.06);}
       .sr{display:flex;align-items:center;justify-content:space-between;padding:7px 0;border-bottom:1px solid #141414;}
       .sr label{font-size:9px;letter-spacing:.1em;color:#444;text-transform:uppercase;}
-      input[type=range]{-webkit-appearance:none;width:100%;height:2px;background:#1e1e1e;outline:none;border-radius:1px;}
-      input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;height:14px;background:#7fff6a;border-radius:50%;cursor:pointer;}
-      input[type=range]::-moz-range-thumb{width:14px;height:14px;background:#7fff6a;border-radius:50%;border:none;cursor:pointer;}
+      input[type=range]{-webkit-appearance:none;width:100%;height:2px;background:#1e1e1e;outline:none;border-radius:1px;padding:14px 0;margin:-14px 0;box-sizing:content-box;cursor:pointer;}
+      input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:18px;height:18px;background:#7fff6a;border-radius:50%;cursor:pointer;}
+      input[type=range]::-moz-range-thumb{width:18px;height:18px;background:#7fff6a;border-radius:50%;border:none;cursor:pointer;}
+      input[type=range]::-webkit-slider-runnable-track{height:2px;background:#1e1e1e;border-radius:1px;}
     `),
 
     // Header
