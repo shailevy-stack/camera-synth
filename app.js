@@ -1,5 +1,5 @@
 // Camera Synth — v1.1.0
-var VERSION = "1.8.0";
+var VERSION = "1.9.0";
 
 var useState    = React.useState;
 var useEffect   = React.useEffect;
@@ -175,7 +175,7 @@ function makeSynthEngine() {
   };
 
   // Morph speed: how fast we interpolate toward new wavetable (0=instant, 1=never)
-  eng.morphAlpha = 0.15; // per-frame lerp factor (~200ms at 10fps)
+  eng.morphAlpha = 0.35; // faster morph = more dynamic response // per-frame lerp factor (~200ms at 10fps)
 
   eng.updateWavetable = function(data) {
     eng.wavetableData = data;
@@ -218,19 +218,16 @@ function makeSynthEngine() {
 
   eng.setSoundOn = function(on) {
     if (!eng.ctx) return;
+    // On iOS, resume() is async. We set gain via value= (not scheduled)
+    // so it takes effect as soon as the context actually starts running,
+    // regardless of when that happens relative to our call.
     eng.ctx.resume();
-    var t = eng.ctx.currentTime;
-    eng.masterGain.gain.cancelScheduledValues(t);
+    eng.masterGain.gain.cancelScheduledValues(0);
     if (on) {
-      eng.masterGain.gain.setValueAtTime(0.001, t);
-      eng.masterGain.gain.exponentialRampToValueAtTime(0.85, t + 0.4);
+      // Set directly — works even if ctx is still suspended
+      eng.masterGain.gain.value = 0.7;
     } else {
-      var cur = eng.masterGain.gain.value;
-      eng.masterGain.gain.setValueAtTime(cur > 0.001 ? cur : 0.001, t);
-      eng.masterGain.gain.exponentialRampToValueAtTime(0.001, t + 0.2);
-      setTimeout(function() {
-        if (eng.ctx) eng.masterGain.gain.setValueAtTime(0, eng.ctx.currentTime);
-      }, 250);
+      eng.masterGain.gain.value = 0;
     }
     eng.active = on;
   };
@@ -345,31 +342,36 @@ function analyseFrame(canvas, ctx2d) {
   var comX = comW>0 ? comXw/comW : 0.5;
   var comY = comW>0 ? comYw/comW : 0.5;
 
-  // Full-frame block-average wavetable scan: divide image into ANALYSIS_RES blocks,
-  // average luminance of all pixels in each block → one wavetable sample.
-  // Scans left→right, top→bottom. Block averaging = natural anti-aliasing.
-  var wt        = new Float32Array(ANALYSIS_RES);
-  var blockW    = w / ANALYSIS_RES;  // each block spans blockW columns
-  var blockH    = h;                 // full height per block (vertical strip)
-  var blockSize = Math.max(1, Math.floor(blockW * blockH));
-
-  for (var b = 0; b < ANALYSIS_RES; b++) {
-    var xStart = Math.floor(b * blockW);
-    var xEnd   = Math.floor((b + 1) * blockW);
-    var sum    = 0;
-    var count  = 0;
-    for (var row = 0; row < h; row++) {
-      for (var col = xStart; col < xEnd; col++) {
-        var idx = (row * w + col) * 4;
-        var lr  = px[idx]   / 255;
-        var lg  = px[idx+1] / 255;
-        var lb  = px[idx+2] / 255;
-        sum += 0.2126*lr + 0.7152*lg + 0.0722*lb;
-        count++;
+  // Raster-scan wavetable: sample ANALYSIS_RES evenly spaced points across
+  // the full image in a boustrophedon (snake) pattern — left→right on even rows,
+  // right→left on odd rows. Point-sampled to preserve local variance & texture.
+  // A small 3x3 neighbourhood average per point gives gentle anti-aliasing
+  // without destroying the signal dynamics that make interesting waveforms.
+  var wt   = new Float32Array(ANALYSIS_RES);
+  var cols = Math.ceil(Math.sqrt(ANALYSIS_RES * (w / h)));
+  var rows = Math.ceil(ANALYSIS_RES / cols);
+  var idx2 = 0;
+  for (var row2 = 0; row2 < rows && idx2 < ANALYSIS_RES; row2++) {
+    var rowFrac = (row2 + 0.5) / rows;
+    var py2     = Math.floor(rowFrac * h);
+    var leftToRight = (row2 % 2 === 0);
+    for (var col2 = 0; col2 < cols && idx2 < ANALYSIS_RES; col2++) {
+      var c2      = leftToRight ? col2 : (cols - 1 - col2);
+      var colFrac = (c2 + 0.5) / cols;
+      var px2     = Math.floor(colFrac * w);
+      // 3x3 neighbourhood average for gentle AA
+      var sum2 = 0, cnt2 = 0;
+      for (var dy = -1; dy <= 1; dy++) {
+        for (var dx = -1; dx <= 1; dx++) {
+          var nx = Math.max(0, Math.min(w-1, px2+dx));
+          var ny = Math.max(0, Math.min(h-1, py2+dy));
+          var pi = (ny * w + nx) * 4;
+          sum2 += 0.2126*(px[pi]/255) + 0.7152*(px[pi+1]/255) + 0.0722*(px[pi+2]/255);
+          cnt2++;
+        }
       }
+      wt[idx2++] = (sum2/cnt2) * 2 - 1; // luma 0..1 → waveform -1..1
     }
-    // Map luma 0..1 → waveform -1..1, scaled for audible amplitude
-    wt[b] = ((count > 0 ? sum / count : 0.5) * 2 - 1) * 0.9;
   }
 
   return { luma: luma, hue: hue/360, saturation: sat, comX: comX, comY: comY, wavetable: wt };
