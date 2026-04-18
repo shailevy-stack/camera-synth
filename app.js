@@ -232,21 +232,37 @@ function makeSynthEngine() {
   };
 
   // Morph speed: how fast we interpolate toward new wavetable (0=instant, 1=never)
-  eng.morphAlpha = 0.35; // faster morph = more dynamic response // per-frame lerp factor (~200ms at 10fps)
+  eng.morphAlpha  = 0.35; // per-frame lerp toward new wavetable
+  eng.currentLuma = 0.5;  // tracked here for wavetable gating
 
-  eng.updateWavetable = function(data) {
+  eng.updateWavetable = function(data, luma) {
     eng.wavetableData = data;
     if (!eng.ctx) return;
-    // Lerp morphedWavetable toward new data
-    var alpha = eng.morphAlpha;
-    var hasData = false;
+
+    // Gate luma: apply a curve so darkness really does approach sine
+    // Use squared luma so the lower end is more sensitive
+    var lumaGate = luma !== undefined ? luma : eng.currentLuma;
+    lumaGate = lumaGate * lumaGate; // square for perceptual curve
+
+    // Lerp morphedWavetable toward new scan data
+    var alpha    = eng.morphAlpha;
+    var hasData  = false;
     for (var k = 0; k < data.length; k++) {
       eng.morphedWavetable[k] = eng.morphedWavetable[k] * (1 - alpha) + data[k] * alpha;
       if (data[k] !== 0) hasData = true;
     }
-    if (!hasData) return;
+    if (!hasData && lumaGate > 0.01) return;
+
+    // Blend morphed wavetable with sine (all zeros = pure sine in PeriodicWave)
+    // lumaGate=0 → all zeros → sine
+    // lumaGate=1 → full morphed wavetable
+    var blended = new Float32Array(eng.morphedWavetable.length);
+    for (var k = 0; k < blended.length; k++) {
+      blended[k] = eng.morphedWavetable[k] * lumaGate;
+    }
+
     try {
-      var wave = eng.makeWavetable(eng.morphedWavetable);
+      var wave = eng.makeWavetable(blended);
       for (var i = 0; i < eng.voices.length; i++) {
         try { eng.voices[i].osc.setPeriodicWave(wave); } catch(e) { eng.voices[i].osc.type = "sine"; }
       }
@@ -738,7 +754,7 @@ function App() {
       if (data) {
         setFrameData(data);
         var eng = synthRef.current;
-        if (eng && eng.ctx) { eng.updateFromCamera(data.luma, data.hue, data.chromaContrast, data.slices); eng.updateWavetable(data.wavetable); }
+        if (eng && eng.ctx) { eng.currentLuma = data.luma; eng.updateFromCamera(data.luma, data.hue, data.chromaContrast, data.slices); eng.updateWavetable(data.wavetable, data.luma); }
         // Capture video frames while loop recording
         if (eng && eng._loopRecording) {
           var MAX_FRAMES = 100;
