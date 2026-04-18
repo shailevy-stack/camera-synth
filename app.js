@@ -1,5 +1,5 @@
 // Camera Synth — v3.0.0
-var VERSION = "3.0.0";
+var VERSION = "3.1.0";
 
 var useState    = React.useState;
 var useEffect   = React.useEffect;
@@ -29,6 +29,26 @@ var INTERVALS = {
   "6×5":    1.2,
 };
 var INTERVAL_NAMES = Object.keys(INTERVALS);
+
+// C:M ratios for FM synthesis per oscillator
+var CM_RATIOS = {
+  "1:1":    1.0,
+  "1:2":    2.0,
+  "2:1":    0.5,
+  "1:3":    3.0,
+  "1:1.5":  1.5,
+  "1:√2": 1.4142,
+};
+var CM_NAMES = Object.keys(CM_RATIOS);
+var CM_LABELS = {
+  "1:1":    "bell",
+  "1:2":    "woody",
+  "2:1":    "brassy",
+  "1:3":    "complex",
+  "1:1.5":  "warm",
+  "1:√2": "metallic",
+};
+
 // Human-readable labels for ADV page
 var INTERVAL_LABELS = {
   "1×1": "unison",
@@ -459,16 +479,20 @@ function makeEngine2() {
     _normR: { min: -0.1, max: 0.1 },
     _normG: { min: -0.1, max: 0.1 },
     _normB: { min: -0.1, max: 0.1 },
+    // FM modulators per oscillator
+    fmR: null, fmG: null, fmB: null,
     _normAlpha: 0.02,      // how fast min/max tracks (per frame)
     _normMinSpread: 0.04,  // minimum spread to avoid noise amplification
     settings: {
       quantize: false, scale: "pentatonic", rootNote: 48,
       pitchMin: 36, pitchMax: 72, reverbMix: 0.3, fps: 10,
       showScales: false,
-      intervalR: "octave",   // max interval each osc can sweep
-      intervalG: "fifth",
-      intervalB: "maj3",
-      glide: 200,            // portamento ms (0 = instant, 2000 = slow)
+      intervalR: "1×2",
+      intervalG: "3×2",
+      intervalB: "5×4",
+      glide: 200,
+      cmR: "1:1", cmG: "1:1", cmB: "1:1",
+      fmDepth: 0.4,
     },
   };
 
@@ -538,26 +562,42 @@ function makeEngine2() {
     return eng.ctx.createPeriodicWave(real, imag, { disableNormalization: false });
   };
 
-  // Create one RGB oscillator voice
-  // Returns { osc, morphGain, haasDelay, haasPan, directPan, gainNode }
-  eng.makeOscVoice = function(freq, panPos) {
+  // Create one RGB oscillator voice with FM modulator
+  // Returns { osc, fmMod, fmIndex, gainNode, directPan, haasDelay, haasGain, haasPan }
+  eng.makeOscVoice = function(freq, panPos, cmRatio) {
+    // ── FM Modulator (sine) ──
+    var fmMod   = eng.ctx.createOscillator();
+    fmMod.type  = "sine";
+    fmMod.frequency.value = freq * (cmRatio || 1.0);
+
+    // FM index gain — controls depth of frequency modulation
+    // index × carrier frequency = max frequency deviation
+    var fmIndex = eng.ctx.createGain();
+    fmIndex.gain.value = 0; // start with no FM
+
+    fmMod.connect(fmIndex);
+    // fmIndex output connects to carrier frequency AudioParam
+    // (wired after osc creation below)
+
+    // ── Carrier oscillator ──
     var osc = eng.ctx.createOscillator();
     osc.frequency.value = freq;
     osc.setPeriodicWave(eng.makeMorphWave(0)); // start as sine
 
+    // Wire FM modulator to carrier frequency
+    fmIndex.connect(osc.frequency);
+
     var gainNode = eng.ctx.createGain();
-    gainNode.gain.value = 0.4; // each channel at 0.4, three sum to ~1.2 — limiter handles it
+    gainNode.gain.value = 0.35;
 
-    // Direct signal — panned to one side
     var directPan = eng.ctx.createStereoPanner();
-    directPan.pan.value = panPos * -0.4; // slight pan opposite to haas
+    directPan.pan.value = panPos * -0.4;
 
-    // Haas delay — creates stereo width proportional to channel brightness
     var haasDelay = eng.ctx.createDelay(0.05);
     haasDelay.delayTime.value = 0.015;
-    var haasGain = eng.ctx.createGain(); haasGain.gain.value = 0; // start narrow
+    var haasGain = eng.ctx.createGain(); haasGain.gain.value = 0;
     var haasPan  = eng.ctx.createStereoPanner();
-    haasPan.pan.value = panPos * 0.8; // haas copy panned to opposite side
+    haasPan.pan.value = panPos * 0.8;
 
     osc.connect(gainNode);
     gainNode.connect(directPan);
@@ -567,28 +607,35 @@ function makeEngine2() {
     haasGain.connect(haasPan);
     haasPan.connect(eng.combFilters[0]);
 
+    fmMod.start();
     osc.start();
-    return { osc: osc, gainNode: gainNode, directPan: directPan, haasDelay: haasDelay, haasGain: haasGain, haasPan: haasPan };
+    return { osc: osc, fmMod: fmMod, fmIndex: fmIndex, gainNode: gainNode,
+             directPan: directPan, haasDelay: haasDelay, haasGain: haasGain, haasPan: haasPan };
   };
 
   eng.spawnOscillators = function() {
-    // Destroy old
     ['oscR','oscG','oscB'].forEach(function(k) {
       var v = eng[k];
       if (!v) return;
-      try { v.osc.stop(); v.osc.disconnect(); v.gainNode.disconnect(); v.directPan.disconnect(); v.haasDelay.disconnect(); v.haasGain.disconnect(); v.haasPan.disconnect(); } catch(e) {}
+      try {
+        v.fmMod.stop(); v.fmMod.disconnect();
+        v.fmIndex.disconnect();
+        v.osc.stop(); v.osc.disconnect();
+        v.gainNode.disconnect(); v.directPan.disconnect();
+        v.haasDelay.disconnect(); v.haasGain.disconnect(); v.haasPan.disconnect();
+      } catch(e) {}
       eng[k] = null;
     });
 
     var baseHz = midiToHz(eng.currentPitchMidi);
-    var rHz = baseHz * INTERVALS[eng.settings.intervalR];
-    var gHz = baseHz * INTERVALS[eng.settings.intervalG];
-    var bHz = baseHz * INTERVALS[eng.settings.intervalB];
+    var s = eng.settings;
+    var rHz = baseHz * INTERVALS[s.intervalR];
+    var gHz = baseHz * INTERVALS[s.intervalG];
+    var bHz = baseHz * INTERVALS[s.intervalB];
 
-    // R = left, G = center, B = right
-    eng.oscR = eng.makeOscVoice(rHz,  1); // pan direction: 1 = R-panned
-    eng.oscG = eng.makeOscVoice(gHz,  0); // center
-    eng.oscB = eng.makeOscVoice(bHz, -1); // pan direction: -1 = L-panned
+    eng.oscR = eng.makeOscVoice(rHz,  1, CM_RATIOS[s.cmR]);
+    eng.oscG = eng.makeOscVoice(gHz,  0, CM_RATIOS[s.cmG]);
+    eng.oscB = eng.makeOscVoice(bHz, -1, CM_RATIOS[s.cmB]);
   };
 
   // Adaptive normalizer — tracks slow min/max and remaps to 0..1
@@ -649,9 +696,18 @@ function makeEngine2() {
     }
 
     var glide = glideTC > 0.001 ? glideTC : 0.01;
-    if (eng.oscR) eng.oscR.osc.frequency.setTargetAtTime(baseHz * rRatio, t, glide);
-    if (eng.oscG) eng.oscG.osc.frequency.setTargetAtTime(baseHz * gRatio, t, glide);
-    if (eng.oscB) eng.oscB.osc.frequency.setTargetAtTime(baseHz * bRatio, t, glide);
+    if (eng.oscR) {
+      eng.oscR.osc.frequency.setTargetAtTime(baseHz * rRatio, t, glide);
+      eng.oscR.fmMod.frequency.setTargetAtTime(baseHz * rRatio * CM_RATIOS[s.cmR], t, glide);
+    }
+    if (eng.oscG) {
+      eng.oscG.osc.frequency.setTargetAtTime(baseHz * gRatio, t, glide);
+      eng.oscG.fmMod.frequency.setTargetAtTime(baseHz * gRatio * CM_RATIOS[s.cmG], t, glide);
+    }
+    if (eng.oscB) {
+      eng.oscB.osc.frequency.setTargetAtTime(baseHz * bRatio, t, glide);
+      eng.oscB.fmMod.frequency.setTargetAtTime(baseHz * bRatio * CM_RATIOS[s.cmB], t, glide);
+    }
   };
 
   eng.updateIntervals = function() {
@@ -681,22 +737,39 @@ function makeEngine2() {
     eng._applyOscFrequencies();
 
     // Morph: channel absolute brightness → sine↔square (squared curve)
-    // 4th power curve — scene must be very bright to push toward square
-    var rMorph = avgR * avgR * avgR * avgR;
-    var gMorph = avgG * avgG * avgG * avgG;
-    var bMorph = avgB * avgB * avgB * avgB;
+    // Cube curve — balance between too-sine (x⁴) and too-square (x²)
+    var rMorph = avgR * avgR * avgR;
+    var gMorph = avgG * avgG * avgG;
+    var bMorph = avgB * avgB * avgB;
     if (eng.oscR) { try { eng.oscR.osc.setPeriodicWave(eng.makeMorphWave(rMorph)); } catch(e) {} }
     if (eng.oscG) { try { eng.oscG.osc.setPeriodicWave(eng.makeMorphWave(gMorph)); } catch(e) {} }
     if (eng.oscB) { try { eng.oscB.osc.setPeriodicWave(eng.makeMorphWave(bMorph)); } catch(e) {} }
 
     // Haas stereo width: relative color magnitude → width
-    // More colorful channel = wider stereo
     var rWidth = Math.min(1, Math.abs(relR) * 8);
     var gWidth = Math.min(1, Math.abs(relG) * 8);
     var bWidth = Math.min(1, Math.abs(relB) * 8);
     if (eng.oscR && eng.oscR.haasGain) eng.oscR.haasGain.gain.setTargetAtTime(rWidth * 0.7, t, 0.2);
     if (eng.oscG && eng.oscG.haasGain) eng.oscG.haasGain.gain.setTargetAtTime(gWidth * 0.7, t, 0.2);
     if (eng.oscB && eng.oscB.haasGain) eng.oscB.haasGain.gain.setTargetAtTime(bWidth * 0.7, t, 0.2);
+
+    // FM index: channel brightness × fmDepth × carrier frequency
+    // This scales the frequency deviation with the carrier so it stays
+    // musically proportional regardless of pitch
+    var fmD = eng.settings.fmDepth || 0.4;
+    var baseHz = midiToHz(eng.currentPitchMidi);
+    if (eng.oscR && eng.oscR.fmIndex) {
+      var rCarrHz = baseHz * INTERVALS[eng.settings.intervalR];
+      eng.oscR.fmIndex.gain.setTargetAtTime(avgR * fmD * rCarrHz, t, 0.15);
+    }
+    if (eng.oscG && eng.oscG.fmIndex) {
+      var gCarrHz = baseHz * INTERVALS[eng.settings.intervalG];
+      eng.oscG.fmIndex.gain.setTargetAtTime(avgG * fmD * gCarrHz, t, 0.15);
+    }
+    if (eng.oscB && eng.oscB.fmIndex) {
+      var bCarrHz = baseHz * INTERVALS[eng.settings.intervalB];
+      eng.oscB.fmIndex.gain.setTargetAtTime(avgB * fmD * bCarrHz, t, 0.15);
+    }
   };
 
   eng.initLFO = function() {
@@ -847,7 +920,11 @@ function makeEngine2() {
   eng.destroy = function() {
     eng.panic();
     if(eng._lfoNode){try{eng._lfoNode.stop();}catch(e){}}
-    ['oscR','oscG','oscB'].forEach(function(k){if(eng[k])try{eng[k].osc.stop();}catch(e){} });
+    ['oscR','oscG','oscB'].forEach(function(k){
+      if(!eng[k])return;
+      try{eng[k].fmMod.stop();}catch(e){}
+      try{eng[k].osc.stop();}catch(e){}
+    });
     for(var i=0;i<eng.combFilters.length;i++){try{eng.combFilters[i].disconnect();}catch(e){}}
     if(eng.ctx)eng.ctx.close();
   };
@@ -1000,7 +1077,8 @@ function App() {
   // Engine 2 settings
   var rs2 = useState({ quantize:false, scale:"pentatonic", rootNote:48,
     pitchMin:36, pitchMax:72, reverbMix:0.3, fps:10, showScales:false,
-    intervalR:"1×2", intervalG:"3×2", intervalB:"5×4", glide:200 });
+    intervalR:"1×2", intervalG:"3×2", intervalB:"5×4", glide:200,
+    cmR:"1:1", cmG:"1:1", cmB:"1:1", fmDepth:0.4 });
   var settings2 = rs2[0], setSettings2 = rs2[1];
 
   var settings    = activeEngine === "1" ? settings1 : settings2;
@@ -1471,26 +1549,60 @@ function App() {
       ),
       el("div", { style:{ fontSize:8, color:"#444", letterSpacing:"0.15em", textTransform:"uppercase", marginBottom:6 } }, "Interval range per oscillator"),
       ["R","G","B"].map(function(ch) {
-        var key = "interval"+ch;
+        var iKey = "interval"+ch;
+        var cmKey = "cm"+ch;
         var color = ch==="R"?"#ff6b6b":ch==="G"?"#7fff6a":"#6bb5ff";
-        return el("div", { key:ch, className:"sr", style:{ alignItems:"center" } },
-          el("label", { style:{ color:color, minWidth:16 } }, ch),
-          el("div", { style:{ display:"flex", gap:2, flexWrap:"wrap" } },
-            INTERVAL_NAMES.map(function(n) {
-              return el("button", {
-                key:n,
-                className:cx("sg", settings2[key]===n&&"sel"),
-                onClick:function(){
-                  setSettings2(function(s){var ns=Object.assign({},s);ns[key]=n;return ns;});
-                  var eng=eng2Ref.current;
-                  if(eng){eng.settings[key]=n;eng.updateIntervals&&eng.updateIntervals();}
-                },
-                title: INTERVAL_LABELS[n]
-              }, n);
-            })
+        return el("div", { key:ch, style:{ borderBottom:"1px solid #141414", paddingBottom:6, marginBottom:4 } },
+          el("div", { className:"sr", style:{ borderBottom:"none", paddingBottom:2 } },
+            el("label", { style:{ color:color, minWidth:16, fontSize:9, letterSpacing:"0.1em" } }, ch),
+            el("div", { style:{ display:"flex", gap:2, flexWrap:"wrap" } },
+              INTERVAL_NAMES.map(function(n) {
+                return el("button", {
+                  key:n,
+                  className:cx("sg", settings2[iKey]===n&&"sel"),
+                  onClick:function(){
+                    setSettings2(function(s){var ns=Object.assign({},s);ns[iKey]=n;return ns;});
+                    var eng=eng2Ref.current;
+                    if(eng){eng.settings[iKey]=n;eng.updateIntervals&&eng.updateIntervals();}
+                  },
+                  title: INTERVAL_LABELS[n]
+                }, n);
+              })
+            )
+          ),
+          el("div", { style:{ display:"flex", alignItems:"center", gap:4, paddingLeft:20 } },
+            el("span", { style:{ fontSize:8, color:"#333", letterSpacing:"0.08em", minWidth:24 } }, "C:M"),
+            el("div", { style:{ display:"flex", gap:2, flexWrap:"wrap" } },
+              CM_NAMES.map(function(n) {
+                return el("button", {
+                  key:n,
+                  className:cx("sg", settings2[cmKey]===n&&"sel"),
+                  onClick:function(){
+                    setSettings2(function(s){var ns=Object.assign({},s);ns[cmKey]=n;return ns;});
+                    var eng=eng2Ref.current;
+                    if(eng){eng.settings[cmKey]=n;eng.spawnOscillators&&eng.spawnOscillators();}
+                  },
+                  title: CM_LABELS[n]
+                }, n);
+              })
+            )
           )
         );
-      })
+      }),
+
+      el("div", { className:"sr", style:{flexDirection:"column",alignItems:"flex-start",gap:3,marginTop:6} },
+        el("div", { style:{display:"flex",width:"100%",justifyContent:"space-between"} },
+          el("label", null, "FM depth"),
+          el("span", { style:{fontSize:9,color:"#7fff6a"} }, ((settings2.fmDepth||0.4)*100).toFixed(0)+"%")
+        ),
+        el("input", { type:"range", min:0, max:100, value:Math.round((settings2.fmDepth||0.4)*100),
+          onChange:function(e){
+            var v = e.target.value/100;
+            setSettings2(function(s){var ns=Object.assign({},s);ns.fmDepth=v;return ns;});
+            var eng=eng2Ref.current;if(eng)eng.settings.fmDepth=v;
+          }
+        })
+      )
     )
   );
 
