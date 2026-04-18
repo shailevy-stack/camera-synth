@@ -296,7 +296,7 @@ function makeEngine1() {
       eng.combFilters[i].gain.setTargetAtTime((sliceLum - 0.5) * 20, t, 0.3);
       eng.combFilters[i].Q.setTargetAtTime(1.5 + chromaContrast * 8, t, 0.3);
     }
-    eng.lowpassNode.frequency.setTargetAtTime(300 + luma * 7700, t, 0.2);
+    // Lowpass controlled by filter ribbon
     var now = eng.ctx.currentTime;
     var dt  = now - eng._prevHueTime;
     var hueDelta = 0;
@@ -307,7 +307,8 @@ function makeEngine1() {
     }
     eng._prevHue = hue; eng._prevHueTime = now;
     eng._lfoNode.frequency.setTargetAtTime(0.05 + Math.min(hueDelta * 4, 1) * 1.95, t, 0.5);
-    eng._lfoGain.gain.setTargetAtTime(chromaContrast * 800, t, 0.3);
+    // Floor ensures LFO always audible; luma scales depth with scene brightness
+    eng._lfoGain.gain.setTargetAtTime((100 + chromaContrast * 500) * luma, t, 0.3);
   };
 
   eng.setSoundOn = function(on) {
@@ -626,18 +627,7 @@ function makeEngine2() {
     var gRatio = 1 + (INTERVALS[s.intervalG] - 1) * cn.g;
     var bRatio = 1 + (INTERVALS[s.intervalB] - 1) * cn.b;
 
-    // Quantize ratio to scale degree if quantize on
-    function ratioToQuantized(ratio) {
-      var targetHz  = baseHz * ratio;
-      var targetMidi = 69 + 12 * Math.log2(targetHz / 440);
-      var qMidi     = quantizePitch(Math.round(targetMidi), s.scale, s.rootNote);
-      return midiToHz(qMidi) / baseHz;
-    }
-    if (s.quantize) {
-      rRatio = ratioToQuantized(rRatio);
-      gRatio = ratioToQuantized(gRatio);
-      bRatio = ratioToQuantized(bRatio);
-    }
+    // Oscillator intervals are free — scale only applies to ribbon pitch
 
     var glide = glideTC > 0.001 ? glideTC : 0.01;
     if (eng.oscR) eng.oscR.osc.frequency.setTargetAtTime(baseHz * rRatio, t, glide);
@@ -672,9 +662,10 @@ function makeEngine2() {
     eng._applyOscFrequencies();
 
     // Morph: channel absolute brightness → sine↔square (squared curve)
-    var rMorph = avgR * avgR;
-    var gMorph = avgG * avgG;
-    var bMorph = avgB * avgB;
+    // 4th power curve — scene must be very bright to push toward square
+    var rMorph = avgR * avgR * avgR * avgR;
+    var gMorph = avgG * avgG * avgG * avgG;
+    var bMorph = avgB * avgB * avgB * avgB;
     if (eng.oscR) { try { eng.oscR.osc.setPeriodicWave(eng.makeMorphWave(rMorph)); } catch(e) {} }
     if (eng.oscG) { try { eng.oscG.osc.setPeriodicWave(eng.makeMorphWave(gMorph)); } catch(e) {} }
     if (eng.oscB) { try { eng.oscB.osc.setPeriodicWave(eng.makeMorphWave(bMorph)); } catch(e) {} }
@@ -718,8 +709,7 @@ function makeEngine2() {
       eng.combFilters[i].Q.setTargetAtTime(1.5+chromaContrast*8, t, 0.3);
     }
 
-    // Lowpass: luma → brightness
-    eng.lowpassNode.frequency.setTargetAtTime(300 + luma*7700, t, 0.2);
+    // Lowpass cutoff controlled by filter ribbon (handleLpRibbon)
 
     // LFO
     var now = eng.ctx.currentTime, dt = now - eng._prevHueTime, hueDelta = 0;
@@ -730,7 +720,7 @@ function makeEngine2() {
     }
     eng._prevHue = hue; eng._prevHueTime = now;
     eng._lfoNode.frequency.setTargetAtTime(0.05+Math.min(hueDelta*4,1)*1.95, t, 0.5);
-    eng._lfoGain.gain.setTargetAtTime(chromaContrast*800, t, 0.3);
+    eng._lfoGain.gain.setTargetAtTime((100 + chromaContrast*500) * luma, t, 0.3);
   };
 
   eng.setSoundOn = function(on) {
@@ -958,6 +948,7 @@ function App() {
   var loopFrameIdxRef = useRef(0);
   var scopeRef        = useRef(null);
   var ribbonRef       = useRef(null);
+  var lpRibbonRef     = useRef(null);
   var synthRef        = useRef(null);
   var streamRef       = useRef(null);
   var timerRef        = useRef(null);
@@ -970,6 +961,7 @@ function App() {
   var radv= useState(false);  var showAdv       = radv[0],setShowAdv      = radv[1];
   var rf  = useState("environment"); var facingMode = rf[0], setFacingMode = rf[1];
   var rx  = useState(0.5);    var ribbonX       = rx[0],  setRibbonX      = rx[1];
+  var rlp = useState(0.7);    var lpX           = rlp[0], setLpX          = rlp[1]; // 0=closed 1=open
   var rcr = useState(false);  var camReady      = rcr[0], setCamReady     = rcr[1];
   var rce = useState(null);   var camError      = rce[0], setCamError     = rce[1];
   var rer = useState(false);  var engReady      = rer[0], setEngReady     = rer[1];
@@ -1134,6 +1126,27 @@ function App() {
     if(synthRef.current)synthRef.current.updatePitch(x);
   }, []);
 
+  var handleLpRibbon = useCallback(function(e) {
+    e.preventDefault();
+    var rect = lpRibbonRef.current ? lpRibbonRef.current.getBoundingClientRect() : null;
+    if (!rect) return;
+    var cx = e.touches ? e.touches[0].clientX : e.clientX;
+    var x  = Math.max(0, Math.min(1, (cx - rect.left) / rect.width));
+    setLpX(x);
+    var eng = synthRef.current;
+    if (!eng || !eng.ctx) return;
+    // Map 0..1 → 150Hz..12000Hz (log scale feels more natural)
+    var freq = 150 * Math.pow(12000/150, x);
+    // Slope: 24dB when closed (low x), morphs to 12dB when open
+    // Approximate by changing Q: high Q at low x
+    var node = eng.lowpassNode;
+    if (!node) return;
+    var t = eng.ctx.currentTime;
+    node.frequency.setTargetAtTime(freq, t, 0.05);
+    // Q: 0.7 (flat/12dB-ish) when open, 2.0 (resonant/steeper) when closed
+    node.Q.setTargetAtTime(0.7 + (1 - x) * 1.3, t, 0.05);
+  }, []);
+
   var handleFlip    = useCallback(function(){setFacingMode(function(f){return f==="environment"?"user":"environment";});}, []);
   var handleReload  = useCallback(function(){window.location.reload();}, []);
 
@@ -1211,7 +1224,7 @@ function App() {
         el("span", { style:{ fontSize:8, color:"#888", letterSpacing:"0.1em" } }, "v"+VERSION)
       ),
       el("div", { style:{ display:"flex", gap:4, alignItems:"center" } },
-        el("button", { className:cx("cb", showAdv&&"on"), onClick:function(){setShowAdv(function(s){return !s;});setShowSettings(false);}, style:{ letterSpacing:"0.12em", padding:"5px 10px" } }, "ADV"),
+        el("button", { className:cx("cb", showAdv&&"on"), onClick:function(){setShowAdv(function(s){return !s;});}, style:{ letterSpacing:"0.12em", padding:"5px 10px" } }, "ADV"),
         camOn && el("button", { className:"cb", onClick:handleFlip }, "\u21c4"),
         el("button", { className:"cb", onClick:handleReload }, "\u21ba")
       )
@@ -1219,7 +1232,7 @@ function App() {
 
     // Camera
     el("div", { style:{ position:"relative", background:"#050505", overflow:"hidden", borderTop:"1px solid #141414", borderBottom:"1px solid #141414", flexShrink:0, height:"42vh" } },
-      el("video", { ref:videoRef, playsInline:true, muted:true, autoPlay:true, controls:false, style:{ width:"100%", height:"100%", objectFit:"cover", display:"block", transform:facingMode==="user"?"scaleX(-1)":"none", visibility: showAdv ? "hidden" : "visible" } }),
+      el("video", { ref:videoRef, playsInline:true, muted:true, autoPlay:true, controls:false, style:{ width:"100%", height:"100%", objectFit:"cover", display:"block", transform:facingMode==="user"?"scaleX(-1)":"none" } }),
       showScope && el("canvas", { ref:scopeRef, width:480, height:80, style:{ position:"absolute", bottom:0, left:0, width:"100%", height:60, pointerEvents:"none" } }),
       frameData && el("div", { style:{ position:"absolute", top:8, left:8, fontSize:8, color:"rgba(127,255,106,0.35)", letterSpacing:"0.1em", lineHeight:2, pointerEvents:"none" } },
         el("div",null,"LMA "+(frameData.luma*100).toFixed(1)),
@@ -1254,8 +1267,46 @@ function App() {
       ),
       el("div", { ref:ribbonRef, onMouseDown:handleRibbon, onMouseMove:function(e){if(e.buttons)handleRibbon(e);}, onTouchStart:handleRibbon, onTouchMove:handleRibbon,
         style:{ height:44, background:"linear-gradient(90deg,#070c07 0%,#101810 50%,#070c07 100%)", borderTop:"1px solid #141c14", borderBottom:"1px solid #141c14", position:"relative", cursor:"crosshair" } },
-        Array.from({length:pr+1},function(_,i){ return el("div",{key:i,style:{position:"absolute",left:((i/pr)*100)+"%",top:i%12===0?0:"65%",width:1,height:i%12===0?"100%":"35%",background:i%12===0?"#1c261c":"#141c14"}}); }),
+        Array.from({length:pr+1},function(_,i){
+          var midi = settings.pitchMin + i;
+          var semitone = midi % 12;
+          var isOctave = semitone === (settings.rootNote % 12);
+          var inScale = !settings.quantize || SCALES[settings.scale].indexOf(((semitone - settings.rootNote%12)+12)%12) >= 0;
+          var h = isOctave ? "100%" : inScale ? "55%" : "25%";
+          var bg = isOctave ? "#2a4a2a" : inScale ? "#1c321c" : "#0e140e";
+          return el("div",{key:i,style:{position:"absolute",left:((i/pr)*100)+"%",top:isOctave?0:"65%",width:isOctave?2:1,height:h,background:bg}});
+        }),
         el("div", { style:{ position:"absolute", left:(ribbonX*100)+"%", top:0, bottom:0, width:2, background:"#7fff6a", boxShadow:"0 0 10px #7fff6a", transform:"translateX(-50%)", pointerEvents:"none" } })
+      )
+    ),
+
+    // Lowpass ribbon
+    el("div", { style:{ flexShrink:0 } },
+      el("div", { style:{ display:"flex", alignItems:"center", padding:"3px 14px 2px", gap:8 } },
+        el("span", { style:{ fontSize:8, color:"#2a2a2a", letterSpacing:"0.1em" } }, "FILTER"),
+        el("span", { style:{ fontSize:11, color:"#6bb5ff", letterSpacing:"0.04em", minWidth:60 } },
+          (150 * Math.pow(12000/150, lpX)).toFixed(0)+" Hz"
+        ),
+        el("span", { style:{ fontSize:8, color:"#1a1a1a", marginLeft:"auto" } },
+          lpX < 0.3 ? "24db" : lpX < 0.7 ? "18db" : "12db"
+        )
+      ),
+      el("div", {
+        ref:lpRibbonRef,
+        onMouseDown:handleLpRibbon, onMouseMove:function(e){if(e.buttons)handleLpRibbon(e);},
+        onTouchStart:handleLpRibbon, onTouchMove:handleLpRibbon,
+        style:{ height:32, position:"relative", cursor:"crosshair",
+          background:"linear-gradient(90deg, #050a14 0%, #0a1628 30%, #0d2040 60%, #1a3a6a 80%, #2050a0 100%)",
+          borderTop:"1px solid #141c24", borderBottom:"1px solid #141c24" }
+      },
+        // Frequency markers
+        [150,300,600,1200,3000,6000,12000].map(function(f) {
+          var pos = Math.log(f/150) / Math.log(12000/150);
+          return el("div", { key:f, style:{ position:"absolute", left:(pos*100)+"%", top:0, bottom:0, width:1, background:"rgba(107,181,255,0.15)" } });
+        }),
+        // Playhead
+        el("div", { style:{ position:"absolute", left:(lpX*100)+"%", top:0, bottom:0, width:2,
+          background:"#6bb5ff", boxShadow:"0 0 8px #6bb5ff", transform:"translateX(-50%)", pointerEvents:"none" } })
       )
     ),
 
@@ -1443,7 +1494,12 @@ function App() {
       input[type=range]::-moz-range-thumb{width:20px;height:20px;background:#7fff6a;border-radius:50%;border:none;cursor:pointer;}
     `),
 
-    showAdv ? advView : mainView
+    el("div", { style:{ position:"relative", width:"100%", flex:1, minHeight:0, display:"flex", flexDirection:"column" } },
+      mainView,
+      showAdv && el("div", { style:{ position:"absolute", inset:0, background:"#0a0a0b", zIndex:10, display:"flex", flexDirection:"column", overflow:"hidden" } },
+        advView
+      )
+    )
   );
 }
 
