@@ -1,5 +1,5 @@
 // Camera Synth — Service Worker
-const CACHE = "camsynth-v3.3.0";
+const CACHE = "camsynth-v3.3.1";
 const ASSETS = [
   "/",
   "/index.html",

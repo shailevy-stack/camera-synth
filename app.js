@@ -1,5 +1,5 @@
 // Camera Synth — v3.0.0
-var VERSION = "3.3.0";
+var VERSION = "3.3.1";
 
 var useState    = React.useState;
 var useEffect   = React.useEffect;
@@ -208,6 +208,9 @@ function makeEngine1() {
       eng.lowpassNode.Q.value = 0.7;
       eng.combFilters[N - 1].connect(eng.lowpassNode);
 
+      eng.preReverbGain = eng.ctx.createGain();
+      eng.preReverbGain.gain.value = 1.0; // LFO vol modulates this
+
       eng.dryGain = eng.ctx.createGain();
       eng.dryGain.gain.value = 1 - eng.settings.reverbMix;
       eng.reverbGain = eng.ctx.createGain();
@@ -225,8 +228,10 @@ function makeEngine1() {
       eng.analyserNode = eng.ctx.createAnalyser();
       eng.analyserNode.fftSize = 1024;
 
-      eng.lowpassNode.connect(eng.dryGain);
-      eng.lowpassNode.connect(eng.reverbNode);
+      // Signal chain: lowpass → preReverbGain → dry/reverb split → master
+      eng.lowpassNode.connect(eng.preReverbGain);
+      eng.preReverbGain.connect(eng.dryGain);
+      eng.preReverbGain.connect(eng.reverbNode);
       eng.reverbNode.connect(eng.reverbGain);
       eng.dryGain.connect(eng.masterGain);
       eng.reverbGain.connect(eng.masterGain);
@@ -277,6 +282,11 @@ function makeEngine1() {
       eng.voices[0].gain.connect(delay);
       delay.connect(dg); dg.connect(dp); dp.connect(eng.combFilters[0]);
       eng.voices[0].delay = delay; eng.voices[0].dg = dg; eng.voices[0].dp = dp;
+    }
+    // Reconnect LFOs after voice respawn
+    if (eng.lfo1 || eng.lfo2) {
+      eng.destroyUserLFOs();
+      eng.initUserLFOs();
     }
   };
 
@@ -503,7 +513,7 @@ function makeEngine1() {
     if (d === "lp.freq")     param = eng.lowpassNode ? eng.lowpassNode.frequency : null;
     if (d === "lp.q")        param = eng.lowpassNode ? eng.lowpassNode.Q : null;
     if (d === "reverb.gain") param = eng.reverbGain  ? eng.reverbGain.gain : null;
-    if (d === "master.gain") param = eng.masterGain  ? eng.masterGain.gain : null;
+    if (d === "master.gain") param = eng.preReverbGain ? eng.preReverbGain.gain : null;
     if (d === "haas.gain")   param = (eng.oscR && eng.oscR.haasGain) ? eng.oscR.haasGain.gain : null;
     if (d === "fm.depth")    param = (eng.oscR && eng.oscR.fmIndex) ? eng.oscR.fmIndex.gain : null;
     if (d === "fm.r")        param = (eng.oscR && eng.oscR.fmIndex) ? eng.oscR.fmIndex.gain : null;
@@ -707,6 +717,9 @@ function makeEngine2() {
       eng.lowpassNode.Q.value = 0.7;
       eng.combFilters[N-1].connect(eng.lowpassNode);
 
+      eng.preReverbGain = eng.ctx.createGain();
+      eng.preReverbGain.gain.value = 1.0;
+
       eng.dryGain = eng.ctx.createGain(); eng.dryGain.gain.value = 1 - eng.settings.reverbMix;
       eng.reverbGain = eng.ctx.createGain(); eng.reverbGain.gain.value = eng.settings.reverbMix;
       eng.masterGain = eng.ctx.createGain(); eng.masterGain.gain.value = 0;
@@ -717,8 +730,9 @@ function makeEngine2() {
 
       eng.analyserNode = eng.ctx.createAnalyser(); eng.analyserNode.fftSize = 1024;
 
-      eng.lowpassNode.connect(eng.dryGain);
-      eng.lowpassNode.connect(eng.reverbNode);
+      eng.lowpassNode.connect(eng.preReverbGain);
+      eng.preReverbGain.connect(eng.dryGain);
+      eng.preReverbGain.connect(eng.reverbNode);
       eng.reverbNode.connect(eng.reverbGain);
       eng.dryGain.connect(eng.masterGain);
       eng.reverbGain.connect(eng.masterGain);
@@ -820,6 +834,11 @@ function makeEngine2() {
     eng.oscR = eng.makeOscVoice(rHz,  1, CM_RATIOS[s.cmR]);
     eng.oscG = eng.makeOscVoice(gHz,  0, CM_RATIOS[s.cmG]);
     eng.oscB = eng.makeOscVoice(bHz, -1, CM_RATIOS[s.cmB]);
+    // Reconnect LFOs to fresh oscillator nodes
+    if (eng.lfo1 || eng.lfo2) {
+      eng.destroyUserLFOs();
+      eng.initUserLFOs();
+    }
   };
 
   // Adaptive normalizer — tracks slow min/max and remaps to 0..1
@@ -1148,7 +1167,7 @@ function makeEngine2() {
     if (d === "lp.freq")     param = eng.lowpassNode ? eng.lowpassNode.frequency : null;
     if (d === "lp.q")        param = eng.lowpassNode ? eng.lowpassNode.Q : null;
     if (d === "reverb.gain") param = eng.reverbGain  ? eng.reverbGain.gain : null;
-    if (d === "master.gain") param = eng.masterGain  ? eng.masterGain.gain : null;
+    if (d === "master.gain") param = eng.preReverbGain ? eng.preReverbGain.gain : null;
     if (d === "haas.gain")   param = (eng.oscR && eng.oscR.haasGain) ? eng.oscR.haasGain.gain : null;
     if (d === "fm.depth")    param = (eng.oscR && eng.oscR.fmIndex) ? eng.oscR.fmIndex.gain : null;
     if (d === "fm.r")        param = (eng.oscR && eng.oscR.fmIndex) ? eng.oscR.fmIndex.gain : null;
@@ -1799,16 +1818,15 @@ function App() {
     showSettings && activeEngine==="1" && el("div", { style:{ padding:"8px 14px 14px", borderTop:"1px solid #141414", background:"#0c0c0d", overflowY:"auto", flexShrink:0, maxHeight:"42vh" } },
       el("div",{className:"sr"},
         el("label",null,"Voices"),
-        el("div",{style:{display:"flex",gap:2}},
-          [1,2,4].map(function(v){return el("button",{key:v,className:cx("sg",settings1.voices===v&&"sel"),onClick:function(){setSettings1(function(s){var n=Object.assign({},s);n.voices=v;return n;})}},v);})
+        el("div",{style:{display:"flex",gap:2,alignItems:"center"}},
+          [1,2,4].map(function(v){return el("button",{key:v,className:cx("sg",settings1.voices===v&&"sel"),onClick:function(){setSettings1(function(s){var n=Object.assign({},s);n.voices=v;return n;})}},v);}),
+          el("span",{style:{fontSize:8,color:"#333",margin:"0 4px 0 8px"}},"DTN"),
+          el("input",{type:"range",min:0,max:50,value:settings1.detune,
+            onChange:function(e){var v=+e.target.value;setSettings1(function(s){var n=Object.assign({},s);n.detune=v;return n;});var eng=eng1Ref.current;if(eng)eng.updateDetune(v);},
+            style:{width:80,flexShrink:0}
+          }),
+          el("span",{style:{fontSize:9,color:"#7fff6a",minWidth:28,textAlign:"right"}},settings1.detune+"ct")
         )
-      ),
-      el("div",{className:"sr",style:{flexDirection:"column",alignItems:"flex-start",gap:3}},
-        el("div",{style:{display:"flex",width:"100%",justifyContent:"space-between"}},
-          el("label",null,"Detune"),
-          el("span",{style:{fontSize:9,color:"#7fff6a"}},settings1.detune+" ct")
-        ),
-        el("input",{type:"range",min:0,max:50,value:settings1.detune,onChange:function(e){var v=+e.target.value;setSettings1(function(s){var n=Object.assign({},s);n.detune=v;return n;});var eng=eng1Ref.current;if(eng)eng.updateDetune(v);}})
       ),
       el("div",{className:"sr",style:{paddingTop:3,paddingBottom:3}},
         el("label",null,"Scale"),
@@ -2019,7 +2037,12 @@ function App() {
               onChange: function(e){ setLfo(which, "dest", e.target.value); },
               style:{ background:"#0a0a0b", border:"1px solid #222", color:"#888", fontFamily:"'IBM Plex Mono',monospace", fontSize:9, padding:"2px 4px", flex:2 }
             },
-              LFO_DEST_NAMES.map(function(d){ return el("option",{key:d,value:d},d); })
+              LFO_DEST_NAMES.filter(function(d){
+                var key = LFO_DESTS[d];
+                if (activeEngine === "1" && key && key.indexOf("fm") === 0) return false;
+                if (activeEngine === "1" && key === "haas.gain") return false;
+                return true;
+              }).map(function(d){ return el("option",{key:d,value:d},d); })
             ),
             el("button", {
               className:cx("sg", cfg.active&&"sel"),
