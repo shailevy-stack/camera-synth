@@ -59,14 +59,43 @@ function makeSquareCoeffs(size) {
 // ── Shared reverb IR (pre-built before gesture) ───────────────────────────────
 var REVERB_IR = (function() {
   var sr  = 44100;
-  var len = sr * 2;
+  var len = Math.floor(sr * 3.5); // longer decay
   var L   = new Float32Array(len);
   var R   = new Float32Array(len);
-  for (var i = 0; i < len; i++) {
-    var decay = Math.pow(1 - i / len, 2.5);
-    L[i] = (Math.random() * 2 - 1) * decay;
-    R[i] = (Math.random() * 2 - 1) * decay;
+
+  // Early reflections — sparse spikes at prime-ish intervals
+  // give the reverb a sense of space before the tail
+  var erTimes = [0.011, 0.017, 0.023, 0.031, 0.041, 0.057, 0.073, 0.089];
+  var erGains  = [0.7,   0.5,   0.6,   0.4,   0.45,  0.35,  0.3,   0.25];
+  for (var e = 0; e < erTimes.length; e++) {
+    var idx = Math.floor(erTimes[e] * sr);
+    if (idx < len) {
+      L[idx] += erGains[e] * (e % 2 === 0 ? 1 : -1);
+      // Offset R slightly for stereo width
+      var ridx = Math.min(len-1, idx + Math.floor(sr * 0.0007 * (e+1)));
+      R[ridx] += erGains[e] * (e % 2 === 0 ? -1 : 1);
+    }
   }
+
+  // Diffuse tail — two independent noise streams for L/R decorrelation
+  // Use a slower exponential decay with a pre-delay before the tail
+  var preDelay = Math.floor(sr * 0.02); // 20ms pre-delay
+  for (var i = preDelay; i < len; i++) {
+    var t     = (i - preDelay) / (len - preDelay);
+    var decay = Math.pow(1 - t, 1.8) * Math.exp(-t * 2.5);
+    // Independent random seeds per channel = decorrelated stereo
+    L[i] += (Math.random() * 2 - 1) * decay;
+    R[i] += (Math.random() * 2 - 1) * decay;
+  }
+
+  // Apply a gentle lowpass to soften the metallic high-freq content
+  // Simple one-pole IIR: y[n] = 0.85*y[n-1] + 0.15*x[n]
+  var lpL = 0, lpR = 0;
+  for (var i = 0; i < len; i++) {
+    lpL = 0.85 * lpL + 0.15 * L[i]; L[i] = lpL;
+    lpR = 0.85 * lpR + 0.15 * R[i]; R[i] = lpR;
+  }
+
   return { L: L, R: R, len: len };
 }());
 
@@ -406,7 +435,6 @@ function makeEngine1() {
 function makeEngine2() {
   var eng = {
     ctx: null,
-    // Three RGB oscillators: each has osc + morphGain + haasDelay + panner
     oscR: null, oscG: null, oscB: null,
     combFilters: [], lowpassNode: null,
     reverbNode: null, reverbGain: null,
@@ -418,14 +446,20 @@ function makeEngine2() {
     _loopProc: null, _loopChunks: [], _loopNode: null,
     _loopGain: null, _loopRecording: false,
     _recorder: null, _recChunks: null,
+    // Adaptive normalization — slow-tracked min/max per relative channel
+    _normR: { min: -0.1, max: 0.1 },
+    _normG: { min: -0.1, max: 0.1 },
+    _normB: { min: -0.1, max: 0.1 },
+    _normAlpha: 0.02,      // how fast min/max tracks (per frame)
+    _normMinSpread: 0.04,  // minimum spread to avoid noise amplification
     settings: {
       quantize: false, scale: "pentatonic", rootNote: 48,
       pitchMin: 36, pitchMax: 72, reverbMix: 0.3, fps: 10,
       showScales: false,
-      // Per-oscillator intervals (just intonation ratios)
-      intervalR: "unison",
+      intervalR: "octave",   // max interval each osc can sweep
       intervalG: "fifth",
-      intervalB: "octave",
+      intervalB: "maj3",
+      glide: 200,            // portamento ms (0 = instant, 2000 = slow)
     },
   };
 
@@ -548,46 +582,111 @@ function makeEngine2() {
     eng.oscB = eng.makeOscVoice(bHz, -1); // pan direction: -1 = L-panned
   };
 
+  // Adaptive normalizer — tracks slow min/max and remaps to 0..1
+  eng.adaptNorm = function(norm, val) {
+    var alpha = eng._normAlpha;
+    // Expand min/max slowly toward observed values
+    if (val < norm.min) norm.min = norm.min * (1-alpha) + val * alpha * 4; // faster on new extremes
+    else                norm.min = norm.min * (1-alpha*0.1) + val * alpha * 0.1; // slow drift up
+    if (val > norm.max) norm.max = norm.max * (1-alpha) + val * alpha * 4;
+    else                norm.max = norm.max * (1-alpha*0.1) + val * alpha * 0.1; // slow drift down
+    // Enforce minimum spread
+    var spread = norm.max - norm.min;
+    if (spread < eng._normMinSpread) {
+      var mid = (norm.max + norm.min) / 2;
+      norm.min = mid - eng._normMinSpread / 2;
+      norm.max = mid + eng._normMinSpread / 2;
+    }
+    return Math.max(0, Math.min(1, (val - norm.min) / (norm.max - norm.min)));
+  };
+
   eng.updatePitch = function(rx) {
     if (!eng.ctx) return;
     var s = eng.settings;
     var midi = s.pitchMin + rx * (s.pitchMax - s.pitchMin);
     if (s.quantize) midi = quantizePitch(Math.round(midi), s.scale, s.rootNote);
     eng.currentPitchMidi = midi;
-    var baseHz = midiToHz(midi), t = eng.ctx.currentTime;
-    if (eng.oscR) eng.oscR.osc.frequency.setTargetAtTime(baseHz * INTERVALS[s.intervalR], t, 0.05);
-    if (eng.oscG) eng.oscG.osc.frequency.setTargetAtTime(baseHz * INTERVALS[s.intervalG], t, 0.05);
-    if (eng.oscB) eng.oscB.osc.frequency.setTargetAtTime(baseHz * INTERVALS[s.intervalB], t, 0.05);
+    // Recalculate all oscillator frequencies from current color state
+    eng._applyOscFrequencies();
   };
 
-  // Update intervals without full respawn — just update frequencies
-  eng.updateIntervals = function() {
+  // Apply frequencies to all three oscillators using current pitch + color offsets
+  eng._colorNorm = { r: 0.5, g: 0.5, b: 0.5 }; // last known normalized color
+  eng._applyOscFrequencies = function() {
     if (!eng.ctx) return;
-    var baseHz = midiToHz(eng.currentPitchMidi), t = eng.ctx.currentTime;
-    if (eng.oscR) eng.oscR.osc.frequency.setTargetAtTime(baseHz * INTERVALS[eng.settings.intervalR], t, 0.1);
-    if (eng.oscG) eng.oscG.osc.frequency.setTargetAtTime(baseHz * INTERVALS[eng.settings.intervalG], t, 0.1);
-    if (eng.oscB) eng.oscB.osc.frequency.setTargetAtTime(baseHz * INTERVALS[eng.settings.intervalB], t, 0.1);
+    var s       = eng.settings;
+    var baseHz  = midiToHz(eng.currentPitchMidi);
+    var t       = eng.ctx.currentTime;
+    var glideTC = s.glide / 1000 / 3; // convert ms to time constant
+
+    var cn = eng._colorNorm;
+
+    // Each oscillator sweeps from baseHz to baseHz*interval, driven by its color norm
+    var rRatio = 1 + (INTERVALS[s.intervalR] - 1) * cn.r;
+    var gRatio = 1 + (INTERVALS[s.intervalG] - 1) * cn.g;
+    var bRatio = 1 + (INTERVALS[s.intervalB] - 1) * cn.b;
+
+    // Quantize ratio to scale degree if quantize on
+    function ratioToQuantized(ratio) {
+      var targetHz  = baseHz * ratio;
+      var targetMidi = 69 + 12 * Math.log2(targetHz / 440);
+      var qMidi     = quantizePitch(Math.round(targetMidi), s.scale, s.rootNote);
+      return midiToHz(qMidi) / baseHz;
+    }
+    if (s.quantize) {
+      rRatio = ratioToQuantized(rRatio);
+      gRatio = ratioToQuantized(gRatio);
+      bRatio = ratioToQuantized(bRatio);
+    }
+
+    var glide = glideTC > 0.001 ? glideTC : 0.01;
+    if (eng.oscR) eng.oscR.osc.frequency.setTargetAtTime(baseHz * rRatio, t, glide);
+    if (eng.oscG) eng.oscG.osc.frequency.setTargetAtTime(baseHz * gRatio, t, glide);
+    if (eng.oscB) eng.oscB.osc.frequency.setTargetAtTime(baseHz * bRatio, t, glide);
   };
 
-  // Update morph and stereo width per channel from RGB values
-  eng.updateFromRGB = function(r, g, b) {
+  eng.updateIntervals = function() {
+    eng._applyOscFrequencies();
+  };
+
+  eng.updateFromRGB = function(avgR, avgG, avgB, luma) {
     if (!eng.ctx) return;
     var t = eng.ctx.currentTime;
-    // Each channel: brightness → sine↔square morph
-    // r/g/b are 0..1 average channel values
-    var rMorph = r * r; // squared for perceptual curve
-    var gMorph = g * g;
-    var bMorph = b * b;
 
+    // Relative color — deviation from luma (camera-normalized mean)
+    var relR = avgR - luma;
+    var relG = avgG - luma;
+    var relB = avgB - luma;
+
+    // Adaptive normalization — remap observed range to 0..1
+    var normR = eng.adaptNorm(eng._normR, relR);
+    var normG = eng.adaptNorm(eng._normG, relG);
+    var normB = eng.adaptNorm(eng._normB, relB);
+
+    // Store for pitch calculation
+    eng._colorNorm.r = normR;
+    eng._colorNorm.g = normG;
+    eng._colorNorm.b = normB;
+
+    // Apply pitch with glide
+    eng._applyOscFrequencies();
+
+    // Morph: channel absolute brightness → sine↔square (squared curve)
+    var rMorph = avgR * avgR;
+    var gMorph = avgG * avgG;
+    var bMorph = avgB * avgB;
     if (eng.oscR) { try { eng.oscR.osc.setPeriodicWave(eng.makeMorphWave(rMorph)); } catch(e) {} }
     if (eng.oscG) { try { eng.oscG.osc.setPeriodicWave(eng.makeMorphWave(gMorph)); } catch(e) {} }
     if (eng.oscB) { try { eng.oscB.osc.setPeriodicWave(eng.makeMorphWave(bMorph)); } catch(e) {} }
 
-    // Each channel brightness → Haas delay gain (stereo width)
-    // 0 = mono (haasGain 0), 1 = wide (haasGain 0.7)
-    if (eng.oscR && eng.oscR.haasGain) eng.oscR.haasGain.gain.setTargetAtTime(r * 0.7, t, 0.2);
-    if (eng.oscG && eng.oscG.haasGain) eng.oscG.haasGain.gain.setTargetAtTime(g * 0.7, t, 0.2);
-    if (eng.oscB && eng.oscB.haasGain) eng.oscB.haasGain.gain.setTargetAtTime(b * 0.7, t, 0.2);
+    // Haas stereo width: relative color magnitude → width
+    // More colorful channel = wider stereo
+    var rWidth = Math.min(1, Math.abs(relR) * 8);
+    var gWidth = Math.min(1, Math.abs(relG) * 8);
+    var bWidth = Math.min(1, Math.abs(relB) * 8);
+    if (eng.oscR && eng.oscR.haasGain) eng.oscR.haasGain.gain.setTargetAtTime(rWidth * 0.7, t, 0.2);
+    if (eng.oscG && eng.oscG.haasGain) eng.oscG.haasGain.gain.setTargetAtTime(gWidth * 0.7, t, 0.2);
+    if (eng.oscB && eng.oscB.haasGain) eng.oscB.haasGain.gain.setTargetAtTime(bWidth * 0.7, t, 0.2);
   };
 
   eng.initLFO = function() {
@@ -607,8 +706,8 @@ function makeEngine2() {
     var t = eng.ctx.currentTime;
     if (!eng._lfoNode) eng.initLFO();
 
-    // RGB → per-oscillator morph + stereo width
-    eng.updateFromRGB(r || luma, g || luma, b || luma);
+    // RGB → adaptive pitch + morph + stereo width
+    eng.updateFromRGB(r || luma, g || luma, b || luma, luma);
 
     // Comb: same as engine 1
     var fundamental = 80 + luma * 320;
@@ -890,7 +989,7 @@ function App() {
   // Engine 2 settings
   var rs2 = useState({ quantize:false, scale:"pentatonic", rootNote:48,
     pitchMin:36, pitchMax:72, reverbMix:0.3, fps:10, showScales:false,
-    intervalR:"unison", intervalG:"fifth", intervalB:"octave" });
+    intervalR:"octave", intervalG:"fifth", intervalB:"maj3", glide:200 });
   var settings2 = rs2[0], setSettings2 = rs2[1];
 
   var settings    = activeEngine === "1" ? settings1 : settings2;
@@ -1120,14 +1219,16 @@ function App() {
 
     // Camera
     el("div", { style:{ position:"relative", background:"#050505", overflow:"hidden", borderTop:"1px solid #141414", borderBottom:"1px solid #141414", flexShrink:0, height:"42vh" } },
-      el("video", { ref:videoRef, playsInline:true, muted:true, autoPlay:true, controls:false, style:{ width:"100%", height:"100%", objectFit:"cover", display:"block", transform:facingMode==="user"?"scaleX(-1)":"none" } }),
+      el("video", { ref:videoRef, playsInline:true, muted:true, autoPlay:true, controls:false, style:{ width:"100%", height:"100%", objectFit:"cover", display:"block", transform:facingMode==="user"?"scaleX(-1)":"none", visibility: showAdv ? "hidden" : "visible" } }),
       showScope && el("canvas", { ref:scopeRef, width:480, height:80, style:{ position:"absolute", bottom:0, left:0, width:"100%", height:60, pointerEvents:"none" } }),
       frameData && el("div", { style:{ position:"absolute", top:8, left:8, fontSize:8, color:"rgba(127,255,106,0.35)", letterSpacing:"0.1em", lineHeight:2, pointerEvents:"none" } },
         el("div",null,"LMA "+(frameData.luma*100).toFixed(1)),
         el("div",null,"HUE "+Math.round(frameData.hue*360)+"\xb0"),
         el("div",null,"CHR "+(frameData.chromaContrast*100).toFixed(1)),
         activeEngine==="2" && frameData.avgR !== undefined && el("div",null,
-          "R "+( frameData.avgR*100).toFixed(0)+" G "+(frameData.avgG*100).toFixed(0)+" B "+(frameData.avgB*100).toFixed(0)
+          "R "+(((frameData.avgR-frameData.luma)*100)).toFixed(1)+
+          " G "+(((frameData.avgG-frameData.luma)*100)).toFixed(1)+
+          " B "+(((frameData.avgB-frameData.luma)*100)).toFixed(1)
         )
       ),
       !camOn && el("div", { style:{ position:"absolute", inset:0, display:"flex", alignItems:"center", justifyContent:"center", background:"#050505" } },
@@ -1246,6 +1347,17 @@ function App() {
           el("span",{style:{fontSize:9,color:"#7fff6a"}},Math.round(settings2.reverbMix*100)+"%")
         ),
         el("input",{type:"range",min:0,max:100,value:Math.round(settings2.reverbMix*100),onChange:function(e){setSettings2(function(s){var n=Object.assign({},s);n.reverbMix=e.target.value/100;return n;})}})
+      ),
+      el("div",{className:"sr",style:{flexDirection:"column",alignItems:"flex-start",gap:3}},
+        el("div",{style:{display:"flex",width:"100%",justifyContent:"space-between"}},
+          el("label",null,"Glide"),
+          el("span",{style:{fontSize:9,color:"#7fff6a"}},settings2.glide+"ms")
+        ),
+        el("input",{type:"range",min:0,max:2000,step:10,value:settings2.glide,onChange:function(e){
+          var v=+e.target.value;
+          setSettings2(function(s){var n=Object.assign({},s);n.glide=v;return n;});
+          var eng=eng2Ref.current;if(eng)eng.settings.glide=v;
+        }})
       )
     )
   );
@@ -1281,9 +1393,10 @@ function App() {
     activeEngine==="2" && el("div", { style:{ padding:"8px 14px", overflowY:"auto", flexShrink:0 } },
       el("div", { style:{ fontSize:8, color:"#2a2a2a", lineHeight:2, letterSpacing:"0.08em", marginBottom:10 } },
         el("div", null, "3 RGB oscillators — sine \u2194 square morph per channel"),
-        el("div", null, "Just intonation intervals — stereo width from channel brightness")
+        el("div", null, "Color relations drive pitch within each interval range"),
+        el("div", null, "Stereo width from color deviation")
       ),
-      el("div", { style:{ fontSize:8, color:"#444", letterSpacing:"0.15em", textTransform:"uppercase", marginBottom:6 } }, "Oscillator intervals"),
+      el("div", { style:{ fontSize:8, color:"#444", letterSpacing:"0.15em", textTransform:"uppercase", marginBottom:6 } }, "Interval range per oscillator"),
       ["R","G","B"].map(function(ch) {
         var key = "interval"+ch;
         var color = ch==="R"?"#ff6b6b":ch==="G"?"#7fff6a":"#6bb5ff";
