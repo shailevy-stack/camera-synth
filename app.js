@@ -1,5 +1,5 @@
 // Camera Synth — v3.0.0
-var VERSION = "3.1.0";
+var VERSION = "3.2.0";
 
 var useState    = React.useState;
 var useEffect   = React.useEffect;
@@ -79,10 +79,24 @@ function makeSquareCoeffs(size) {
   var imag = new Float32Array(size);
   var real = new Float32Array(size);
   for (var n = 1; n < size; n += 2) {
-    imag[n] = 1 / n; // odd harmonics: 1, 1/3, 1/5, 1/7...
+    imag[n] = 1 / n;
   }
   return { real: real, imag: imag };
 }
+
+// LFO destinations — label: key used to resolve AudioParam in engine
+var LFO_DESTS = {
+  "filter cutoff":   "lp.freq",
+  "filter Q":        "lp.q",
+  "FM depth":        "fm.depth",
+  "reverb mix":      "reverb.gain",
+  "master vol":      "master.gain",
+  "stereo width":    "haas.gain",
+  "R FM depth":      "fm.r",
+  "G FM depth":      "fm.g",
+  "B FM depth":      "fm.b",
+};
+var LFO_DEST_NAMES = Object.keys(LFO_DESTS);
 
 // ── Shared reverb IR (pre-built before gesture) ───────────────────────────────
 var REVERB_IR = (function() {
@@ -150,11 +164,15 @@ function makeEngine1() {
     _loopProc: null, _loopChunks: [], _loopNode: null,
     _loopGain: null, _loopRecording: false,
     _recorder: null, _recChunks: null,
+    // User LFOs
+    lfo1: null, lfo2: null,
     settings: {
       voices: 1, detune: 12,
       quantize: false, scale: "pentatonic", rootNote: 48,
       pitchMin: 36, pitchMax: 72, reverbMix: 0.3, fps: 10,
       showScales: false,
+      lfo1: { rate:0.5, depth:0, shape:0, dest:"filter cutoff", active:false },
+      lfo2: { rate:0.2, depth:0, shape:0, dest:"filter Q",      active:false },
     },
   };
 
@@ -301,10 +319,34 @@ function makeEngine1() {
     for (var i = 0; i < eng.voices.length; i++) eng.voices[i].osc.frequency.setTargetAtTime(hz, t, 0.05);
   };
 
+  eng.makeLFOWave = function(shape) {
+    // shape: 0=sine, 0.5=triangle, 1=square — all bandlimited via PeriodicWave
+    var size = 256;
+    var real = new Float32Array(size / 2);
+    var imag = new Float32Array(size / 2);
+    imag[1] = 1.0; // fundamental always
+    for (var n = 3; n < size / 2; n += 2) {
+      var sinePart = 0;
+      var triPart  = (8 / (Math.PI * Math.PI)) * (1 / (n * n)) * (n % 4 === 1 ? 1 : -1);
+      var sqPart   = 1 / n;
+      if (shape <= 0.5) {
+        // sine → triangle
+        var t = shape * 2;
+        imag[n] = triPart * t;
+      } else {
+        // triangle → square
+        var t = (shape - 0.5) * 2;
+        var triVal = (8 / (Math.PI * Math.PI)) * (1 / (n * n)) * (n % 4 === 1 ? 1 : -1);
+        imag[n] = triVal * (1 - t) + sqPart * t;
+      }
+    }
+    return eng.ctx.createPeriodicWave(real, imag, { disableNormalization: false });
+  };
+
   eng.initLFO = function() {
     if (!eng.ctx || eng._lfoNode) return;
     eng._lfoNode = eng.ctx.createOscillator();
-    eng._lfoNode.type = "sine";
+    eng._lfoNode.setPeriodicWave(eng.makeLFOWave(0)); // sine
     eng._lfoNode.frequency.value = 0.2;
     eng._lfoGain = eng.ctx.createGain();
     eng._lfoGain.gain.value = 0;
@@ -345,6 +387,7 @@ function makeEngine1() {
     eng.masterGain.gain.cancelScheduledValues(0);
     eng.masterGain.gain.value = on ? 0.7 : 0;
     eng.active = on;
+    if (on) eng.initUserLFOs();
   };
 
   eng.panic = function() {
@@ -444,8 +487,86 @@ function makeEngine1() {
 
   eng.isLooping = function() { return !!eng._loopNode; };
 
+
+  // ── User LFOs ────────────────────────────────────────────────────────────────
+  eng._resolveLFOParam = function(dest) {
+    // Returns the AudioParam to modulate for a given destination key
+    var d = LFO_DESTS[dest];
+    if (!d) return null;
+    if (d === "lp.freq")    return eng.lowpassNode ? eng.lowpassNode.frequency : null;
+    if (d === "lp.q")       return eng.lowpassNode ? eng.lowpassNode.Q : null;
+    if (d === "reverb.gain")return eng.reverbGain  ? eng.reverbGain.gain : null;
+    if (d === "master.gain")return eng.masterGain  ? eng.masterGain.gain : null;
+    // FM destinations (E2 only)
+    if (d === "fm.depth") {
+      // Modulate all three fmIndex gains via a shared gain before them
+      // For simplicity, modulate the existing fmIndex of oscR as proxy
+      return (eng.oscR && eng.oscR.fmIndex) ? eng.oscR.fmIndex.gain : null;
+    }
+    if (d === "fm.r") return (eng.oscR && eng.oscR.fmIndex) ? eng.oscR.fmIndex.gain : null;
+    if (d === "fm.g") return (eng.oscG && eng.oscG.fmIndex) ? eng.oscG.fmIndex.gain : null;
+    if (d === "fm.b") return (eng.oscB && eng.oscB.fmIndex) ? eng.oscB.fmIndex.gain : null;
+    if (d === "haas.gain") return (eng.oscR && eng.oscR.haasGain) ? eng.oscR.haasGain.gain : null;
+    return null;
+  };
+
+  eng._makeLFONode = function(cfg) {
+    if (!eng.ctx) return null;
+    var osc  = eng.ctx.createOscillator();
+    osc.setPeriodicWave(eng.makeLFOWave(cfg.shape || 0));
+    osc.frequency.value = cfg.rate || 0.5;
+    var gain = eng.ctx.createGain();
+    gain.gain.value = 0; // start silent
+    osc.connect(gain);
+    osc.start();
+    return { osc: osc, gain: gain, currentDest: null };
+  };
+
+  eng.initUserLFOs = function() {
+    if (!eng.ctx) return;
+    var s = eng.settings;
+    if (!eng.lfo1) eng.lfo1 = eng._makeLFONode(s.lfo1);
+    if (!eng.lfo2) eng.lfo2 = eng._makeLFONode(s.lfo2);
+    eng.applyUserLFO("lfo1");
+    eng.applyUserLFO("lfo2");
+  };
+
+  eng.applyUserLFO = function(key) {
+    var lfoState = eng[key];
+    var cfg      = eng.settings[key];
+    if (!lfoState || !cfg) return;
+    var t = eng.ctx.currentTime;
+    // Update rate and shape
+    lfoState.osc.frequency.setTargetAtTime(cfg.rate, t, 0.1);
+    try { lfoState.osc.setPeriodicWave(eng.makeLFOWave(cfg.shape)); } catch(e) {}
+    // Reconnect to new destination if changed
+    var newParam = cfg.active ? eng._resolveLFOParam(cfg.dest) : null;
+    if (lfoState.currentDest !== cfg.dest || !cfg.active) {
+      // Disconnect from old
+      try { lfoState.gain.disconnect(); } catch(e) {}
+      lfoState.currentDest = null;
+      if (newParam) {
+        lfoState.gain.connect(newParam);
+        lfoState.currentDest = cfg.dest;
+      }
+    }
+    // Set depth — scale by destination range
+    var depth = cfg.active ? (cfg.depth || 0) : 0;
+    lfoState.gain.gain.setTargetAtTime(depth, t, 0.05);
+  };
+
+  eng.destroyUserLFOs = function() {
+    ["lfo1","lfo2"].forEach(function(k) {
+      var l = eng[k];
+      if (!l) return;
+      try { l.osc.stop(); l.osc.disconnect(); l.gain.disconnect(); } catch(e) {}
+      eng[k] = null;
+    });
+  };
+
   eng.destroy = function() {
     eng.panic();
+    eng.destroyUserLFOs();
     if (eng._lfoNode) { try{eng._lfoNode.stop();}catch(e){} }
     for (var i=0;i<eng.voices.length;i++) { try{eng.voices[i].osc.stop();}catch(e){} }
     for (var i=0;i<eng.combFilters.length;i++) { try{eng.combFilters[i].disconnect();}catch(e){} }
@@ -479,8 +600,10 @@ function makeEngine2() {
     _normR: { min: -0.1, max: 0.1 },
     _normG: { min: -0.1, max: 0.1 },
     _normB: { min: -0.1, max: 0.1 },
-    // FM modulators per oscillator
     fmR: null, fmG: null, fmB: null,
+    lfo1: null, lfo2: null,
+    // FM modulator shape per oscillator (0=sine, 0.5=tri, 1=square)
+    fmModShapeR: 0, fmModShapeG: 0, fmModShapeB: 0,
     _normAlpha: 0.02,      // how fast min/max tracks (per frame)
     _normMinSpread: 0.04,  // minimum spread to avoid noise amplification
     settings: {
@@ -493,6 +616,9 @@ function makeEngine2() {
       glide: 200,
       cmR: "1:1", cmG: "1:1", cmB: "1:1",
       fmDepth: 0.4,
+      fmModShape: 0, // global modulator shape (0=sine, 0.5=tri, 1=square)
+      lfo1: { rate:0.5, depth:0, shape:0, dest:"filter cutoff", active:false },
+      lfo2: { rate:0.2, depth:0, shape:0, dest:"filter Q",      active:false },
     },
   };
 
@@ -744,6 +870,14 @@ function makeEngine2() {
     if (eng.oscR) { try { eng.oscR.osc.setPeriodicWave(eng.makeMorphWave(rMorph)); } catch(e) {} }
     if (eng.oscG) { try { eng.oscG.osc.setPeriodicWave(eng.makeMorphWave(gMorph)); } catch(e) {} }
     if (eng.oscB) { try { eng.oscB.osc.setPeriodicWave(eng.makeMorphWave(bMorph)); } catch(e) {} }
+    // FM modulator shape — user controlled, updated from settings
+    var fmShape = eng.settings.fmModShape || 0;
+    if (fmShape !== eng.fmModShapeR) {
+      eng.fmModShapeR = fmShape;
+      if (eng.oscR) try { eng.oscR.fmMod.setPeriodicWave(eng.makeLFOWave(fmShape)); } catch(e) {}
+      if (eng.oscG) try { eng.oscG.fmMod.setPeriodicWave(eng.makeLFOWave(fmShape)); } catch(e) {}
+      if (eng.oscB) try { eng.oscB.fmMod.setPeriodicWave(eng.makeLFOWave(fmShape)); } catch(e) {}
+    }
 
     // Haas stereo width: relative color magnitude → width
     var rWidth = Math.min(1, Math.abs(relR) * 8);
@@ -772,10 +906,34 @@ function makeEngine2() {
     }
   };
 
+  eng.makeLFOWave = function(shape) {
+    // shape: 0=sine, 0.5=triangle, 1=square — all bandlimited via PeriodicWave
+    var size = 256;
+    var real = new Float32Array(size / 2);
+    var imag = new Float32Array(size / 2);
+    imag[1] = 1.0; // fundamental always
+    for (var n = 3; n < size / 2; n += 2) {
+      var sinePart = 0;
+      var triPart  = (8 / (Math.PI * Math.PI)) * (1 / (n * n)) * (n % 4 === 1 ? 1 : -1);
+      var sqPart   = 1 / n;
+      if (shape <= 0.5) {
+        // sine → triangle
+        var t = shape * 2;
+        imag[n] = triPart * t;
+      } else {
+        // triangle → square
+        var t = (shape - 0.5) * 2;
+        var triVal = (8 / (Math.PI * Math.PI)) * (1 / (n * n)) * (n % 4 === 1 ? 1 : -1);
+        imag[n] = triVal * (1 - t) + sqPart * t;
+      }
+    }
+    return eng.ctx.createPeriodicWave(real, imag, { disableNormalization: false });
+  };
+
   eng.initLFO = function() {
     if (!eng.ctx || eng._lfoNode) return;
     eng._lfoNode = eng.ctx.createOscillator();
-    eng._lfoNode.type = "sine";
+    eng._lfoNode.setPeriodicWave(eng.makeLFOWave(0)); // sine
     eng._lfoNode.frequency.value = 0.2;
     eng._lfoGain = eng.ctx.createGain();
     eng._lfoGain.gain.value = 0;
@@ -821,6 +979,7 @@ function makeEngine2() {
     eng.masterGain.gain.cancelScheduledValues(0);
     eng.masterGain.gain.value = on ? 0.7 : 0;
     eng.active = on;
+    if (on) eng.initUserLFOs();
   };
 
   eng.panic = function() {
@@ -917,8 +1076,86 @@ function makeEngine2() {
 
   eng.isLooping = function() { return !!eng._loopNode; };
 
+
+  // ── User LFOs ────────────────────────────────────────────────────────────────
+  eng._resolveLFOParam = function(dest) {
+    // Returns the AudioParam to modulate for a given destination key
+    var d = LFO_DESTS[dest];
+    if (!d) return null;
+    if (d === "lp.freq")    return eng.lowpassNode ? eng.lowpassNode.frequency : null;
+    if (d === "lp.q")       return eng.lowpassNode ? eng.lowpassNode.Q : null;
+    if (d === "reverb.gain")return eng.reverbGain  ? eng.reverbGain.gain : null;
+    if (d === "master.gain")return eng.masterGain  ? eng.masterGain.gain : null;
+    // FM destinations (E2 only)
+    if (d === "fm.depth") {
+      // Modulate all three fmIndex gains via a shared gain before them
+      // For simplicity, modulate the existing fmIndex of oscR as proxy
+      return (eng.oscR && eng.oscR.fmIndex) ? eng.oscR.fmIndex.gain : null;
+    }
+    if (d === "fm.r") return (eng.oscR && eng.oscR.fmIndex) ? eng.oscR.fmIndex.gain : null;
+    if (d === "fm.g") return (eng.oscG && eng.oscG.fmIndex) ? eng.oscG.fmIndex.gain : null;
+    if (d === "fm.b") return (eng.oscB && eng.oscB.fmIndex) ? eng.oscB.fmIndex.gain : null;
+    if (d === "haas.gain") return (eng.oscR && eng.oscR.haasGain) ? eng.oscR.haasGain.gain : null;
+    return null;
+  };
+
+  eng._makeLFONode = function(cfg) {
+    if (!eng.ctx) return null;
+    var osc  = eng.ctx.createOscillator();
+    osc.setPeriodicWave(eng.makeLFOWave(cfg.shape || 0));
+    osc.frequency.value = cfg.rate || 0.5;
+    var gain = eng.ctx.createGain();
+    gain.gain.value = 0; // start silent
+    osc.connect(gain);
+    osc.start();
+    return { osc: osc, gain: gain, currentDest: null };
+  };
+
+  eng.initUserLFOs = function() {
+    if (!eng.ctx) return;
+    var s = eng.settings;
+    if (!eng.lfo1) eng.lfo1 = eng._makeLFONode(s.lfo1);
+    if (!eng.lfo2) eng.lfo2 = eng._makeLFONode(s.lfo2);
+    eng.applyUserLFO("lfo1");
+    eng.applyUserLFO("lfo2");
+  };
+
+  eng.applyUserLFO = function(key) {
+    var lfoState = eng[key];
+    var cfg      = eng.settings[key];
+    if (!lfoState || !cfg) return;
+    var t = eng.ctx.currentTime;
+    // Update rate and shape
+    lfoState.osc.frequency.setTargetAtTime(cfg.rate, t, 0.1);
+    try { lfoState.osc.setPeriodicWave(eng.makeLFOWave(cfg.shape)); } catch(e) {}
+    // Reconnect to new destination if changed
+    var newParam = cfg.active ? eng._resolveLFOParam(cfg.dest) : null;
+    if (lfoState.currentDest !== cfg.dest || !cfg.active) {
+      // Disconnect from old
+      try { lfoState.gain.disconnect(); } catch(e) {}
+      lfoState.currentDest = null;
+      if (newParam) {
+        lfoState.gain.connect(newParam);
+        lfoState.currentDest = cfg.dest;
+      }
+    }
+    // Set depth — scale by destination range
+    var depth = cfg.active ? (cfg.depth || 0) : 0;
+    lfoState.gain.gain.setTargetAtTime(depth, t, 0.05);
+  };
+
+  eng.destroyUserLFOs = function() {
+    ["lfo1","lfo2"].forEach(function(k) {
+      var l = eng[k];
+      if (!l) return;
+      try { l.osc.stop(); l.osc.disconnect(); l.gain.disconnect(); } catch(e) {}
+      eng[k] = null;
+    });
+  };
+
   eng.destroy = function() {
     eng.panic();
+    eng.destroyUserLFOs();
     if(eng._lfoNode){try{eng._lfoNode.stop();}catch(e){}}
     ['oscR','oscG','oscB'].forEach(function(k){
       if(!eng[k])return;
@@ -1078,7 +1315,31 @@ function App() {
   var rs2 = useState({ quantize:false, scale:"pentatonic", rootNote:48,
     pitchMin:36, pitchMax:72, reverbMix:0.3, fps:10, showScales:false,
     intervalR:"1×2", intervalG:"3×2", intervalB:"5×4", glide:200,
-    cmR:"1:1", cmG:"1:1", cmB:"1:1", fmDepth:0.4 });
+    cmR:"1:1", cmG:"1:1", cmB:"1:1", fmDepth:0.4, fmModShape:0,
+    lfo1:{ rate:0.5, depth:0, shape:0, dest:"filter cutoff", active:false },
+    lfo2:{ rate:0.2, depth:0, shape:0, dest:"filter Q",      active:false } });
+
+  // Shared LFO UI state (same for both engines)
+  var rlfo = useState({
+    lfo1:{ rate:0.5, depth:0, shape:0, dest:"filter cutoff", active:false },
+    lfo2:{ rate:0.2, depth:0, shape:0, dest:"filter Q",      active:false }
+  });
+  var lfoState = rlfo[0], setLfoState = rlfo[1];
+
+  function setLfo(which, key, val) {
+    setLfoState(function(s) {
+      var ns = Object.assign({}, s);
+      ns[which] = Object.assign({}, s[which]);
+      ns[which][key] = val;
+      return ns;
+    });
+    // Apply to active engine immediately
+    var eng = synthRef.current;
+    if (eng && eng.settings && eng.settings[which]) {
+      eng.settings[which][key] = val;
+      if (eng.applyUserLFO) eng.applyUserLFO(which);
+    }
+  }
   var settings2 = rs2[0], setSettings2 = rs2[1];
 
   var settings    = activeEngine === "1" ? settings1 : settings2;
@@ -1602,7 +1863,84 @@ function App() {
             var eng=eng2Ref.current;if(eng)eng.settings.fmDepth=v;
           }
         })
+      ),
+
+      el("div", { className:"sr", style:{flexDirection:"column",alignItems:"flex-start",gap:3,marginTop:6} },
+        el("div", { style:{display:"flex",width:"100%",justifyContent:"space-between"} },
+          el("label", null, "FM modulator shape"),
+          el("span", { style:{fontSize:9,color:"#7fff6a"} },
+            (settings2.fmModShape||0) < 0.1 ? "sine" : (settings2.fmModShape||0) < 0.6 ? "triangle" : "square"
+          )
+        ),
+        el("input", { type:"range", min:0, max:100, value:Math.round((settings2.fmModShape||0)*100),
+          onChange:function(e){
+            var v = e.target.value/100;
+            setSettings2(function(s){var ns=Object.assign({},s);ns.fmModShape=v;return ns;});
+            var eng=eng2Ref.current;if(eng)eng.settings.fmModShape=v;
+          }
+        })
       )
+    ),
+
+    // ── User LFOs (both engines) ──────────────────────────────────────────────
+    el("div", { style:{ padding:"8px 14px 14px", overflowY:"auto" } },
+      el("div", { style:{ fontSize:8, color:"#444", letterSpacing:"0.15em", textTransform:"uppercase", marginBottom:8 } }, "LFO"),
+      ["lfo1","lfo2"].map(function(which) {
+        var cfg = lfoState[which];
+        var label = which === "lfo1" ? "LFO 1" : "LFO 2";
+        return el("div", { key:which, style:{ borderBottom:"1px solid #141414", paddingBottom:8, marginBottom:8 } },
+          el("div", { style:{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:4 } },
+            el("span", { style:{ fontSize:9, color:"#7fff6a", letterSpacing:"0.1em" } }, label),
+            el("button", {
+              className:cx("sg", cfg.active&&"sel"),
+              onClick:function(){ setLfo(which, "active", !cfg.active); }
+            }, cfg.active ? "ON" : "OFF")
+          ),
+          el("div", { className:"sr", style:{ borderBottom:"none", paddingBottom:2 } },
+            el("label", null, "Wave"),
+            el("div", { style:{ display:"flex", gap:2 } },
+              [["sine",0],["tri",0.5],["sqr",1]].map(function(pair) {
+                return el("button", {
+                  key:pair[0],
+                  className:cx("sg", Math.abs(cfg.shape-pair[1])<0.1&&"sel"),
+                  onClick:function(){ setLfo(which,"shape",pair[1]); }
+                }, pair[0]);
+              })
+            )
+          ),
+          el("div", { className:"sr", style:{flexDirection:"column",alignItems:"flex-start",gap:2,borderBottom:"none"} },
+            el("div", { style:{display:"flex",width:"100%",justifyContent:"space-between"} },
+              el("label", null, "Rate"),
+              el("span", { style:{fontSize:9,color:"#7fff6a"} }, cfg.rate.toFixed(2)+" Hz")
+            ),
+            el("input", { type:"range", min:1, max:1000, value:Math.round(cfg.rate*100),
+              onChange:function(e){ setLfo(which,"rate",e.target.value/100); }
+            })
+          ),
+          el("div", { className:"sr", style:{flexDirection:"column",alignItems:"flex-start",gap:2,borderBottom:"none"} },
+            el("div", { style:{display:"flex",width:"100%",justifyContent:"space-between"} },
+              el("label", null, "Depth"),
+              el("span", { style:{fontSize:9,color:"#7fff6a"} }, Math.round(cfg.depth*100)+"%")
+            ),
+            el("input", { type:"range", min:0, max:100, value:Math.round(cfg.depth*100),
+              onChange:function(e){ setLfo(which,"depth",e.target.value/100); }
+            })
+          ),
+          el("div", { className:"sr", style:{ borderBottom:"none", paddingBottom:0 } },
+            el("label", null, "Dest"),
+            el("div", { style:{ display:"flex", gap:2, flexWrap:"wrap" } },
+              LFO_DEST_NAMES.map(function(d) {
+                return el("button", {
+                  key:d,
+                  className:cx("sg", cfg.dest===d&&"sel"),
+                  onClick:function(){ setLfo(which,"dest",d); },
+                  style:{ fontSize:8 }
+                }, d);
+              })
+            )
+          )
+        );
+      })
     )
   );
 
