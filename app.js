@@ -1,5 +1,5 @@
-// Camera Synth — v1.1.0
-var VERSION = "2.9.0";
+// Camera Synth — v3.0.0
+var VERSION = "3.0.0";
 
 var useState    = React.useState;
 var useEffect   = React.useEffect;
@@ -17,9 +17,18 @@ var SCALES = {
 };
 var SCALE_NAMES   = Object.keys(SCALES);
 var VOICE_OPTIONS = [1, 2, 4];
-var FPS_OPTIONS   = [5, 10, 20, 30];
 var ANALYSIS_RES  = 256;
 var NOTE_NAMES    = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
+
+// Just intonation intervals for RGB oscillators
+var INTERVALS = {
+  "unison": 1,
+  "octave": 2,
+  "fifth":  1.5,
+  "maj3":   1.25,
+  "min3":   1.2,
+};
+var INTERVAL_NAMES = Object.keys(INTERVALS);
 
 function midiToHz(midi) {
   return 440 * Math.pow(2, (midi - 69) / 12);
@@ -37,87 +46,95 @@ function quantizePitch(rawMidi, scale, rootNote) {
   return rootNote + octave * 12 + closest;
 }
 
-// ── Synth Engine ─────────────────────────────────────────────────────────────
-function makeSynthEngine() {
-  // Pre-build reverb IR now (before any user gesture) so init() is instant
-  var REVERB_IR = (function() {
-    var sr  = 44100;
-    var len = sr * 2;
-    var L   = new Float32Array(len);
-    var R   = new Float32Array(len);
-    for (var i = 0; i < len; i++) {
-      var decay = Math.pow(1 - i / len, 2.5);
-      L[i] = (Math.random() * 2 - 1) * decay;
-      R[i] = (Math.random() * 2 - 1) * decay;
-    }
-    return { L: L, R: R, len: len };
-  }());
+// ── Square wave coefficients (just intonation odd harmonics) ─────────────────
+function makeSquareCoeffs(size) {
+  var imag = new Float32Array(size);
+  var real = new Float32Array(size);
+  for (var n = 1; n < size; n += 2) {
+    imag[n] = 1 / n; // odd harmonics: 1, 1/3, 1/5, 1/7...
+  }
+  return { real: real, imag: imag };
+}
 
+// ── Shared reverb IR (pre-built before gesture) ───────────────────────────────
+var REVERB_IR = (function() {
+  var sr  = 44100;
+  var len = sr * 2;
+  var L   = new Float32Array(len);
+  var R   = new Float32Array(len);
+  for (var i = 0; i < len; i++) {
+    var decay = Math.pow(1 - i / len, 2.5);
+    L[i] = (Math.random() * 2 - 1) * decay;
+    R[i] = (Math.random() * 2 - 1) * decay;
+  }
+  return { L: L, R: R, len: len };
+}());
+
+var SQUARE_COEFFS = makeSquareCoeffs(512);
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ENGINE 1 — CamSynth_1
+// Image-scanned wavetable, single oscillator bank, comb + lowpass + LFO
+// ══════════════════════════════════════════════════════════════════════════════
+function makeEngine1() {
   var eng = {
     ctx: null, voices: [],
-    combFilters: [],   // 8 peaking EQ nodes
-    lowpassNode: null, // master brightness lowpass after comb
+    combFilters: [], lowpassNode: null,
     reverbNode: null, reverbGain: null,
-    dryGain: null, masterGain: null, limiterNode: null, analyserNode: null,
+    dryGain: null, masterGain: null,
+    limiterNode: null, analyserNode: null,
     active: false, currentPitchMidi: 60,
     wavetableData:    new Float32Array(ANALYSIS_RES),
-    morphedWavetable: new Float32Array(ANALYSIS_RES), // smoothly interpolated
-    lastWavetable:    new Float32Array(ANALYSIS_RES), // previous frame
+    morphedWavetable: new Float32Array(ANALYSIS_RES),
+    morphAlpha: 0.35,
+    currentLuma: 0.5,
+    _lfoNode: null, _lfoGain: null,
+    _prevHue: 0, _prevHueTime: 0,
+    _loopProc: null, _loopChunks: [], _loopNode: null,
+    _loopGain: null, _loopRecording: false,
+    _recorder: null, _recChunks: null,
     settings: {
       voices: 1, detune: 12,
       quantize: false, scale: "pentatonic", rootNote: 48,
       pitchMin: 36, pitchMax: 72, reverbMix: 0.3, fps: 10,
+      showScales: false,
     },
   };
 
-  // init() must be called synchronously inside a user gesture on iOS.
-  // Keep it minimal — no loops, no allocation, just wire nodes.
   eng.init = function() {
-    if (eng.ctx) return; // already initialised
+    if (eng.ctx) return;
     try {
       var AC  = window.AudioContext || window.webkitAudioContext;
       eng.ctx = new AC();
-
-      // Load pre-built reverb IR into an AudioBuffer at the real sample rate
       var sr  = eng.ctx.sampleRate;
-      var len = REVERB_IR.len;
-      var buf = eng.ctx.createBuffer(2, len, sr);
+      var buf = eng.ctx.createBuffer(2, REVERB_IR.len, sr);
       buf.getChannelData(0).set(REVERB_IR.L);
       buf.getChannelData(1).set(REVERB_IR.R);
       eng.reverbNode = eng.ctx.createConvolver();
       eng.reverbNode.buffer = buf;
 
-      // ── Comb filter bank: 8 peaking EQ filters in series ──
-      // Frequencies set by luma (updated from camera)
-      // Gain of each set by vertical slice luma
-      var N_TEETH = 8;
+      var N = 8;
       eng.combFilters = [];
-      for (var ci = 0; ci < N_TEETH; ci++) {
+      for (var ci = 0; ci < N; ci++) {
         var f = eng.ctx.createBiquadFilter();
         f.type = "peaking";
-        f.frequency.value = 200 * (ci + 1); // initial: 200,400,600...1600Hz
-        f.Q.value = 3;                        // medium sharpness teeth
-        f.gain.value = 0;                     // start flat
+        f.frequency.value = 200 * (ci + 1);
+        f.Q.value = 3;
+        f.gain.value = 0;
         eng.combFilters.push(f);
       }
-      // Chain comb filters in series
-      for (var ci = 0; ci < N_TEETH - 1; ci++) {
-        eng.combFilters[ci].connect(eng.combFilters[ci + 1]);
-      }
+      for (var ci = 0; ci < N - 1; ci++) eng.combFilters[ci].connect(eng.combFilters[ci + 1]);
 
-      // Master lowpass after comb — luma drives cutoff
       eng.lowpassNode = eng.ctx.createBiquadFilter();
       eng.lowpassNode.type = "lowpass";
       eng.lowpassNode.frequency.value = 2000;
       eng.lowpassNode.Q.value = 0.7;
-      eng.combFilters[N_TEETH - 1].connect(eng.lowpassNode);
+      eng.combFilters[N - 1].connect(eng.lowpassNode);
 
       eng.dryGain = eng.ctx.createGain();
       eng.dryGain.gain.value = 1 - eng.settings.reverbMix;
-
       eng.reverbGain = eng.ctx.createGain();
       eng.reverbGain.gain.value = eng.settings.reverbMix;
-
       eng.masterGain = eng.ctx.createGain();
       eng.masterGain.gain.value = 0;
 
@@ -141,9 +158,7 @@ function makeSynthEngine() {
       eng.analyserNode.connect(eng.ctx.destination);
 
       eng.spawnVoices();
-    } catch(e) {
-      console.error("[CamSynth] init failed", e);
-    }
+    } catch(e) { console.error("[E1] init failed", e); }
   };
 
   eng.makeWavetable = function(data) {
@@ -151,151 +166,91 @@ function makeSynthEngine() {
     var real = new Float32Array(size / 2);
     var imag = new Float32Array(size / 2);
     var lim  = Math.min(data.length, size / 2 - 1);
-    for (var i = 0; i < lim; i++) { imag[i + 1] = data[i]; }
+    for (var i = 0; i < lim; i++) imag[i + 1] = data[i];
     return eng.ctx.createPeriodicWave(real, imag, { disableNormalization: false });
   };
 
   eng.spawnVoices = function() {
     for (var i = 0; i < eng.voices.length; i++) {
-      try {
-        eng.voices[i].osc.stop();
-        eng.voices[i].osc.disconnect();
-        eng.voices[i].gain.disconnect();
-        if (eng.voices[i].panner) eng.voices[i].panner.disconnect();
-        if (eng.voices[i].delay)  eng.voices[i].delay.disconnect();
-      } catch(e) {}
+      try { eng.voices[i].osc.stop(); eng.voices[i].osc.disconnect(); eng.voices[i].gain.disconnect(); if (eng.voices[i].panner) eng.voices[i].panner.disconnect(); } catch(e) {}
     }
     eng.voices = [];
     var n = eng.settings.voices;
-    var hasData = false;
-    for (var k = 0; k < eng.wavetableData.length; k++) {
-      if (eng.wavetableData[k] !== 0) { hasData = true; break; }
-    }
-
     for (var i = 0; i < n; i++) {
       var osc = eng.ctx.createOscillator();
-      if (hasData) {
-        try { osc.setPeriodicWave(eng.makeWavetable(eng.wavetableData)); } catch(e) { osc.type = "sine"; }
-      } else {
-        osc.type = "sine";
-      }
-      var spread = n === 1 ? 0 : ((i / (n - 1)) - 0.5) * eng.settings.detune * 2;
-      osc.detune.value    = spread;
+      osc.type = "sine";
+      osc.detune.value    = n === 1 ? 0 : ((i / (n - 1)) - 0.5) * eng.settings.detune * 2;
       osc.frequency.value = midiToHz(eng.currentPitchMidi);
-
       var gain = eng.ctx.createGain();
       gain.gain.value = 0.55 / n;
-
-      // Pan each voice across stereo field
       var panner = eng.ctx.createStereoPanner();
-      panner.pan.value = n === 1 ? 0 : ((i / (n - 1)) * 2 - 1); // -1 to +1
-
+      panner.pan.value = n === 1 ? 0 : ((i / (n - 1)) * 2 - 1);
       osc.connect(gain);
       gain.connect(panner);
       panner.connect(eng.combFilters[0]);
       osc.start();
       eng.voices.push({ osc: osc, gain: gain, panner: panner });
     }
-
-    // Single voice: add Haas delay for stereo width
-    // A ~20ms delay on one channel creates psychoacoustic width without phase issues
-    if (n === 1 && eng.voices.length === 1) {
+    if (n === 1) {
       var delay = eng.ctx.createDelay(0.05);
-      delay.delayTime.value = 0.018; // 18ms Haas delay
-      var delayGain = eng.ctx.createGain();
-      delayGain.gain.value = 0.6;
-      var delayPan = eng.ctx.createStereoPanner();
-      delayPan.pan.value = 0.8; // delayed signal panned right
-      // Direct signal panned slightly left
+      delay.delayTime.value = 0.018;
+      var dg = eng.ctx.createGain(); dg.gain.value = 0.6;
+      var dp = eng.ctx.createStereoPanner(); dp.pan.value = 0.8;
       eng.voices[0].panner.pan.value = -0.5;
-      // Tap off the voice gain → delay → pan right → filter
       eng.voices[0].gain.connect(delay);
-      delay.connect(delayGain);
-      delayGain.connect(delayPan);
-      delayPan.connect(eng.combFilters[0]);
-      eng.voices[0].delay     = delay;
-      eng.voices[0].delayGain = delayGain;
-      eng.voices[0].delayPan  = delayPan;
+      delay.connect(dg); dg.connect(dp); dp.connect(eng.combFilters[0]);
+      eng.voices[0].delay = delay; eng.voices[0].dg = dg; eng.voices[0].dp = dp;
     }
   };
 
-  // Smoothly ramp detune on existing voices without respawning
-  eng.updateDetune = function(detune) {
-    eng.settings.detune = detune;
-    if (!eng.ctx || eng.voices.length === 0) return;
-    var n = eng.voices.length;
-    var t = eng.ctx.currentTime;
+  eng.updateDetune = function(d) {
+    eng.settings.detune = d;
+    if (!eng.ctx) return;
+    var n = eng.voices.length, t = eng.ctx.currentTime;
     for (var i = 0; i < n; i++) {
-      var spread = n === 1 ? 0 : ((i / (n - 1)) - 0.5) * detune * 2;
-      eng.voices[i].osc.detune.setTargetAtTime(spread, t, 0.08);
+      eng.voices[i].osc.detune.setTargetAtTime(n===1?0:((i/(n-1))-0.5)*d*2, t, 0.08);
     }
   };
-
-  // Morph speed: how fast we interpolate toward new wavetable (0=instant, 1=never)
-  eng.morphAlpha  = 0.35; // per-frame lerp toward new wavetable
-  eng.currentLuma = 0.5;  // tracked here for wavetable gating
 
   eng.updateWavetable = function(data, luma) {
     eng.wavetableData = data;
     if (!eng.ctx) return;
-
-    // Gate luma: apply a curve so darkness really does approach sine
-    // Use squared luma so the lower end is more sensitive
-    var lumaGate = luma !== undefined ? luma : eng.currentLuma;
-    lumaGate = lumaGate * lumaGate; // square for perceptual curve
-
-    // Lerp morphedWavetable toward new scan data
-    var alpha    = eng.morphAlpha;
-    var hasData  = false;
+    var lumaGate = (luma !== undefined ? luma : eng.currentLuma);
+    lumaGate = lumaGate * lumaGate;
+    var alpha = eng.morphAlpha;
+    var hasData = false;
     for (var k = 0; k < data.length; k++) {
       eng.morphedWavetable[k] = eng.morphedWavetable[k] * (1 - alpha) + data[k] * alpha;
       if (data[k] !== 0) hasData = true;
     }
-    if (!hasData && lumaGate > 0.01) return;
-
-    // Blend morphed wavetable with sine (all zeros = pure sine in PeriodicWave)
-    // lumaGate=0 → all zeros → sine
-    // lumaGate=1 → full morphed wavetable
+    if (!hasData && lumaGate <= 0.01) return;
     var blended = new Float32Array(eng.morphedWavetable.length);
-    for (var k = 0; k < blended.length; k++) {
-      blended[k] = eng.morphedWavetable[k] * lumaGate;
-    }
-
+    for (var k = 0; k < blended.length; k++) blended[k] = eng.morphedWavetable[k] * lumaGate;
     try {
       var wave = eng.makeWavetable(blended);
       for (var i = 0; i < eng.voices.length; i++) {
-        try { eng.voices[i].osc.setPeriodicWave(wave); } catch(e) { eng.voices[i].osc.type = "sine"; }
+        try { eng.voices[i].osc.setPeriodicWave(wave); } catch(e) {}
       }
     } catch(e) {}
   };
 
   eng.updatePitch = function(rx) {
     if (!eng.ctx) return;
-    var s    = eng.settings;
+    var s = eng.settings;
     var midi = s.pitchMin + rx * (s.pitchMax - s.pitchMin);
     if (s.quantize) midi = quantizePitch(Math.round(midi), s.scale, s.rootNote);
     eng.currentPitchMidi = midi;
-    var hz = midiToHz(midi);
-    var t  = eng.ctx.currentTime;
-    for (var i = 0; i < eng.voices.length; i++) {
-      eng.voices[i].osc.frequency.setTargetAtTime(hz, t, 0.05);
-    }
+    var hz = midiToHz(midi), t = eng.ctx.currentTime;
+    for (var i = 0; i < eng.voices.length; i++) eng.voices[i].osc.frequency.setTargetAtTime(hz, t, 0.05);
   };
-
-  // LFO state — runs in audio engine, driven by camera
-  eng._lfoNode      = null;
-  eng._lfoGain      = null;
-  eng._prevHue      = 0;
-  eng._prevHueTime  = 0;
 
   eng.initLFO = function() {
     if (!eng.ctx || eng._lfoNode) return;
-    // LFO oscillator → gain node → filter frequency offset
     eng._lfoNode = eng.ctx.createOscillator();
     eng._lfoNode.type = "sine";
-    eng._lfoNode.frequency.value = 0.2; // start slow
+    eng._lfoNode.frequency.value = 0.2;
     eng._lfoGain = eng.ctx.createGain();
-    eng._lfoGain.gain.value = 0;        // start silent
+    eng._lfoGain.gain.value = 0;
     eng._lfoNode.connect(eng._lfoGain);
     eng._lfoGain.connect(eng.lowpassNode.frequency);
     eng._lfoNode.start();
@@ -304,65 +259,33 @@ function makeSynthEngine() {
   eng.updateFromCamera = function(luma, hue, chromaContrast, slices) {
     if (!eng.ctx || !eng.combFilters.length) return;
     var t = eng.ctx.currentTime;
-
-    // Init LFO on first camera data
     if (!eng._lfoNode) eng.initLFO();
-
-    // ── Comb filter topography ──
-    // luma → fundamental frequency (tooth spacing)
-    // Map luma 0..1 → fundamental 80Hz..400Hz
-    // (delay equivalent: 12.5ms..2.5ms)
     var fundamental = 80 + luma * 320;
-
-    // Each slice luma → tooth gain at its harmonic
-    // Map slice 0..1 → gain -6dB..+14dB
     for (var i = 0; i < eng.combFilters.length; i++) {
-      var freq     = fundamental * (i + 1);
       var sliceLum = slices ? slices[i] : luma;
-      // Center around 0: dark=cut, bright=boost
-      var gainDB   = (sliceLum - 0.5) * 20; // -10dB..+10dB
-      // Q driven by chromaContrast — vivid scene = sharper teeth
-      var q        = 1.5 + chromaContrast * 8;
-      eng.combFilters[i].frequency.setTargetAtTime(freq, t, 0.3);
-      eng.combFilters[i].gain.setTargetAtTime(gainDB, t, 0.3);
-      eng.combFilters[i].Q.setTargetAtTime(q, t, 0.3);
+      eng.combFilters[i].frequency.setTargetAtTime(fundamental * (i + 1), t, 0.3);
+      eng.combFilters[i].gain.setTargetAtTime((sliceLum - 0.5) * 20, t, 0.3);
+      eng.combFilters[i].Q.setTargetAtTime(1.5 + chromaContrast * 8, t, 0.3);
     }
-
-    // ── Lowpass master brightness ──
-    // luma → cutoff 300Hz..8000Hz
-    var cutoff = 300 + luma * 7700;
-    eng.lowpassNode.frequency.setTargetAtTime(cutoff, t, 0.2);
-
-    // ── LFO: hue velocity → rate, chromaContrast → depth ──
-    var now      = eng.ctx.currentTime;
-    var dt       = now - eng._prevHueTime;
+    eng.lowpassNode.frequency.setTargetAtTime(300 + luma * 7700, t, 0.2);
+    var now = eng.ctx.currentTime;
+    var dt  = now - eng._prevHueTime;
     var hueDelta = 0;
     if (dt > 0 && dt < 2) {
       hueDelta = Math.abs(hue - eng._prevHue);
       if (hueDelta > 0.5) hueDelta = 1 - hueDelta;
       hueDelta = hueDelta / dt;
     }
-    eng._prevHue     = hue;
-    eng._prevHueTime = now;
-    var lfoRate  = 0.05 + Math.min(hueDelta * 4, 1) * 1.95;
-    var lfoDepth = chromaContrast * 800; // gentler than before — acts on lowpass
-    eng._lfoNode.frequency.setTargetAtTime(lfoRate, t, 0.5);
-    eng._lfoGain.gain.setTargetAtTime(lfoDepth, t, 0.3);
+    eng._prevHue = hue; eng._prevHueTime = now;
+    eng._lfoNode.frequency.setTargetAtTime(0.05 + Math.min(hueDelta * 4, 1) * 1.95, t, 0.5);
+    eng._lfoGain.gain.setTargetAtTime(chromaContrast * 800, t, 0.3);
   };
 
   eng.setSoundOn = function(on) {
     if (!eng.ctx) return;
-    // On iOS, resume() is async. We set gain via value= (not scheduled)
-    // so it takes effect as soon as the context actually starts running,
-    // regardless of when that happens relative to our call.
     eng.ctx.resume();
     eng.masterGain.gain.cancelScheduledValues(0);
-    if (on) {
-      // Set directly — works even if ctx is still suspended
-      eng.masterGain.gain.value = 0.7;
-    } else {
-      eng.masterGain.gain.value = 0;
-    }
+    eng.masterGain.gain.value = on ? 0.7 : 0;
     eng.active = on;
   };
 
@@ -380,144 +303,83 @@ function makeSynthEngine() {
     return buf;
   };
 
-  // WAV recording via raw PCM capture
   eng.startRecording = function() {
     if (!eng.ctx) return;
-    var bufSize  = 4096;
-    var chunks   = [];
-    var recorder = eng.ctx.createScriptProcessor(bufSize, 2, 2);
-    recorder.onaudioprocess = function(e) {
-      var L = new Float32Array(e.inputBuffer.getChannelData(0));
-      var R = new Float32Array(e.inputBuffer.getChannelData(1));
-      chunks.push({ L: L, R: R });
+    var chunks = [], proc = eng.ctx.createScriptProcessor(4096, 2, 2);
+    proc.onaudioprocess = function(e) {
+      chunks.push({ L: new Float32Array(e.inputBuffer.getChannelData(0)), R: new Float32Array(e.inputBuffer.getChannelData(1)) });
     };
-    eng.limiterNode.connect(recorder);
-    recorder.connect(eng.ctx.destination);
-    eng._recorder   = recorder;
-    eng._recChunks  = chunks;
+    eng.limiterNode.connect(proc); proc.connect(eng.ctx.destination);
+    eng._recorder = proc; eng._recChunks = chunks;
   };
 
   eng.stopRecording = function() {
     if (!eng._recorder) return null;
-    eng.limiterNode.disconnect(eng._recorder);
-    eng._recorder.disconnect();
-    var chunks = eng._recChunks;
-    eng._recorder  = null;
-    eng._recChunks = null;
-
-    // Encode WAV
-    var sr      = eng.ctx.sampleRate;
-    var nFrames = chunks.reduce(function(s, c) { return s + c.L.length; }, 0);
-    var nCh     = 2;
-    var bitsPS  = 16;
-    var bytesPF = nCh * (bitsPS / 8);
-    var dataLen = nFrames * bytesPF;
-    var buf     = new ArrayBuffer(44 + dataLen);
-    var view    = new DataView(buf);
-    function str(off, s) { for (var i=0;i<s.length;i++) view.setUint8(off+i, s.charCodeAt(i)); }
-    function u32(off, v) { view.setUint32(off, v, true); }
-    function u16(off, v) { view.setUint16(off, v, true); }
-    str(0,"RIFF"); u32(4, 36+dataLen); str(8,"WAVE");
-    str(12,"fmt "); u32(16,16); u16(20,1); u16(22,nCh);
-    u32(24,sr); u32(28,sr*bytesPF); u16(32,bytesPF); u16(34,bitsPS);
-    str(36,"data"); u32(40,dataLen);
-    var off = 44;
-    for (var ci=0; ci<chunks.length; ci++) {
-      var L = chunks[ci].L, R = chunks[ci].R;
-      for (var fi=0; fi<L.length; fi++) {
-        var ls = Math.max(-1,Math.min(1,L[fi]));
-        var rs = Math.max(-1,Math.min(1,R[fi]));
-        view.setInt16(off,   ls < 0 ? ls*0x8000 : ls*0x7FFF, true); off+=2;
-        view.setInt16(off,   rs < 0 ? rs*0x8000 : rs*0x7FFF, true); off+=2;
+    try { eng.limiterNode.disconnect(eng._recorder); eng._recorder.disconnect(); } catch(e) {}
+    var chunks = eng._recChunks; eng._recorder = null; eng._recChunks = null;
+    var sr = eng.ctx.sampleRate;
+    var nFrames = chunks.reduce(function(s,c){return s+c.L.length;},0);
+    var buf = new ArrayBuffer(44 + nFrames * 4);
+    var view = new DataView(buf);
+    function str(o,s){for(var i=0;i<s.length;i++)view.setUint8(o+i,s.charCodeAt(i));}
+    function u32(o,v){view.setUint32(o,v,true);}
+    function u16(o,v){view.setUint16(o,v,true);}
+    str(0,"RIFF");u32(4,36+nFrames*4);str(8,"WAVE");
+    str(12,"fmt ");u32(16,16);u16(20,1);u16(22,2);
+    u32(24,sr);u32(28,sr*4);u16(32,4);u16(34,16);
+    str(36,"data");u32(40,nFrames*4);
+    var off=44;
+    for(var ci=0;ci<chunks.length;ci++){
+      var L=chunks[ci].L,R=chunks[ci].R;
+      for(var fi=0;fi<L.length;fi++){
+        var ls=Math.max(-1,Math.min(1,L[fi])),rs=Math.max(-1,Math.min(1,R[fi]));
+        view.setInt16(off,ls<0?ls*0x8000:ls*0x7FFF,true);off+=2;
+        view.setInt16(off,rs<0?rs*0x8000:rs*0x7FFF,true);off+=2;
       }
     }
     return buf;
   };
 
-  // ── Looper ──────────────────────────────────────────────────
-  // ── Looper — clean simple implementation ──
-  eng._loopProc      = null;
-  eng._loopChunks    = [];
-  eng._loopNode      = null;
-  eng._loopGain      = null;
-  eng._loopRecording = false;
-
   eng.startLoopRecord = function() {
     if (!eng.ctx) return;
     eng.stopLoop();
-    eng._loopRecording = true;
-    eng._loopChunks    = [];
-    var maxSamples = eng.ctx.sampleRate * 10;
-    var captured   = 0;
+    eng._loopRecording = true; eng._loopChunks = [];
+    var maxSamples = eng.ctx.sampleRate * 10, captured = 0;
     var proc = eng.ctx.createScriptProcessor(4096, 2, 2);
     proc.onaudioprocess = function(ev) {
       if (!eng._loopRecording || captured >= maxSamples) return;
-      eng._loopChunks.push({
-        L: new Float32Array(ev.inputBuffer.getChannelData(0)),
-        R: new Float32Array(ev.inputBuffer.getChannelData(1))
-      });
+      eng._loopChunks.push({ L: new Float32Array(ev.inputBuffer.getChannelData(0)), R: new Float32Array(ev.inputBuffer.getChannelData(1)) });
       captured += 4096;
     };
-    eng.limiterNode.connect(proc);
-    proc.connect(eng.ctx.destination);
+    eng.limiterNode.connect(proc); proc.connect(eng.ctx.destination);
     eng._loopProc = proc;
   };
 
   eng.commitLoop = function() {
     eng._loopRecording = false;
-    if (eng._loopProc) {
-      try { eng.limiterNode.disconnect(eng._loopProc); eng._loopProc.disconnect(); } catch(e) {}
-      eng._loopProc = null;
-    }
-    var chunks  = eng._loopChunks;
+    if (eng._loopProc) { try { eng.limiterNode.disconnect(eng._loopProc); eng._loopProc.disconnect(); } catch(e) {} eng._loopProc = null; }
+    var chunks = eng._loopChunks;
     if (!chunks.length) return false;
-    var sr      = eng.ctx.sampleRate;
-    var nFrames = chunks.reduce(function(s,c){ return s+c.L.length; }, 0);
+    var sr = eng.ctx.sampleRate;
+    var nFrames = chunks.reduce(function(s,c){return s+c.L.length;},0);
     if (nFrames < 4096) return false;
     var buf = eng.ctx.createBuffer(2, nFrames, sr);
-    var oL  = buf.getChannelData(0);
-    var oR  = buf.getChannelData(1);
-    var off = 0;
-    for (var i = 0; i < chunks.length; i++) {
-      oL.set(chunks[i].L, off);
-      oR.set(chunks[i].R, off);
-      off += chunks[i].L.length;
-    }
-    // 8ms crossfade seam
-    var fl = Math.min(Math.floor(sr * 0.008), Math.floor(nFrames/4));
-    for (var j = 0; j < fl; j++) {
-      var t = j / fl;
-      oL[j] *= t; oR[j] *= t;
-      oL[nFrames-fl+j] *= (1-t); oR[nFrames-fl+j] *= (1-t);
-    }
+    var oL = buf.getChannelData(0), oR = buf.getChannelData(1), off = 0;
+    for (var i = 0; i < chunks.length; i++) { oL.set(chunks[i].L,off); oR.set(chunks[i].R,off); off+=chunks[i].L.length; }
+    var fl = Math.min(Math.floor(sr*0.008), Math.floor(nFrames/4));
+    for (var j = 0; j < fl; j++) { var t=j/fl; oL[j]*=t;oR[j]*=t; oL[nFrames-fl+j]*=(1-t);oR[nFrames-fl+j]*=(1-t); }
     eng.masterGain.gain.value = 0;
-    var lg  = eng.ctx.createGain();
-    lg.gain.value = 0.85;
-    lg.connect(eng.limiterNode);
-    var src = eng.ctx.createBufferSource();
-    src.buffer = buf;
-    src.loop   = true;
-    src.connect(lg);
-    src.start(0);
-    eng._loopNode = src;
-    eng._loopGain = lg;
+    var lg = eng.ctx.createGain(); lg.gain.value = 0.85; lg.connect(eng.limiterNode);
+    var src = eng.ctx.createBufferSource(); src.buffer=buf; src.loop=true; src.connect(lg); src.start(0);
+    eng._loopNode = src; eng._loopGain = lg;
     return true;
   };
 
   eng.stopLoop = function() {
     eng._loopRecording = false;
-    if (eng._loopProc) {
-      try { eng.limiterNode.disconnect(eng._loopProc); eng._loopProc.disconnect(); } catch(e) {}
-      eng._loopProc = null;
-    }
-    if (eng._loopNode) {
-      try { eng._loopNode.stop(); eng._loopNode.disconnect(); } catch(e) {}
-      eng._loopNode = null;
-    }
-    if (eng._loopGain) {
-      try { eng._loopGain.disconnect(); } catch(e) {}
-      eng._loopGain = null;
-    }
+    if (eng._loopProc) { try{eng.limiterNode.disconnect(eng._loopProc);eng._loopProc.disconnect();}catch(e){} eng._loopProc=null; }
+    if (eng._loopNode) { try{eng._loopNode.stop();eng._loopNode.disconnect();}catch(e){} eng._loopNode=null; }
+    if (eng._loopGain) { try{eng._loopGain.disconnect();}catch(e){} eng._loopGain=null; }
     eng._loopChunks = [];
     if (eng.active) eng.masterGain.gain.value = 0.7;
   };
@@ -526,409 +388,938 @@ function makeSynthEngine() {
 
   eng.destroy = function() {
     eng.panic();
-    if (eng._lfoNode) { try { eng._lfoNode.stop(); } catch(e) {} }
-    for (var i = 0; i < eng.voices.length; i++) { try { eng.voices[i].osc.stop(); } catch(e) {} }
-    for (var i = 0; i < eng.combFilters.length; i++) { try { eng.combFilters[i].disconnect(); } catch(e) {} }
+    if (eng._lfoNode) { try{eng._lfoNode.stop();}catch(e){} }
+    for (var i=0;i<eng.voices.length;i++) { try{eng.voices[i].osc.stop();}catch(e){} }
+    for (var i=0;i<eng.combFilters.length;i++) { try{eng.combFilters[i].disconnect();}catch(e){} }
     if (eng.ctx) eng.ctx.close();
   };
 
   return eng;
 }
 
-// ── Frame analysis ───────────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════════════
+// ENGINE 2 — CamSynth_2
+// R/G/B oscillators, sine↔square morph per channel,
+// just intonation intervals, per-channel Haas stereo width
+// Same comb + lowpass + LFO downstream
+// ══════════════════════════════════════════════════════════════════════════════
+function makeEngine2() {
+  var eng = {
+    ctx: null,
+    // Three RGB oscillators: each has osc + morphGain + haasDelay + panner
+    oscR: null, oscG: null, oscB: null,
+    combFilters: [], lowpassNode: null,
+    reverbNode: null, reverbGain: null,
+    dryGain: null, masterGain: null,
+    limiterNode: null, analyserNode: null,
+    active: false, currentPitchMidi: 60,
+    _lfoNode: null, _lfoGain: null,
+    _prevHue: 0, _prevHueTime: 0,
+    _loopProc: null, _loopChunks: [], _loopNode: null,
+    _loopGain: null, _loopRecording: false,
+    _recorder: null, _recChunks: null,
+    settings: {
+      quantize: false, scale: "pentatonic", rootNote: 48,
+      pitchMin: 36, pitchMax: 72, reverbMix: 0.3, fps: 10,
+      showScales: false,
+      // Per-oscillator intervals (just intonation ratios)
+      intervalR: "unison",
+      intervalG: "fifth",
+      intervalB: "octave",
+    },
+  };
+
+  eng.init = function() {
+    if (eng.ctx) return;
+    try {
+      var AC = window.AudioContext || window.webkitAudioContext;
+      eng.ctx = new AC();
+      var sr  = eng.ctx.sampleRate;
+      var rbuf = eng.ctx.createBuffer(2, REVERB_IR.len, sr);
+      rbuf.getChannelData(0).set(REVERB_IR.L);
+      rbuf.getChannelData(1).set(REVERB_IR.R);
+      eng.reverbNode = eng.ctx.createConvolver();
+      eng.reverbNode.buffer = rbuf;
+
+      // Comb + lowpass (identical to engine 1)
+      var N = 8; eng.combFilters = [];
+      for (var ci = 0; ci < N; ci++) {
+        var f = eng.ctx.createBiquadFilter();
+        f.type = "peaking"; f.frequency.value = 200*(ci+1); f.Q.value = 3; f.gain.value = 0;
+        eng.combFilters.push(f);
+      }
+      for (var ci = 0; ci < N-1; ci++) eng.combFilters[ci].connect(eng.combFilters[ci+1]);
+
+      eng.lowpassNode = eng.ctx.createBiquadFilter();
+      eng.lowpassNode.type = "lowpass";
+      eng.lowpassNode.frequency.value = 2000;
+      eng.lowpassNode.Q.value = 0.7;
+      eng.combFilters[N-1].connect(eng.lowpassNode);
+
+      eng.dryGain = eng.ctx.createGain(); eng.dryGain.gain.value = 1 - eng.settings.reverbMix;
+      eng.reverbGain = eng.ctx.createGain(); eng.reverbGain.gain.value = eng.settings.reverbMix;
+      eng.masterGain = eng.ctx.createGain(); eng.masterGain.gain.value = 0;
+
+      eng.limiterNode = eng.ctx.createDynamicsCompressor();
+      eng.limiterNode.threshold.value = -3; eng.limiterNode.knee.value = 0;
+      eng.limiterNode.ratio.value = 20; eng.limiterNode.attack.value = 0.001; eng.limiterNode.release.value = 0.1;
+
+      eng.analyserNode = eng.ctx.createAnalyser(); eng.analyserNode.fftSize = 1024;
+
+      eng.lowpassNode.connect(eng.dryGain);
+      eng.lowpassNode.connect(eng.reverbNode);
+      eng.reverbNode.connect(eng.reverbGain);
+      eng.dryGain.connect(eng.masterGain);
+      eng.reverbGain.connect(eng.masterGain);
+      eng.masterGain.connect(eng.limiterNode);
+      eng.limiterNode.connect(eng.analyserNode);
+      eng.analyserNode.connect(eng.ctx.destination);
+
+      eng.spawnOscillators();
+    } catch(e) { console.error("[E2] init failed", e); }
+  };
+
+  // Build a PeriodicWave that morphs between sine and square
+  // morph 0 = pure sine, morph 1 = full square
+  eng.makeMorphWave = function(morph) {
+    var size = 512;
+    var real = new Float32Array(size / 2);
+    var imag = new Float32Array(size / 2);
+    // Sine: only fundamental
+    // Square: odd harmonics 1/n
+    // Interpolate each harmonic coefficient
+    imag[1] = 1.0; // fundamental always present
+    for (var n = 3; n < size/2; n += 2) {
+      imag[n] = morph * (1 / n); // blend toward square
+    }
+    return eng.ctx.createPeriodicWave(real, imag, { disableNormalization: false });
+  };
+
+  // Create one RGB oscillator voice
+  // Returns { osc, morphGain, haasDelay, haasPan, directPan, gainNode }
+  eng.makeOscVoice = function(freq, panPos) {
+    var osc = eng.ctx.createOscillator();
+    osc.frequency.value = freq;
+    osc.setPeriodicWave(eng.makeMorphWave(0)); // start as sine
+
+    var gainNode = eng.ctx.createGain();
+    gainNode.gain.value = 0.4; // each channel at 0.4, three sum to ~1.2 — limiter handles it
+
+    // Direct signal — panned to one side
+    var directPan = eng.ctx.createStereoPanner();
+    directPan.pan.value = panPos * -0.4; // slight pan opposite to haas
+
+    // Haas delay — creates stereo width proportional to channel brightness
+    var haasDelay = eng.ctx.createDelay(0.05);
+    haasDelay.delayTime.value = 0.015;
+    var haasGain = eng.ctx.createGain(); haasGain.gain.value = 0; // start narrow
+    var haasPan  = eng.ctx.createStereoPanner();
+    haasPan.pan.value = panPos * 0.8; // haas copy panned to opposite side
+
+    osc.connect(gainNode);
+    gainNode.connect(directPan);
+    directPan.connect(eng.combFilters[0]);
+    gainNode.connect(haasDelay);
+    haasDelay.connect(haasGain);
+    haasGain.connect(haasPan);
+    haasPan.connect(eng.combFilters[0]);
+
+    osc.start();
+    return { osc: osc, gainNode: gainNode, directPan: directPan, haasDelay: haasDelay, haasGain: haasGain, haasPan: haasPan };
+  };
+
+  eng.spawnOscillators = function() {
+    // Destroy old
+    ['oscR','oscG','oscB'].forEach(function(k) {
+      var v = eng[k];
+      if (!v) return;
+      try { v.osc.stop(); v.osc.disconnect(); v.gainNode.disconnect(); v.directPan.disconnect(); v.haasDelay.disconnect(); v.haasGain.disconnect(); v.haasPan.disconnect(); } catch(e) {}
+      eng[k] = null;
+    });
+
+    var baseHz = midiToHz(eng.currentPitchMidi);
+    var rHz = baseHz * INTERVALS[eng.settings.intervalR];
+    var gHz = baseHz * INTERVALS[eng.settings.intervalG];
+    var bHz = baseHz * INTERVALS[eng.settings.intervalB];
+
+    // R = left, G = center, B = right
+    eng.oscR = eng.makeOscVoice(rHz,  1); // pan direction: 1 = R-panned
+    eng.oscG = eng.makeOscVoice(gHz,  0); // center
+    eng.oscB = eng.makeOscVoice(bHz, -1); // pan direction: -1 = L-panned
+  };
+
+  eng.updatePitch = function(rx) {
+    if (!eng.ctx) return;
+    var s = eng.settings;
+    var midi = s.pitchMin + rx * (s.pitchMax - s.pitchMin);
+    if (s.quantize) midi = quantizePitch(Math.round(midi), s.scale, s.rootNote);
+    eng.currentPitchMidi = midi;
+    var baseHz = midiToHz(midi), t = eng.ctx.currentTime;
+    if (eng.oscR) eng.oscR.osc.frequency.setTargetAtTime(baseHz * INTERVALS[s.intervalR], t, 0.05);
+    if (eng.oscG) eng.oscG.osc.frequency.setTargetAtTime(baseHz * INTERVALS[s.intervalG], t, 0.05);
+    if (eng.oscB) eng.oscB.osc.frequency.setTargetAtTime(baseHz * INTERVALS[s.intervalB], t, 0.05);
+  };
+
+  // Update intervals without full respawn — just update frequencies
+  eng.updateIntervals = function() {
+    if (!eng.ctx) return;
+    var baseHz = midiToHz(eng.currentPitchMidi), t = eng.ctx.currentTime;
+    if (eng.oscR) eng.oscR.osc.frequency.setTargetAtTime(baseHz * INTERVALS[eng.settings.intervalR], t, 0.1);
+    if (eng.oscG) eng.oscG.osc.frequency.setTargetAtTime(baseHz * INTERVALS[eng.settings.intervalG], t, 0.1);
+    if (eng.oscB) eng.oscB.osc.frequency.setTargetAtTime(baseHz * INTERVALS[eng.settings.intervalB], t, 0.1);
+  };
+
+  // Update morph and stereo width per channel from RGB values
+  eng.updateFromRGB = function(r, g, b) {
+    if (!eng.ctx) return;
+    var t = eng.ctx.currentTime;
+    // Each channel: brightness → sine↔square morph
+    // r/g/b are 0..1 average channel values
+    var rMorph = r * r; // squared for perceptual curve
+    var gMorph = g * g;
+    var bMorph = b * b;
+
+    if (eng.oscR) { try { eng.oscR.osc.setPeriodicWave(eng.makeMorphWave(rMorph)); } catch(e) {} }
+    if (eng.oscG) { try { eng.oscG.osc.setPeriodicWave(eng.makeMorphWave(gMorph)); } catch(e) {} }
+    if (eng.oscB) { try { eng.oscB.osc.setPeriodicWave(eng.makeMorphWave(bMorph)); } catch(e) {} }
+
+    // Each channel brightness → Haas delay gain (stereo width)
+    // 0 = mono (haasGain 0), 1 = wide (haasGain 0.7)
+    if (eng.oscR && eng.oscR.haasGain) eng.oscR.haasGain.gain.setTargetAtTime(r * 0.7, t, 0.2);
+    if (eng.oscG && eng.oscG.haasGain) eng.oscG.haasGain.gain.setTargetAtTime(g * 0.7, t, 0.2);
+    if (eng.oscB && eng.oscB.haasGain) eng.oscB.haasGain.gain.setTargetAtTime(b * 0.7, t, 0.2);
+  };
+
+  eng.initLFO = function() {
+    if (!eng.ctx || eng._lfoNode) return;
+    eng._lfoNode = eng.ctx.createOscillator();
+    eng._lfoNode.type = "sine";
+    eng._lfoNode.frequency.value = 0.2;
+    eng._lfoGain = eng.ctx.createGain();
+    eng._lfoGain.gain.value = 0;
+    eng._lfoNode.connect(eng._lfoGain);
+    eng._lfoGain.connect(eng.lowpassNode.frequency);
+    eng._lfoNode.start();
+  };
+
+  eng.updateFromCamera = function(luma, hue, chromaContrast, slices, r, g, b) {
+    if (!eng.ctx || !eng.combFilters.length) return;
+    var t = eng.ctx.currentTime;
+    if (!eng._lfoNode) eng.initLFO();
+
+    // RGB → per-oscillator morph + stereo width
+    eng.updateFromRGB(r || luma, g || luma, b || luma);
+
+    // Comb: same as engine 1
+    var fundamental = 80 + luma * 320;
+    for (var i = 0; i < eng.combFilters.length; i++) {
+      var sliceLum = slices ? slices[i] : luma;
+      eng.combFilters[i].frequency.setTargetAtTime(fundamental*(i+1), t, 0.3);
+      eng.combFilters[i].gain.setTargetAtTime((sliceLum-0.5)*20, t, 0.3);
+      eng.combFilters[i].Q.setTargetAtTime(1.5+chromaContrast*8, t, 0.3);
+    }
+
+    // Lowpass: luma → brightness
+    eng.lowpassNode.frequency.setTargetAtTime(300 + luma*7700, t, 0.2);
+
+    // LFO
+    var now = eng.ctx.currentTime, dt = now - eng._prevHueTime, hueDelta = 0;
+    if (dt > 0 && dt < 2) {
+      hueDelta = Math.abs(hue - eng._prevHue);
+      if (hueDelta > 0.5) hueDelta = 1 - hueDelta;
+      hueDelta = hueDelta / dt;
+    }
+    eng._prevHue = hue; eng._prevHueTime = now;
+    eng._lfoNode.frequency.setTargetAtTime(0.05+Math.min(hueDelta*4,1)*1.95, t, 0.5);
+    eng._lfoGain.gain.setTargetAtTime(chromaContrast*800, t, 0.3);
+  };
+
+  eng.setSoundOn = function(on) {
+    if (!eng.ctx) return;
+    eng.ctx.resume();
+    eng.masterGain.gain.cancelScheduledValues(0);
+    eng.masterGain.gain.value = on ? 0.7 : 0;
+    eng.active = on;
+  };
+
+  eng.panic = function() {
+    if (!eng.ctx) return;
+    eng.masterGain.gain.cancelScheduledValues(eng.ctx.currentTime);
+    eng.masterGain.gain.setValueAtTime(0, eng.ctx.currentTime);
+    eng.active = false;
+  };
+
+  eng.getAnalyserData = function() {
+    if (!eng.analyserNode) return null;
+    var buf = new Float32Array(eng.analyserNode.frequencyBinCount);
+    eng.analyserNode.getFloatTimeDomainData(buf);
+    return buf;
+  };
+
+  // Loop + recording — identical to engine 1
+  eng.startRecording = function() {
+    if (!eng.ctx) return;
+    var chunks = [], proc = eng.ctx.createScriptProcessor(4096, 2, 2);
+    proc.onaudioprocess = function(e) {
+      chunks.push({ L: new Float32Array(e.inputBuffer.getChannelData(0)), R: new Float32Array(e.inputBuffer.getChannelData(1)) });
+    };
+    eng.limiterNode.connect(proc); proc.connect(eng.ctx.destination);
+    eng._recorder = proc; eng._recChunks = chunks;
+  };
+
+  eng.stopRecording = function() {
+    if (!eng._recorder) return null;
+    try { eng.limiterNode.disconnect(eng._recorder); eng._recorder.disconnect(); } catch(e) {}
+    var chunks = eng._recChunks; eng._recorder = null; eng._recChunks = null;
+    var sr = eng.ctx.sampleRate;
+    var nFrames = chunks.reduce(function(s,c){return s+c.L.length;},0);
+    var buf = new ArrayBuffer(44 + nFrames*4), view = new DataView(buf);
+    function str(o,s){for(var i=0;i<s.length;i++)view.setUint8(o+i,s.charCodeAt(i));}
+    function u32(o,v){view.setUint32(o,v,true);}
+    function u16(o,v){view.setUint16(o,v,true);}
+    str(0,"RIFF");u32(4,36+nFrames*4);str(8,"WAVE");
+    str(12,"fmt ");u32(16,16);u16(20,1);u16(22,2);
+    u32(24,sr);u32(28,sr*4);u16(32,4);u16(34,16);
+    str(36,"data");u32(40,nFrames*4);
+    var off=44;
+    for(var ci=0;ci<chunks.length;ci++){
+      var L=chunks[ci].L,R=chunks[ci].R;
+      for(var fi=0;fi<L.length;fi++){
+        var ls=Math.max(-1,Math.min(1,L[fi])),rs=Math.max(-1,Math.min(1,R[fi]));
+        view.setInt16(off,ls<0?ls*0x8000:ls*0x7FFF,true);off+=2;
+        view.setInt16(off,rs<0?rs*0x8000:rs*0x7FFF,true);off+=2;
+      }
+    }
+    return buf;
+  };
+
+  eng.startLoopRecord = function() {
+    if (!eng.ctx) return;
+    eng.stopLoop();
+    eng._loopRecording=true; eng._loopChunks=[];
+    var maxSamples=eng.ctx.sampleRate*10, captured=0;
+    var proc=eng.ctx.createScriptProcessor(4096,2,2);
+    proc.onaudioprocess=function(ev){
+      if(!eng._loopRecording||captured>=maxSamples)return;
+      eng._loopChunks.push({L:new Float32Array(ev.inputBuffer.getChannelData(0)),R:new Float32Array(ev.inputBuffer.getChannelData(1))});
+      captured+=4096;
+    };
+    eng.limiterNode.connect(proc);proc.connect(eng.ctx.destination);eng._loopProc=proc;
+  };
+
+  eng.commitLoop = function() {
+    eng._loopRecording=false;
+    if(eng._loopProc){try{eng.limiterNode.disconnect(eng._loopProc);eng._loopProc.disconnect();}catch(e){}eng._loopProc=null;}
+    var chunks=eng._loopChunks;
+    if(!chunks.length)return false;
+    var sr=eng.ctx.sampleRate,nFrames=chunks.reduce(function(s,c){return s+c.L.length;},0);
+    if(nFrames<4096)return false;
+    var buf=eng.ctx.createBuffer(2,nFrames,sr),oL=buf.getChannelData(0),oR=buf.getChannelData(1),off=0;
+    for(var i=0;i<chunks.length;i++){oL.set(chunks[i].L,off);oR.set(chunks[i].R,off);off+=chunks[i].L.length;}
+    var fl=Math.min(Math.floor(sr*0.008),Math.floor(nFrames/4));
+    for(var j=0;j<fl;j++){var t=j/fl;oL[j]*=t;oR[j]*=t;oL[nFrames-fl+j]*=(1-t);oR[nFrames-fl+j]*=(1-t);}
+    eng.masterGain.gain.value=0;
+    var lg=eng.ctx.createGain();lg.gain.value=0.85;lg.connect(eng.limiterNode);
+    var src=eng.ctx.createBufferSource();src.buffer=buf;src.loop=true;src.connect(lg);src.start(0);
+    eng._loopNode=src;eng._loopGain=lg;
+    return true;
+  };
+
+  eng.stopLoop = function() {
+    eng._loopRecording=false;
+    if(eng._loopProc){try{eng.limiterNode.disconnect(eng._loopProc);eng._loopProc.disconnect();}catch(e){}eng._loopProc=null;}
+    if(eng._loopNode){try{eng._loopNode.stop();eng._loopNode.disconnect();}catch(e){}eng._loopNode=null;}
+    if(eng._loopGain){try{eng._loopGain.disconnect();}catch(e){}eng._loopGain=null;}
+    eng._loopChunks=[];
+    if(eng.active)eng.masterGain.gain.value=0.7;
+  };
+
+  eng.isLooping = function() { return !!eng._loopNode; };
+
+  eng.destroy = function() {
+    eng.panic();
+    if(eng._lfoNode){try{eng._lfoNode.stop();}catch(e){}}
+    ['oscR','oscG','oscB'].forEach(function(k){if(eng[k])try{eng[k].osc.stop();}catch(e){} });
+    for(var i=0;i<eng.combFilters.length;i++){try{eng.combFilters[i].disconnect();}catch(e){}}
+    if(eng.ctx)eng.ctx.close();
+  };
+
+  return eng;
+}
+
+// ── Frame analysis ────────────────────────────────────────────────────────────
 function analyseFrame(canvas, ctx2d) {
   var w = canvas.width, h = canvas.height;
   if (!w || !h) return null;
   var px    = ctx2d.getImageData(0, 0, w, h).data;
   var total = w * h;
-  var sumR = 0, sumG = 0, sumB = 0, comXw = 0, comYw = 0, comW = 0;
+  var sumR=0,sumG=0,sumB=0,comXw=0,comYw=0,comW=0;
 
   for (var i = 0; i < total; i++) {
-    var r   = px[i*4]   / 255;
-    var g   = px[i*4+1] / 255;
-    var b   = px[i*4+2] / 255;
-    var lum = 0.2126*r + 0.7152*g + 0.0722*b;
-    sumR += r; sumG += g; sumB += b;
-    comXw += (i % w) / w * lum;
-    comYw += Math.floor(i / w) / h * lum;
-    comW  += lum;
+    var r=px[i*4]/255, g=px[i*4+1]/255, b=px[i*4+2]/255;
+    var lum=0.2126*r+0.7152*g+0.0722*b;
+    sumR+=r;sumG+=g;sumB+=b;
+    comXw+=(i%w)/w*lum; comYw+=Math.floor(i/w)/h*lum; comW+=lum;
   }
 
-  var avgR = sumR/total, avgG = sumG/total, avgB = sumB/total;
-  var luma  = 0.2126*avgR + 0.7152*avgG + 0.0722*avgB;
-  var max   = Math.max(avgR,avgG,avgB), min = Math.min(avgR,avgG,avgB), delta = max - min;
-  var hue   = 0;
-  if (delta > 0) {
-    if (max===avgR)      hue = ((avgG-avgB)/delta) % 6;
-    else if (max===avgG) hue = (avgB-avgR)/delta + 2;
-    else                 hue = (avgR-avgG)/delta + 4;
-    hue = ((hue*60)+360) % 360;
+  var avgR=sumR/total,avgG=sumG/total,avgB=sumB/total;
+  var luma=0.2126*avgR+0.7152*avgG+0.0722*avgB;
+  var max=Math.max(avgR,avgG,avgB),min=Math.min(avgR,avgG,avgB),delta=max-min;
+  var hue=0;
+  if(delta>0){
+    if(max===avgR)      hue=((avgG-avgB)/delta)%6;
+    else if(max===avgG) hue=(avgB-avgR)/delta+2;
+    else                hue=(avgR-avgG)/delta+4;
+    hue=((hue*60)+360)%360;
   }
-  var sat  = max===0 ? 0 : delta/max;
-  var comX = comW>0 ? comXw/comW : 0.5;
-  var comY = comW>0 ? comYw/comW : 0.5;
+  var sat=max===0?0:delta/max;
+  var comX=comW>0?comXw/comW:0.5,comY=comW>0?comYw/comW:0.5;
 
-  // Raster-scan wavetable: sample ANALYSIS_RES evenly spaced points across
-  // the full image in a boustrophedon (snake) pattern — left→right on even rows,
-  // right→left on odd rows. Point-sampled to preserve local variance & texture.
-  // A small 3x3 neighbourhood average per point gives gentle anti-aliasing
-  // without destroying the signal dynamics that make interesting waveforms.
-  var wt   = new Float32Array(ANALYSIS_RES);
-  var cols = Math.ceil(Math.sqrt(ANALYSIS_RES * (w / h)));
-  var rows = Math.ceil(ANALYSIS_RES / cols);
-  var idx2 = 0;
-  for (var row2 = 0; row2 < rows && idx2 < ANALYSIS_RES; row2++) {
-    var rowFrac = (row2 + 0.5) / rows;
-    var py2     = Math.floor(rowFrac * h);
-    var leftToRight = (row2 % 2 === 0);
-    for (var col2 = 0; col2 < cols && idx2 < ANALYSIS_RES; col2++) {
-      var c2      = leftToRight ? col2 : (cols - 1 - col2);
-      var colFrac = (c2 + 0.5) / cols;
-      var px2     = Math.floor(colFrac * w);
-      // 3x3 neighbourhood average for gentle AA
-      var sum2 = 0, cnt2 = 0;
-      for (var dy = -1; dy <= 1; dy++) {
-        for (var dx = -1; dx <= 1; dx++) {
-          var nx = Math.max(0, Math.min(w-1, px2+dx));
-          var ny = Math.max(0, Math.min(h-1, py2+dy));
-          var pi = (ny * w + nx) * 4;
-          sum2 += 0.2126*(px[pi]/255) + 0.7152*(px[pi+1]/255) + 0.0722*(px[pi+2]/255);
-          cnt2++;
-        }
+  // Snake raster wavetable
+  var wt=new Float32Array(ANALYSIS_RES);
+  var cols=Math.ceil(Math.sqrt(ANALYSIS_RES*(w/h)));
+  var rows=Math.ceil(ANALYSIS_RES/cols);
+  var idx2=0;
+  for(var row2=0;row2<rows&&idx2<ANALYSIS_RES;row2++){
+    var rowFrac=(row2+0.5)/rows,py2=Math.floor(rowFrac*h),ltr=(row2%2===0);
+    for(var col2=0;col2<cols&&idx2<ANALYSIS_RES;col2++){
+      var c2=ltr?col2:(cols-1-col2),colFrac=(c2+0.5)/cols,px2=Math.floor(colFrac*w);
+      var sum2=0,cnt2=0;
+      for(var dy=-1;dy<=1;dy++)for(var dx=-1;dx<=1;dx++){
+        var nx=Math.max(0,Math.min(w-1,px2+dx)),ny=Math.max(0,Math.min(h-1,py2+dy));
+        var pi=(ny*w+nx)*4;
+        sum2+=0.2126*(px[pi]/255)+0.7152*(px[pi+1]/255)+0.0722*(px[pi+2]/255);
+        cnt2++;
       }
-      wt[idx2++] = (sum2/cnt2) * 2 - 1; // luma 0..1 → waveform -1..1
+      wt[idx2++]=(sum2/cnt2)*2-1;
     }
   }
 
-  // Chroma contrast: divide frame into 4x4 grid, measure hue variance between cells
-  // High variance = vivid contrasting colors side by side → high resonance
-  var gridN   = 4;
-  var cellHues = [];
-  for (var gy = 0; gy < gridN; gy++) {
-    for (var gx = 0; gx < gridN; gx++) {
-      var xS = Math.floor(gx * w / gridN);
-      var xE = Math.floor((gx+1) * w / gridN);
-      var yS = Math.floor(gy * h / gridN);
-      var yE = Math.floor((gy+1) * h / gridN);
-      var cR = 0, cG = 0, cB = 0, cN = 0;
-      for (var cy = yS; cy < yE; cy += 4) {   // stride 4 for speed
-        for (var cx = xS; cx < xE; cx += 4) {
-          var ci = (cy * w + cx) * 4;
-          cR += px[ci]/255; cG += px[ci+1]/255; cB += px[ci+2]/255; cN++;
-        }
-      }
-      if (cN > 0) { cR/=cN; cG/=cN; cB/=cN; }
-      var cMax = Math.max(cR,cG,cB), cMin = Math.min(cR,cG,cB), cD = cMax-cMin;
-      var cHue = 0;
-      if (cD > 0.05) { // only count cells with meaningful color
-        if (cMax===cR)      cHue = ((cG-cB)/cD+6) % 6;
-        else if (cMax===cG) cHue = (cB-cR)/cD + 2;
-        else                cHue = (cR-cG)/cD + 4;
-        cellHues.push(cHue / 6); // normalize 0..1
-      }
+  // Chroma contrast
+  var gridN=4,cellHues=[];
+  for(var gy=0;gy<gridN;gy++)for(var gx=0;gx<gridN;gx++){
+    var xS=Math.floor(gx*w/gridN),xE=Math.floor((gx+1)*w/gridN);
+    var yS=Math.floor(gy*h/gridN),yE=Math.floor((gy+1)*h/gridN);
+    var cR=0,cG=0,cB=0,cN=0;
+    for(var cy=yS;cy<yE;cy+=4)for(var cx=xS;cx<xE;cx+=4){
+      var ci=(cy*w+cx)*4;
+      cR+=px[ci]/255;cG+=px[ci+1]/255;cB+=px[ci+2]/255;cN++;
+    }
+    if(cN>0){cR/=cN;cG/=cN;cB/=cN;}
+    var cMax=Math.max(cR,cG,cB),cMin=Math.min(cR,cG,cB),cD=cMax-cMin;
+    if(cD>0.05){
+      var cHue=0;
+      if(cMax===cR)      cHue=((cG-cB)/cD+6)%6;
+      else if(cMax===cG) cHue=(cB-cR)/cD+2;
+      else               cHue=(cR-cG)/cD+4;
+      cellHues.push(cHue/6);
     }
   }
-  var chromaContrast = 0;
-  if (cellHues.length > 1) {
-    var hMean = cellHues.reduce(function(s,v){return s+v;},0) / cellHues.length;
-    var hVar  = cellHues.reduce(function(s,v){return s+Math.pow(v-hMean,2);},0) / cellHues.length;
-    chromaContrast = Math.min(1, hVar * 8); // scale variance to 0..1
+  var chromaContrast=0;
+  if(cellHues.length>1){
+    var hMean=cellHues.reduce(function(s,v){return s+v;},0)/cellHues.length;
+    var hVar=cellHues.reduce(function(s,v){return s+Math.pow(v-hMean,2);},0)/cellHues.length;
+    chromaContrast=Math.min(1,hVar*8);
   }
 
-  // 8 vertical slices — luma of each → comb tooth heights
-  var slices = new Float32Array(8);
-  for (var si = 0; si < 8; si++) {
-    var sxS = Math.floor(si * w / 8);
-    var sxE = Math.floor((si+1) * w / 8);
-    var sSum = 0, sCnt = 0;
-    for (var sy = 0; sy < h; sy += 4) {
-      for (var sx = sxS; sx < sxE; sx += 4) {
-        var spi = (sy * w + sx) * 4;
-        sSum += 0.2126*(px[spi]/255) + 0.7152*(px[spi+1]/255) + 0.0722*(px[spi+2]/255);
-        sCnt++;
-      }
+  // 8 vertical slices
+  var slices=new Float32Array(8);
+  for(var si=0;si<8;si++){
+    var sxS=Math.floor(si*w/8),sxE=Math.floor((si+1)*w/8),sSum=0,sCnt=0;
+    for(var sy=0;sy<h;sy+=4)for(var sx=sxS;sx<sxE;sx+=4){
+      var spi=(sy*w+sx)*4;
+      sSum+=0.2126*(px[spi]/255)+0.7152*(px[spi+1]/255)+0.0722*(px[spi+2]/255);
+      sCnt++;
     }
-    slices[si] = sCnt > 0 ? sSum / sCnt : 0.5;
+    slices[si]=sCnt>0?sSum/sCnt:0.5;
   }
 
-  return { luma: luma, hue: hue/360, saturation: sat, chromaContrast: chromaContrast, slices: slices, comX: comX, comY: comY, wavetable: wt };
+  return { luma:luma, hue:hue/360, saturation:sat, chromaContrast:chromaContrast,
+           slices:slices, comX:comX, comY:comY, wavetable:wt,
+           avgR:avgR, avgG:avgG, avgB:avgB };
 }
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
+// ── Helpers ───────────────────────────────────────────────────────────────────
 function el(type, props) {
   var args = [type, props || null];
   for (var i = 2; i < arguments.length; i++) args.push(arguments[i]);
   return React.createElement.apply(React, args);
 }
-
 function cx() {
   return Array.prototype.slice.call(arguments).filter(Boolean).join(" ");
 }
 
-// ── App ──────────────────────────────────────────────────────────────────────
+// ── App ───────────────────────────────────────────────────────────────────────
 function App() {
-  var videoRef         = useRef(null);
-  var captureRef       = useRef(null);
-  var loopFramesRef    = useRef([]);   // captured video frames for loop
-  var loopOverlayRef   = useRef(null); // canvas overlay for video loop playback
-  var loopVidTimerRef  = useRef(null); // setInterval for video loop playback
-  var loopFrameIdxRef  = useRef(0);
-  var scopeRef         = useRef(null);
-  var ribbonRef        = useRef(null);
-  var synthRef         = useRef(null);
-  var streamRef        = useRef(null);
-  var timerRef         = useRef(null);
-  var rafRef           = useRef(null);
-  var mrRef            = useRef(null);
-  var chunksRef        = useRef([]);
+  var videoRef        = useRef(null);
+  var captureRef      = useRef(null);
+  var loopFramesRef   = useRef([]);
+  var loopOverlayRef  = useRef(null);
+  var loopVidTimerRef = useRef(null);
+  var loopFrameIdxRef = useRef(0);
+  var scopeRef        = useRef(null);
+  var ribbonRef       = useRef(null);
+  var synthRef        = useRef(null);
+  var streamRef       = useRef(null);
+  var timerRef        = useRef(null);
+  var rafRef          = useRef(null);
 
-  var r1  = useState(false);  var soundOn      = r1[0], setSoundOn      = r1[1];
-  var r2  = useState(false);  var recording    = r2[0], setRecording    = r2[1];
-  var r3  = useState(true);   var showScope    = r3[0], setShowScope    = r3[1];
-  var r4  = useState(false);  var showSettings = r4[0], setShowSettings = r4[1];
-  var r5  = useState("environment"); var facingMode = r5[0], setFacingMode = r5[1];
-  var r6  = useState(0.5);    var ribbonX      = r6[0], setRibbonX      = r6[1];
-  var r7  = useState(false);  var camReady     = r7[0], setCamReady     = r7[1];
-  var r8  = useState(null);   var camError     = r8[0], setCamError     = r8[1];
-  var r9  = useState(false);  var engReady     = r9[0], setEngReady     = r9[1];
-  var r12 = useState(true);   var camOn        = r12[0], setCamOn       = r12[1];
-  var r13 = useState(false);  var looping      = r13[0], setLooping     = r13[1];
-  var r14 = useState(false);  var loopCapturing = r14[0], setLoopCapturing = r14[1];
-  var r10 = useState(null);   var frameData    = r10[0], setFrameData   = r10[1];
+  var rs  = useState(false);  var soundOn       = rs[0],  setSoundOn      = rs[1];
+  var rr  = useState(false);  var recording     = rr[0],  setRecording    = rr[1];
+  var rsc = useState(true);   var showScope     = rsc[0], setShowScope    = rsc[1];
+  var rst = useState(false);  var showSettings  = rst[0], setShowSettings = rst[1];
+  var radv= useState(false);  var showAdv       = radv[0],setShowAdv      = radv[1];
+  var rf  = useState("environment"); var facingMode = rf[0], setFacingMode = rf[1];
+  var rx  = useState(0.5);    var ribbonX       = rx[0],  setRibbonX      = rx[1];
+  var rcr = useState(false);  var camReady      = rcr[0], setCamReady     = rcr[1];
+  var rce = useState(null);   var camError      = rce[0], setCamError     = rce[1];
+  var rer = useState(false);  var engReady      = rer[0], setEngReady     = rer[1];
+  var rco = useState(true);   var camOn         = rco[0], setCamOn        = rco[1];
+  var rl  = useState(false);  var looping       = rl[0],  setLooping      = rl[1];
+  var rlc = useState(false);  var loopCapturing = rlc[0], setLoopCapturing= rlc[1];
+  var rfd = useState(null);   var frameData     = rfd[0], setFrameData    = rfd[1];
 
-  var r11 = useState({ voices:1, detune:12, quantize:false, scale:"pentatonic", rootNote:48, pitchMin:36, pitchMax:72, reverbMix:0.3, fps:10, showScales:false });
-  var settings = r11[0], setSettings = r11[1];
+  // Which engine is active: "1" or "2"
+  var ren = useState("1");    var activeEngine  = ren[0], setActiveEngine  = ren[1];
 
-  function setSetting(k, v) { setSettings(function(s) { var n=Object.assign({},s); n[k]=v; return n; }); }
+  // Engine 1 settings
+  var rs1 = useState({ voices:1, detune:12, quantize:false, scale:"pentatonic",
+    rootNote:48, pitchMin:36, pitchMax:72, reverbMix:0.3, fps:10, showScales:false });
+  var settings1 = rs1[0], setSettings1 = rs1[1];
+
+  // Engine 2 settings
+  var rs2 = useState({ quantize:false, scale:"pentatonic", rootNote:48,
+    pitchMin:36, pitchMax:72, reverbMix:0.3, fps:10, showScales:false,
+    intervalR:"unison", intervalG:"fifth", intervalB:"octave" });
+  var settings2 = rs2[0], setSettings2 = rs2[1];
+
+  var settings    = activeEngine === "1" ? settings1 : settings2;
+  var setSettings = activeEngine === "1" ? setSettings1 : setSettings2;
+
+  function setSetting(k, v) { setSettings(function(s){ var n=Object.assign({},s); n[k]=v; return n; }); }
+
+  // Init both engines, switch between them
+  var eng1Ref = useRef(null);
+  var eng2Ref = useRef(null);
 
   useEffect(function() {
-    var eng = makeSynthEngine();
-    synthRef.current = eng;
-    return function() { eng.destroy(); };
+    eng1Ref.current = makeEngine1();
+    eng2Ref.current = makeEngine2();
+    synthRef.current = eng1Ref.current;
+    return function() {
+      if (eng1Ref.current) eng1Ref.current.destroy();
+      if (eng2Ref.current) eng2Ref.current.destroy();
+    };
   }, []);
 
+  // Switch engine
+  useEffect(function() {
+    var prev = synthRef.current;
+    var next = activeEngine === "1" ? eng1Ref.current : eng2Ref.current;
+    if (!next || next === prev) return;
+    // If previous was running, init and start new one
+    if (prev && prev.active) {
+      prev.setSoundOn(false);
+      if (!next.ctx) next.init();
+      next.setSoundOn(true);
+      setSoundOn(true);
+    }
+    synthRef.current = next;
+  }, [activeEngine]);
+
+  // Sync settings to active engine
   useEffect(function() {
     var eng = synthRef.current;
     if (!eng) return;
     Object.assign(eng.settings, settings);
-    if (eng.ctx) eng.spawnVoices();
+    if (eng.ctx) {
+      if (activeEngine === "1") eng.spawnVoices && eng.spawnVoices();
+      else { eng.updateIntervals && eng.updateIntervals(); }
+    }
   }, [settings]);
 
+  // Camera
   useEffect(function() {
     if (!camOn) return;
     var alive = true;
     setCamReady(false); setCamError(null);
     if (streamRef.current) streamRef.current.getTracks().forEach(function(t){t.stop();});
-
     navigator.mediaDevices.getUserMedia({ video:{ facingMode:facingMode, width:{ideal:1280}, height:{ideal:720} }, audio:false })
       .then(function(stream) {
         if (!alive) { stream.getTracks().forEach(function(t){t.stop();}); return; }
         streamRef.current = stream;
         var v = videoRef.current;
-        if (v) {
-          v.srcObject = stream;
-          v.play().then(function(){ if(alive) setCamReady(true); }).catch(function(){ if(alive) setCamReady(true); });
-        }
+        if (v) { v.srcObject=stream; v.play().then(function(){if(alive)setCamReady(true);}).catch(function(){if(alive)setCamReady(true);}); }
       })
       .catch(function(e) {
         if (!alive) return;
-        setCamError(e.name==="NotAllowedError" ? "CAMERA PERMISSION DENIED" : "CAMERA UNAVAILABLE");
+        setCamError(e.name==="NotAllowedError"?"CAMERA PERMISSION DENIED":"CAMERA UNAVAILABLE");
       });
-
-    return function() {
-      alive = false;
-      if (streamRef.current) streamRef.current.getTracks().forEach(function(t){t.stop();});
-    };
+    return function() { alive=false; if(streamRef.current)streamRef.current.getTracks().forEach(function(t){t.stop();}); };
   }, [facingMode, camOn]);
 
+  // Analysis loop
   useEffect(function() {
     if (!camReady) return;
     var ms = 1000 / settings.fps;
     timerRef.current = setInterval(function() {
-      var v = videoRef.current, c = captureRef.current;
-      if (!v || !c || v.readyState < 2) return;
-      c.width = v.videoWidth||320; c.height = v.videoHeight||240;
-      var ctx2d = c.getContext("2d");
-      ctx2d.drawImage(v, 0, 0, c.width, c.height);
-      var data = analyseFrame(c, ctx2d);
+      var v=videoRef.current, c=captureRef.current;
+      if (!v||!c||v.readyState<2) return;
+      c.width=v.videoWidth||320; c.height=v.videoHeight||240;
+      var ctx2d=c.getContext("2d");
+      ctx2d.drawImage(v,0,0,c.width,c.height);
+      var data=analyseFrame(c,ctx2d);
       if (data) {
         setFrameData(data);
-        var eng = synthRef.current;
-        if (eng && eng.ctx) { eng.currentLuma = data.luma; eng.updateFromCamera(data.luma, data.hue, data.chromaContrast, data.slices); eng.updateWavetable(data.wavetable, data.luma); }
-        // Capture video frames while loop recording
-        if (eng && eng._loopRecording) {
-          var MAX_FRAMES = 100;
-          if (loopFramesRef.current.length < MAX_FRAMES) {
-            loopFramesRef.current.push(ctx2d.getImageData(0, 0, c.width, c.height));
+        var eng=synthRef.current;
+        if (eng && eng.ctx) {
+          if (activeEngine==="1") {
+            eng.currentLuma=data.luma;
+            eng.updateFromCamera(data.luma,data.hue,data.chromaContrast,data.slices);
+            eng.updateWavetable(data.wavetable,data.luma);
+          } else {
+            eng.updateFromCamera(data.luma,data.hue,data.chromaContrast,data.slices,data.avgR,data.avgG,data.avgB);
           }
+        }
+        if (eng && eng._loopRecording && loopFramesRef.current.length < 100) {
+          loopFramesRef.current.push(ctx2d.getImageData(0,0,c.width,c.height));
         }
       }
     }, ms);
     return function() { clearInterval(timerRef.current); };
-  }, [camReady, settings.fps]);
+  }, [camReady, settings.fps, activeEngine]);
 
+  // Scope
   useEffect(function() {
-    var alive = true;
+    var alive=true;
     function draw() {
-      if (!alive) return;
-      rafRef.current = requestAnimationFrame(draw);
-      if (!showScope) return;
-      var canvas = scopeRef.current;
-      if (!canvas) return;
-      var ctx = canvas.getContext("2d");
-      var W = canvas.width, H = canvas.height;
+      if(!alive)return;
+      rafRef.current=requestAnimationFrame(draw);
+      if(!showScope)return;
+      var canvas=scopeRef.current;
+      if(!canvas)return;
+      var ctx=canvas.getContext("2d"),W=canvas.width,H=canvas.height;
       ctx.clearRect(0,0,W,H);
-      var eng = synthRef.current;
-      var wd  = eng ? eng.getAnalyserData() : null;
-      if (!wd || !soundOn) return;
-      // Find peak for normalization — makes scope fill display regardless of amplitude
-      var peak = 0.001;
-      for (var p=0; p<wd.length; p++) { var a=Math.abs(wd[p]); if(a>peak) peak=a; }
-      var scale = Math.min(1/peak, 8); // normalize, cap at 8x to avoid noise blow-up
-      ctx.strokeStyle = "rgba(127,255,106,0.85)";
-      ctx.lineWidth = 1.5;
-      ctx.shadowColor = "#7fff6a"; ctx.shadowBlur = 8;
+      var wd=synthRef.current?synthRef.current.getAnalyserData():null;
+      if(!wd||!soundOn)return;
+      var peak=0.001;
+      for(var p=0;p<wd.length;p++){var a=Math.abs(wd[p]);if(a>peak)peak=a;}
+      var scale=Math.min(1/peak,8);
+      ctx.strokeStyle="rgba(127,255,106,0.85)";ctx.lineWidth=1.5;
+      ctx.shadowColor="#7fff6a";ctx.shadowBlur=8;
       ctx.beginPath();
-      var sl = W / wd.length;
-      for (var i=0; i<wd.length; i++) {
-        var x=i*sl, y=H/2+wd[i]*scale*H*0.42;
-        if(i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
-      }
+      var sl=W/wd.length;
+      for(var i=0;i<wd.length;i++){var x=i*sl,y=H/2+wd[i]*scale*H*0.42;i===0?ctx.moveTo(x,y):ctx.lineTo(x,y);}
       ctx.stroke();
     }
-    rafRef.current = requestAnimationFrame(draw);
-    return function() { alive=false; cancelAnimationFrame(rafRef.current); };
-  }, [showScope, soundOn]);
+    rafRef.current=requestAnimationFrame(draw);
+    return function(){alive=false;cancelAnimationFrame(rafRef.current);};
+  }, [showScope,soundOn]);
 
   var handleSound = useCallback(function() {
-    var eng = synthRef.current;
-    if (!eng) return;
-    // Both init() and setSoundOn() must run synchronously inside this gesture handler
-    if (!eng.ctx) {
-      eng.init();
-      setEngReady(true);
-    }
-    var next = !soundOn;
+    var eng=synthRef.current;
+    if(!eng)return;
+    if(!eng.ctx){eng.init();setEngReady(true);}
+    var next=!soundOn;
     eng.setSoundOn(next);
     setSoundOn(next);
   }, [soundOn]);
 
-  var handlePanic = useCallback(function() {
-    var eng = synthRef.current;
-    if (eng) eng.panic();
-    setSoundOn(false);
-  }, []);
-
   var handleRibbon = useCallback(function(e) {
     e.preventDefault();
-    var rect = ribbonRef.current ? ribbonRef.current.getBoundingClientRect() : null;
-    if (!rect) return;
-    var cx = e.touches ? e.touches[0].clientX : e.clientX;
-    var x  = Math.max(0, Math.min(1, (cx - rect.left) / rect.width));
+    var rect=ribbonRef.current?ribbonRef.current.getBoundingClientRect():null;
+    if(!rect)return;
+    var cx=e.touches?e.touches[0].clientX:e.clientX;
+    var x=Math.max(0,Math.min(1,(cx-rect.left)/rect.width));
     setRibbonX(x);
-    var eng = synthRef.current;
-    if (eng) eng.updatePitch(x);
+    if(synthRef.current)synthRef.current.updatePitch(x);
   }, []);
 
-  var handleFlip   = useCallback(function() { setFacingMode(function(f){return f==="environment"?"user":"environment";}); }, []);
+  var handleFlip    = useCallback(function(){setFacingMode(function(f){return f==="environment"?"user":"environment";});}, []);
+  var handleReload  = useCallback(function(){window.location.reload();}, []);
 
   var handleLoopDown = function(e) {
     e.preventDefault();
-    var eng = synthRef.current;
-    if (!eng || !eng.ctx) return;
-    if (eng.isLooping()) {
-      // Stop loop
-      eng.stopLoop();
-      setLooping(false);
-      setLoopCapturing(false);
-      clearInterval(loopVidTimerRef.current);
-      loopFramesRef.current = [];
-      var ov = loopOverlayRef.current;
-      if (ov) ov.getContext("2d").clearRect(0,0,ov.width,ov.height);
+    var eng=synthRef.current;
+    if(!eng||!eng.ctx)return;
+    if(eng.isLooping()){
+      eng.stopLoop();setLooping(false);setLoopCapturing(false);
+      clearInterval(loopVidTimerRef.current);loopFramesRef.current=[];
+      var ov=loopOverlayRef.current;
+      if(ov)ov.getContext("2d").clearRect(0,0,ov.width,ov.height);
       return;
     }
-    // Start recording
-    loopFramesRef.current = [];
-    eng.startLoopRecord();
-    setLoopCapturing(true);
+    loopFramesRef.current=[];eng.startLoopRecord();setLoopCapturing(true);
   };
 
   var handleLoopUp = function(e) {
     e.preventDefault();
-    var eng = synthRef.current;
-    if (!eng || !eng._loopRecording) return;
-    var ok = eng.commitLoop();
+    var eng=synthRef.current;
+    if(!eng||!eng._loopRecording)return;
+    var ok=eng.commitLoop();
     setLoopCapturing(false);
-    if (!ok) return;
+    if(!ok)return;
     setLooping(true);
-    // Video loop
-    var frames = loopFramesRef.current;
-    if (frames.length > 0) {
-      loopFrameIdxRef.current = 0;
-      clearInterval(loopVidTimerRef.current);
-      var ov = loopOverlayRef.current;
-      loopVidTimerRef.current = setInterval(function() {
-        if (!ov || !frames.length) return;
-        ov.width  = frames[0].width;
-        ov.height = frames[0].height;
-        ov.getContext("2d").putImageData(frames[loopFrameIdxRef.current % frames.length], 0, 0);
+    var frames=loopFramesRef.current;
+    if(frames.length>0){
+      loopFrameIdxRef.current=0;clearInterval(loopVidTimerRef.current);
+      var ov=loopOverlayRef.current;
+      loopVidTimerRef.current=setInterval(function(){
+        if(!ov||!frames.length)return;
+        ov.width=frames[0].width;ov.height=frames[0].height;
+        ov.getContext("2d").putImageData(frames[loopFrameIdxRef.current%frames.length],0,0);
         loopFrameIdxRef.current++;
-      }, 100);
+      },100);
     }
   };
 
-  var handleCamToggle = useCallback(function() {
-    setCamOn(function(on) {
-      var next = !on;
-      if (!next) {
-        // Stop stream
-        if (streamRef.current) streamRef.current.getTracks().forEach(function(t){t.stop();});
-        streamRef.current = null;
-        setCamReady(false);
-      }
+  var handleCamToggle = useCallback(function(){
+    setCamOn(function(on){
+      var next=!on;
+      if(!next){if(streamRef.current)streamRef.current.getTracks().forEach(function(t){t.stop();});streamRef.current=null;setCamReady(false);}
       return next;
     });
   }, []);
-  var handleReload = useCallback(function() { window.location.reload(); }, []);
 
-  var handleRecord = useCallback(function() {
-    var eng = synthRef.current;
-    if (recording) {
-      // Stop and export WAV
-      var wavBuf = eng ? eng.stopRecording() : null;
-      if (wavBuf) {
-        var blob = new Blob([wavBuf], { type: "audio/wav" });
-        var url  = URL.createObjectURL(blob);
-        var a    = document.createElement("a");
-        a.href = url; a.download = "camsynth-" + Date.now() + ".wav"; a.click();
-      }
+  var handleRecord = useCallback(function(){
+    var eng=synthRef.current;
+    if(recording){
+      var wavBuf=eng?eng.stopRecording():null;
+      if(wavBuf){var blob=new Blob([wavBuf],{type:"audio/wav"}),url=URL.createObjectURL(blob),a=document.createElement("a");a.href=url;a.download="camsynth-"+Date.now()+".wav";a.click();}
       setRecording(false);
     } else {
-      if (!eng || !eng.ctx) return;
-      eng.startRecording();
-      setRecording(true);
+      if(!eng||!eng.ctx)return;
+      eng.startRecording();setRecording(true);
     }
   }, [recording]);
 
-  var pr       = settings.pitchMax - settings.pitchMin;
-  var midMidi  = Math.round(settings.pitchMin + ribbonX * pr);
-  var noteName = NOTE_NAMES[midMidi % 12] + (Math.floor(midMidi/12)-1);
-  var hueCSS   = frameData ? "hsl("+Math.round(frameData.hue*360)+",65%,52%)" : "#7fff6a";
+  var handleEngineSwitch = useCallback(function(id) {
+    setActiveEngine(id);
+    setShowSettings(false);
+  }, []);
 
-  return el("div", { style:{ display:"flex", flexDirection:"column", width:"100%", height:"100dvh", background:"#0a0a0b", fontFamily:"'IBM Plex Mono','Courier New',monospace", color:"#c8c8b4", userSelect:"none", touchAction:"none", overflow:"hidden", maxWidth:480, margin:"0 auto" } },
+  var pr      = settings.pitchMax - settings.pitchMin;
+  var midMidi = Math.round(settings.pitchMin + ribbonX * pr);
+  var noteName= NOTE_NAMES[midMidi%12]+(Math.floor(midMidi/12)-1);
+
+  // ── MAIN VIEW ────────────────────────────────────────────────────────────────
+  var mainView = el("div", { style:{ display:"flex", flexDirection:"column", width:"100%", height:"100%", overflow:"hidden" } },
+
+    // Header
+    el("div", { style:{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"10px 14px 6px", paddingTop:"max(env(safe-area-inset-top,10px),10px)", flexShrink:0 } },
+      el("div", { style:{ display:"flex", alignItems:"baseline", gap:7 } },
+        el("span", { style:{ fontSize:10, letterSpacing:"0.2em", color:"#7fff6a", textTransform:"uppercase" } }, "CamSynth"),
+        el("span", { style:{ fontSize:8, color:"#888", letterSpacing:"0.1em" } }, "v"+VERSION)
+      ),
+      el("div", { style:{ display:"flex", gap:4, alignItems:"center" } },
+        el("button", { className:cx("cb", showAdv&&"on"), onClick:function(){setShowAdv(function(s){return !s;});setShowSettings(false);}, style:{ letterSpacing:"0.12em", padding:"5px 10px" } }, "ADV"),
+        camOn && el("button", { className:"cb", onClick:handleFlip }, "\u21c4"),
+        el("button", { className:"cb", onClick:handleReload }, "\u21ba")
+      )
+    ),
+
+    // Camera
+    el("div", { style:{ position:"relative", background:"#050505", overflow:"hidden", borderTop:"1px solid #141414", borderBottom:"1px solid #141414", flexShrink:0, height:"42vh" } },
+      el("video", { ref:videoRef, playsInline:true, muted:true, autoPlay:true, controls:false, style:{ width:"100%", height:"100%", objectFit:"cover", display:"block", transform:facingMode==="user"?"scaleX(-1)":"none" } }),
+      showScope && el("canvas", { ref:scopeRef, width:480, height:80, style:{ position:"absolute", bottom:0, left:0, width:"100%", height:60, pointerEvents:"none" } }),
+      frameData && el("div", { style:{ position:"absolute", top:8, left:8, fontSize:8, color:"rgba(127,255,106,0.35)", letterSpacing:"0.1em", lineHeight:2, pointerEvents:"none" } },
+        el("div",null,"LMA "+(frameData.luma*100).toFixed(1)),
+        el("div",null,"HUE "+Math.round(frameData.hue*360)+"\xb0"),
+        el("div",null,"CHR "+(frameData.chromaContrast*100).toFixed(1)),
+        activeEngine==="2" && frameData.avgR !== undefined && el("div",null,
+          "R "+( frameData.avgR*100).toFixed(0)+" G "+(frameData.avgG*100).toFixed(0)+" B "+(frameData.avgB*100).toFixed(0)
+        )
+      ),
+      !camOn && el("div", { style:{ position:"absolute", inset:0, display:"flex", alignItems:"center", justifyContent:"center", background:"#050505" } },
+        el("span", { style:{ color:"#2a2a2a", fontSize:10, letterSpacing:"0.2em" } }, "CAMERA OFF")
+      ),
+      camOn && !camReady && !camError && el("div", { style:{ position:"absolute", inset:0, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:8 } },
+        el("span", { style:{ color:"#2a2a2a", fontSize:10, letterSpacing:"0.2em" } }, "AWAITING CAMERA"),
+        el("span", { style:{ color:"#1e1e1e", fontSize:8 } }, "grant permission when prompted")
+      ),
+      camError && el("div", { style:{ position:"absolute", inset:0, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:10 } },
+        el("span", { style:{ color:"#ff4444", fontSize:10 } }, camError)
+      ),
+      el("canvas", { ref:captureRef, style:{ display:"none" } }),
+      el("canvas", { ref:loopOverlayRef, style:{ position:"absolute", inset:0, width:"100%", height:"100%", pointerEvents:"none", display:looping?"block":"none" } })
+    ),
+
+    // Pitch ribbon
+    el("div", { style:{ flexShrink:0 } },
+      el("div", { style:{ display:"flex", alignItems:"center", padding:"3px 14px 2px", gap:8 } },
+        el("span", { style:{ fontSize:8, color:"#2a2a2a", letterSpacing:"0.1em" } }, "PITCH"),
+        el("span", { style:{ fontSize:13, color:"#7fff6a", letterSpacing:"0.04em", minWidth:34 } }, noteName),
+        el("span", { style:{ fontSize:8, color:"#1a1a1a", marginLeft:"auto" } }, settings.quantize?settings.scale:"free")
+      ),
+      el("div", { ref:ribbonRef, onMouseDown:handleRibbon, onMouseMove:function(e){if(e.buttons)handleRibbon(e);}, onTouchStart:handleRibbon, onTouchMove:handleRibbon,
+        style:{ height:44, background:"linear-gradient(90deg,#070c07 0%,#101810 50%,#070c07 100%)", borderTop:"1px solid #141c14", borderBottom:"1px solid #141c14", position:"relative", cursor:"crosshair" } },
+        Array.from({length:pr+1},function(_,i){ return el("div",{key:i,style:{position:"absolute",left:((i/pr)*100)+"%",top:i%12===0?0:"65%",width:1,height:i%12===0?"100%":"35%",background:i%12===0?"#1c261c":"#141c14"}}); }),
+        el("div", { style:{ position:"absolute", left:(ribbonX*100)+"%", top:0, bottom:0, width:2, background:"#7fff6a", boxShadow:"0 0 10px #7fff6a", transform:"translateX(-50%)", pointerEvents:"none" } })
+      )
+    ),
+
+    // Controls
+    el("div", { style:{ display:"flex", gap:5, padding:"7px 14px", flexShrink:0 } },
+      el("button", { className:cx("cb",soundOn&&"on"), onClick:handleSound, style:{ flex:2, fontSize:11, padding:"10px 0", letterSpacing:"0.1em" } }, soundOn?"\u25fc ON":"\u25b6 OFF"),
+      el("button", { className:cx("cb",loopCapturing&&"blink",looping&&"on"), onPointerDown:handleLoopDown, onPointerUp:handleLoopUp, style:{ flex:1, touchAction:"none" } }, loopCapturing?"\u25cf LOOP":looping?"\u21ba LOOP":"\u25cb LOOP"),
+      el("button", { className:cx("cb",recording&&"rec"), onClick:handleRecord, style:{ flex:1 } }, recording?"\u25cf REC":"\u25cb REC"),
+      el("button", { className:cx("cb",camOn&&"on"), onClick:handleCamToggle, style:{ flex:1 } }, "\u25a3 CAM"),
+      el("button", { className:cx("cb",showScope&&"on"), onClick:function(){setShowScope(function(s){return !s;});}, style:{ flex:1 } }, "\u223f OSC"),
+      el("button", { className:cx("cb",showSettings&&"on"), onClick:function(){setShowSettings(function(s){return !s;});setShowAdv(false);}, style:{ flex:1 } }, "\u2699")
+    ),
+
+    // Settings drawer — engine 1
+    showSettings && activeEngine==="1" && el("div", { style:{ padding:"8px 14px 14px", borderTop:"1px solid #141414", background:"#0c0c0d", overflowY:"auto", flexShrink:0, maxHeight:"42vh" } },
+      el("div",{className:"sr"},
+        el("label",null,"Voices"),
+        el("div",{style:{display:"flex",gap:2}},
+          [1,2,4].map(function(v){return el("button",{key:v,className:cx("sg",settings1.voices===v&&"sel"),onClick:function(){setSettings1(function(s){var n=Object.assign({},s);n.voices=v;return n;})}},v);})
+        )
+      ),
+      el("div",{className:"sr",style:{flexDirection:"column",alignItems:"flex-start",gap:3}},
+        el("div",{style:{display:"flex",width:"100%",justifyContent:"space-between"}},
+          el("label",null,"Detune"),
+          el("span",{style:{fontSize:9,color:"#7fff6a"}},settings1.detune+" ct")
+        ),
+        el("input",{type:"range",min:0,max:50,value:settings1.detune,onChange:function(e){var v=+e.target.value;setSettings1(function(s){var n=Object.assign({},s);n.detune=v;return n;});var eng=eng1Ref.current;if(eng)eng.updateDetune(v);}})
+      ),
+      el("div",{className:"sr"},
+        el("label",null,"Scale"),
+        el("div",{style:{display:"flex",gap:2,alignItems:"center"}},
+          el("span",{style:{fontSize:9,color:"#7fff6a",marginRight:4}},settings1.quantize?settings1.scale:"off"),
+          el("button",{className:cx("sg",settings1.showScales&&"sel"),onClick:function(){setSettings1(function(s){var n=Object.assign({},s);n.showScales=!s.showScales;return n;});}},settings1.showScales?"▲":"▼")
+        )
+      ),
+      settings1.showScales && el("div",{style:{paddingBottom:4,borderBottom:"1px solid #141414"}},
+        el("div",{style:{display:"flex",flexWrap:"wrap",gap:2,paddingTop:4}},
+          el("button",{className:cx("sg",!settings1.quantize&&"sel"),onClick:function(){setSettings1(function(s){var n=Object.assign({},s);n.quantize=false;n.showScales=false;return n;})}},"off"),
+          SCALE_NAMES.map(function(s){return el("button",{key:s,className:cx("sg",settings1.quantize&&settings1.scale===s&&"sel"),onClick:function(){setSettings1(function(st){var n=Object.assign({},st);n.scale=s;n.quantize=true;n.showScales=false;return n;})}},s);})
+        )
+      ),
+      el("div",{className:"sr",style:{flexDirection:"column",alignItems:"flex-start",gap:3}},
+        el("div",{style:{display:"flex",width:"100%",justifyContent:"space-between"}},
+          el("label",null,"Pitch range"),
+          el("span",{style:{fontSize:9,color:"#7fff6a"}},NOTE_NAMES[settings1.pitchMin%12]+(Math.floor(settings1.pitchMin/12)-1)+" \u2192 "+NOTE_NAMES[settings1.pitchMax%12]+(Math.floor(settings1.pitchMax/12)-1))
+        ),
+        el("div",{style:{display:"flex",gap:8,width:"100%"}},
+          el("input",{type:"range",min:24,max:60,value:settings1.pitchMin,onChange:function(e){setSettings1(function(s){var n=Object.assign({},s);n.pitchMin=Math.min(+e.target.value,s.pitchMax-4);return n;});}}),
+          el("input",{type:"range",min:48,max:84,value:settings1.pitchMax,onChange:function(e){setSettings1(function(s){var n=Object.assign({},s);n.pitchMax=Math.max(+e.target.value,s.pitchMin+4);return n;})}})
+        )
+      ),
+      el("div",{className:"sr",style:{flexDirection:"column",alignItems:"flex-start",gap:3}},
+        el("div",{style:{display:"flex",width:"100%",justifyContent:"space-between"}},
+          el("label",null,"Reverb mix"),
+          el("span",{style:{fontSize:9,color:"#7fff6a"}},Math.round(settings1.reverbMix*100)+"%")
+        ),
+        el("input",{type:"range",min:0,max:100,value:Math.round(settings1.reverbMix*100),onChange:function(e){setSettings1(function(s){var n=Object.assign({},s);n.reverbMix=e.target.value/100;return n;})}})
+      )
+    ),
+
+    // Settings drawer — engine 2
+    showSettings && activeEngine==="2" && el("div", { style:{ padding:"8px 14px 14px", borderTop:"1px solid #141414", background:"#0c0c0d", overflowY:"auto", flexShrink:0, maxHeight:"42vh" } },
+      el("div",{className:"sr"},
+        el("label",null,"Scale"),
+        el("div",{style:{display:"flex",gap:2,alignItems:"center"}},
+          el("span",{style:{fontSize:9,color:"#7fff6a",marginRight:4}},settings2.quantize?settings2.scale:"off"),
+          el("button",{className:cx("sg",settings2.showScales&&"sel"),onClick:function(){setSettings2(function(s){var n=Object.assign({},s);n.showScales=!s.showScales;return n;});}},settings2.showScales?"▲":"▼")
+        )
+      ),
+      settings2.showScales && el("div",{style:{paddingBottom:4,borderBottom:"1px solid #141414"}},
+        el("div",{style:{display:"flex",flexWrap:"wrap",gap:2,paddingTop:4}},
+          el("button",{className:cx("sg",!settings2.quantize&&"sel"),onClick:function(){setSettings2(function(s){var n=Object.assign({},s);n.quantize=false;n.showScales=false;return n;})}},"off"),
+          SCALE_NAMES.map(function(s){return el("button",{key:s,className:cx("sg",settings2.quantize&&settings2.scale===s&&"sel"),onClick:function(){setSettings2(function(st){var n=Object.assign({},st);n.scale=s;n.quantize=true;n.showScales=false;return n;})}},s);})
+        )
+      ),
+      el("div",{className:"sr",style:{flexDirection:"column",alignItems:"flex-start",gap:3}},
+        el("div",{style:{display:"flex",width:"100%",justifyContent:"space-between"}},
+          el("label",null,"Pitch range"),
+          el("span",{style:{fontSize:9,color:"#7fff6a"}},NOTE_NAMES[settings2.pitchMin%12]+(Math.floor(settings2.pitchMin/12)-1)+" \u2192 "+NOTE_NAMES[settings2.pitchMax%12]+(Math.floor(settings2.pitchMax/12)-1))
+        ),
+        el("div",{style:{display:"flex",gap:8,width:"100%"}},
+          el("input",{type:"range",min:24,max:60,value:settings2.pitchMin,onChange:function(e){setSettings2(function(s){var n=Object.assign({},s);n.pitchMin=Math.min(+e.target.value,s.pitchMax-4);return n;});}}),
+          el("input",{type:"range",min:48,max:84,value:settings2.pitchMax,onChange:function(e){setSettings2(function(s){var n=Object.assign({},s);n.pitchMax=Math.max(+e.target.value,s.pitchMin+4);return n;})}})
+        )
+      ),
+      el("div",{className:"sr",style:{flexDirection:"column",alignItems:"flex-start",gap:3}},
+        el("div",{style:{display:"flex",width:"100%",justifyContent:"space-between"}},
+          el("label",null,"Reverb mix"),
+          el("span",{style:{fontSize:9,color:"#7fff6a"}},Math.round(settings2.reverbMix*100)+"%")
+        ),
+        el("input",{type:"range",min:0,max:100,value:Math.round(settings2.reverbMix*100),onChange:function(e){setSettings2(function(s){var n=Object.assign({},s);n.reverbMix=e.target.value/100;return n;})}})
+      )
+    )
+  );
+
+  // ── ADVANCED PAGE ─────────────────────────────────────────────────────────────
+  var advView = el("div", { style:{ display:"flex", flexDirection:"column", width:"100%", height:"100%", overflow:"hidden" } },
+
+    // Adv header
+    el("div", { style:{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"10px 14px 6px", paddingTop:"max(env(safe-area-inset-top,10px),10px)", flexShrink:0, borderBottom:"1px solid #141414" } },
+      el("span", { style:{ fontSize:10, letterSpacing:"0.2em", color:"#7fff6a", textTransform:"uppercase" } }, "Advanced"),
+      el("button", { className:"cb on", onClick:function(){setShowAdv(false);}, style:{ letterSpacing:"0.1em" } }, "\u2190 back")
+    ),
+
+    // Engine switcher
+    el("div", { style:{ padding:"12px 14px 8px", flexShrink:0 } },
+      el("div", { style:{ fontSize:8, color:"#444", letterSpacing:"0.15em", textTransform:"uppercase", marginBottom:8 } }, "Preset"),
+      el("div", { style:{ display:"flex", gap:6 } },
+        el("button", { className:cx("cb", activeEngine==="1"&&"on"), onClick:function(){handleEngineSwitch("1");}, style:{ flex:1, padding:"10px 0", fontSize:10, letterSpacing:"0.08em" } }, "CamSynth\u20091"),
+        el("button", { className:cx("cb", activeEngine==="2"&&"on"), onClick:function(){handleEngineSwitch("2");}, style:{ flex:1, padding:"10px 0", fontSize:10, letterSpacing:"0.08em" } }, "CamSynth\u20092")
+      )
+    ),
+
+    // Engine descriptions
+    activeEngine==="1" && el("div", { style:{ padding:"8px 14px 0", flexShrink:0 } },
+      el("div", { style:{ fontSize:8, color:"#2a2a2a", lineHeight:2, letterSpacing:"0.08em" } },
+        el("div", null, "Image-scanned wavetable oscillator"),
+        el("div", null, "Luma-gated sine \u2192 complex waveform morph"),
+        el("div", null, "Comb filter topography + lowpass + LFO")
+      )
+    ),
+
+    // Engine 2 — interval selectors
+    activeEngine==="2" && el("div", { style:{ padding:"8px 14px", overflowY:"auto", flexShrink:0 } },
+      el("div", { style:{ fontSize:8, color:"#2a2a2a", lineHeight:2, letterSpacing:"0.08em", marginBottom:10 } },
+        el("div", null, "3 RGB oscillators — sine \u2194 square morph per channel"),
+        el("div", null, "Just intonation intervals — stereo width from channel brightness")
+      ),
+      el("div", { style:{ fontSize:8, color:"#444", letterSpacing:"0.15em", textTransform:"uppercase", marginBottom:6 } }, "Oscillator intervals"),
+      ["R","G","B"].map(function(ch) {
+        var key = "interval"+ch;
+        var color = ch==="R"?"#ff6b6b":ch==="G"?"#7fff6a":"#6bb5ff";
+        return el("div", { key:ch, className:"sr", style:{ alignItems:"center" } },
+          el("label", { style:{ color:color, minWidth:16 } }, ch),
+          el("div", { style:{ display:"flex", gap:2, flexWrap:"wrap" } },
+            INTERVAL_NAMES.map(function(n) {
+              return el("button", {
+                key:n,
+                className:cx("sg", settings2[key]===n&&"sel"),
+                onClick:function(){
+                  setSettings2(function(s){var ns=Object.assign({},s);ns[key]=n;return ns;});
+                  var eng=eng2Ref.current;
+                  if(eng){eng.settings[key]=n;eng.updateIntervals&&eng.updateIntervals();}
+                }
+              }, n);
+            })
+          )
+        );
+      })
+    )
+  );
+
+  return el("div", { style:{ display:"flex", flexDirection:"column", width:"100%", height:"100dvh", background:"#0a0a0b", fontFamily:"'IBM Plex Mono','Courier New',monospace", color:"#c8c8b4", userSelect:"none", WebkitUserSelect:"none", WebkitTouchCallout:"none", touchAction:"none", overflow:"hidden", maxWidth:480, margin:"0 auto" } },
 
     el("style", null, `
       @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500&display=swap');
       *{box-sizing:border-box;}
       .cb{background:transparent;border:1px solid #222;color:#777;font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.08em;padding:6px 10px;cursor:pointer;text-transform:uppercase;-webkit-tap-highlight-color:transparent;-webkit-touch-callout:none;user-select:none;-webkit-user-select:none;touch-action:manipulation;transition:border-color .15s,color .15s;}
-      .sg{-webkit-touch-callout:none;user-select:none;-webkit-user-select:none;}
       .cb:active{background:#111;}
       .cb.on{border-color:#7fff6a;color:#7fff6a;}
       .cb.rec{border-color:#ff4444;color:#ff4444;background:rgba(255,68,68,.08);}
       .cb.dng{border-color:#ff4444;color:#ff4444;}
       @keyframes blink{0%,100%{opacity:1}50%{opacity:0.25}}
       .cb.blink{border-color:#ff4444;color:#ff4444;background:rgba(255,68,68,.08);animation:blink 0.6s infinite;}
-      .sg{background:transparent;border:1px solid #1e1e1e;color:#444;font-family:'IBM Plex Mono',monospace;font-size:9px;padding:3px 7px;cursor:pointer;-webkit-tap-highlight-color:transparent;touch-action:manipulation;transition:all .1s;}
+      .sg{background:transparent;border:1px solid #1e1e1e;color:#444;font-family:'IBM Plex Mono',monospace;font-size:9px;padding:3px 7px;cursor:pointer;-webkit-tap-highlight-color:transparent;-webkit-touch-callout:none;user-select:none;-webkit-user-select:none;touch-action:manipulation;transition:all .1s;}
       .sg.sel{border-color:#7fff6a;color:#7fff6a;background:rgba(127,255,106,.06);}
       .sr{display:flex;align-items:center;justify-content:space-between;padding:5px 0;border-bottom:1px solid #141414;}
       .sr label{font-size:9px;letter-spacing:.1em;color:#444;text-transform:uppercase;}
@@ -939,148 +1330,7 @@ function App() {
       input[type=range]::-moz-range-thumb{width:20px;height:20px;background:#7fff6a;border-radius:50%;border:none;cursor:pointer;}
     `),
 
-    // Header
-    el("div", { style:{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"10px 14px 6px", paddingTop:"max(env(safe-area-inset-top, 10px), 10px)", flexShrink:0 } },
-      el("div", { style:{ display:"flex", alignItems:"baseline", gap:7 } },
-        el("span", { style:{ fontSize:10, letterSpacing:"0.2em", color:"#7fff6a", textTransform:"uppercase" } }, "CamSynth"),
-        el("span", { style:{ fontSize:8, color:"#888888", letterSpacing:"0.1em" } }, "v"+VERSION)
-      ),
-      el("div", { style:{ display:"flex", gap:4, alignItems:"center" } },
-
-        camOn && el("button", { className:"cb", onClick:handleFlip }, "\u21c4"),
-        el("button", { className:"cb", onClick:handleReload }, "\u21ba")
-      )
-    ),
-
-    // Camera — fixed height, crops rather than expands
-    el("div", { style:{ position:"relative", background:"#050505", overflow:"hidden", borderTop:"1px solid #141414", borderBottom:"1px solid #141414", flexShrink:0, height:"42vh" } },
-      el("video", { ref:videoRef, playsInline:true, muted:true, autoPlay:true, controls:false, style:{ width:"100%", height:"100%", objectFit:"cover", display:"block", transform:facingMode==="user"?"scaleX(-1)":"none" } }),
-      showScope && el("canvas", { ref:scopeRef, width:480, height:80, style:{ position:"absolute", bottom:0, left:0, width:"100%", height:60, pointerEvents:"none" } }),
-      frameData && el("div", { style:{ position:"absolute", top:8, left:8, fontSize:8, color:"rgba(127,255,106,0.35)", letterSpacing:"0.1em", lineHeight:2, pointerEvents:"none" } },
-        el("div",null,"LMA "+(frameData.luma*100).toFixed(1)),
-        el("div",null,"HUE "+Math.round(frameData.hue*360)+"\xb0"),
-        el("div",null,"CHR "+(frameData.chromaContrast*100).toFixed(1)),
-        el("div",null,"COM "+frameData.comX.toFixed(2)+"\xb7"+frameData.comY.toFixed(2))
-      ),
-      !camOn && el("div", { style:{ position:"absolute", inset:0, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:8, background:"#050505" } },
-        el("span", { style:{ color:"#2a2a2a", fontSize:10, letterSpacing:"0.2em" } }, "CAMERA OFF")
-      ),
-      camOn && !camReady && !camError && el("div", { style:{ position:"absolute", inset:0, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:8 } },
-        el("span", { style:{ color:"#2a2a2a", fontSize:10, letterSpacing:"0.2em" } }, "AWAITING CAMERA"),
-        el("span", { style:{ color:"#1e1e1e", fontSize:8, letterSpacing:"0.1em" } }, "grant permission when prompted")
-      ),
-      camError && el("div", { style:{ position:"absolute", inset:0, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:10 } },
-        el("span", { style:{ color:"#ff4444", fontSize:10, letterSpacing:"0.15em" } }, camError),
-        el("button", { className:"cb", onClick:handleReload, style:{ fontSize:9 } }, "\u21ba reload & retry")
-      ),
-      el("canvas", { ref:captureRef, style:{ display:"none" } }),
-      el("canvas", { ref:loopOverlayRef, style:{ position:"absolute", inset:0, width:"100%", height:"100%", pointerEvents:"none", display: looping ? "block" : "none" } })
-    ),
-
-    // Pitch Ribbon
-    el("div", { style:{ flexShrink:0 } },
-      el("div", { style:{ display:"flex", alignItems:"center", padding:"3px 14px 2px", gap:8 } },
-        el("span", { style:{ fontSize:8, color:"#2a2a2a", letterSpacing:"0.1em" } }, "PITCH"),
-        el("span", { style:{ fontSize:13, color:"#7fff6a", letterSpacing:"0.04em", minWidth:34 } }, noteName),
-        el("span", { style:{ fontSize:8, color:"#1a1a1a", marginLeft:"auto" } }, settings.quantize ? settings.scale : "free")
-      ),
-      el("div", {
-        ref:ribbonRef,
-        onMouseDown:handleRibbon, onMouseMove:function(e){if(e.buttons)handleRibbon(e);},
-        onTouchStart:handleRibbon, onTouchMove:handleRibbon,
-        style:{ height:44, background:"linear-gradient(90deg,#070c07 0%,#101810 50%,#070c07 100%)", borderTop:"1px solid #141c14", borderBottom:"1px solid #141c14", position:"relative", cursor:"crosshair" }
-      },
-        Array.from({ length: pr+1 }, function(_,i) {
-          return el("div", { key:i, style:{ position:"absolute", left:((i/pr)*100)+"%", top:i%12===0?0:"65%", width:1, height:i%12===0?"100%":"35%", background:i%12===0?"#1c261c":"#141c14" } });
-        }),
-        el("div", { style:{ position:"absolute", left:(ribbonX*100)+"%", top:0, bottom:0, width:2, background:"#7fff6a", boxShadow:"0 0 10px #7fff6a", transform:"translateX(-50%)", pointerEvents:"none" } })
-      )
-    ),
-
-    // Controls
-    el("div", { style:{ display:"flex", gap:5, padding:"7px 14px", flexShrink:0 } },
-      el("button", { className:cx("cb", soundOn&&"on"), onClick:handleSound, style:{ flex:2, fontSize:11, padding:"10px 0", letterSpacing:"0.1em" } }, soundOn ? "\u25fc ON" : "\u25b6 OFF"),
-      el("button", {
-        className:cx("cb", loopCapturing&&"blink", looping&&"on"),
-        onPointerDown:handleLoopDown, onPointerUp:handleLoopUp,
-        style:{ flex:1, position:"relative", touchAction:"none" }
-      }, loopCapturing ? "\u25cf LOOP" : looping ? "\u21ba LOOP" : "\u25cb LOOP"),
-      el("button", { className:cx("cb", recording&&"rec"), onClick:handleRecord, style:{ flex:1 } }, recording ? "\u25cf REC" : "\u25cb REC"),
-      el("button", { className:cx("cb", camOn&&"on"), onClick:handleCamToggle, style:{ flex:1 } }, "\u25a3 CAM"),
-      el("button", { className:cx("cb", showScope&&"on"), onClick:function(){setShowScope(function(s){return !s;});}, style:{ flex:1 } }, "\u223f OSC"),
-      el("button", { className:cx("cb", showSettings&&"on"), onClick:function(){setShowSettings(function(s){return !s;});}, style:{ flex:1 } }, "\u2699")
-    ),
-
-    // Settings drawer
-    showSettings && el("div", { style:{ padding:"8px 14px 14px", borderTop:"1px solid #141414", background:"#0c0c0d", overflowY:"auto", flexShrink:0, maxHeight:"42vh" } },
-
-      el("div", { className:"sr" },
-        el("label",null,"Voices"),
-        el("div", { style:{display:"flex",gap:2} },
-          VOICE_OPTIONS.map(function(v){ return el("button",{key:v,className:cx("sg",settings.voices===v&&"sel"),onClick:function(){setSetting("voices",v);}},v); })
-        )
-      ),
-
-      el("div", { className:"sr", style:{flexDirection:"column",alignItems:"flex-start",gap:3} },
-        el("div", { style:{display:"flex",width:"100%",justifyContent:"space-between"} },
-          el("label",null,"Detune"),
-          el("span",{style:{fontSize:9,color:"#7fff6a"}},settings.detune+" ct")
-        ),
-        el("input",{type:"range",min:0,max:50,value:settings.detune,onChange:function(e){var v=+e.target.value; setSetting("detune",v); var eng=synthRef.current; if(eng) eng.updateDetune(v);}})
-      ),
-
-      el("div", { className:"sr" },
-        el("label",null,"Scale"),
-        el("div", { style:{display:"flex",gap:2,alignItems:"center"} },
-          el("span", { style:{fontSize:9,color:"#7fff6a",marginRight:4} }, settings.quantize ? settings.scale : "off"),
-          el("button", {
-            className:cx("sg", settings.showScales&&"sel"),
-            onClick:function(){ setSetting("showScales", !settings.showScales); }
-          }, settings.showScales ? "▲" : "▼")
-        )
-      ),
-
-      settings.showScales && el("div", { style:{paddingBottom:4,borderBottom:"1px solid #141414"} },
-        el("div", { style:{display:"flex",flexWrap:"wrap",gap:2,paddingTop:4} },
-          el("button", {
-            className:cx("sg", !settings.quantize&&"sel"),
-            onClick:function(){ setSetting("quantize",false); setSetting("showScales",false); }
-          }, "off"),
-          SCALE_NAMES.map(function(s){
-            return el("button",{
-              key:s,
-              className:cx("sg", settings.quantize&&settings.scale===s&&"sel"),
-              onClick:function(){ setSetting("scale",s); setSetting("quantize",true); setSetting("showScales",false); }
-            }, s);
-          })
-        )
-      ),
-
-      el("div", { className:"sr", style:{flexDirection:"column",alignItems:"flex-start",gap:3} },
-        el("div", { style:{display:"flex",width:"100%",justifyContent:"space-between"} },
-          el("label",null,"Pitch range"),
-          el("span",{style:{fontSize:9,color:"#7fff6a"}},
-            NOTE_NAMES[settings.pitchMin%12]+(Math.floor(settings.pitchMin/12)-1)+" \u2192 "+NOTE_NAMES[settings.pitchMax%12]+(Math.floor(settings.pitchMax/12)-1)
-          )
-        ),
-        el("div", { style:{display:"flex",gap:8,width:"100%"} },
-          el("input",{type:"range",min:24,max:60,value:settings.pitchMin,onChange:function(e){setSetting("pitchMin",Math.min(+e.target.value,settings.pitchMax-4));}}),
-          el("input",{type:"range",min:48,max:84,value:settings.pitchMax,onChange:function(e){setSetting("pitchMax",Math.max(+e.target.value,settings.pitchMin+4));}})
-        )
-      ),
-
-      el("div", { className:"sr", style:{flexDirection:"column",alignItems:"flex-start",gap:3} },
-        el("div", { style:{display:"flex",width:"100%",justifyContent:"space-between"} },
-          el("label",null,"Reverb mix"),
-          el("span",{style:{fontSize:9,color:"#7fff6a"}},Math.round(settings.reverbMix*100)+"%")
-        ),
-        el("input",{type:"range",min:0,max:100,value:Math.round(settings.reverbMix*100),onChange:function(e){setSetting("reverbMix",e.target.value/100);}})
-      ),
-
-
-
-
-    )
+    showAdv ? advView : mainView
   );
 }
 
