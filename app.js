@@ -22,13 +22,21 @@ var NOTE_NAMES    = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
 
 // Just intonation intervals for RGB oscillators
 var INTERVALS = {
-  "unison": 1,
-  "octave": 2,
-  "fifth":  1.5,
-  "maj3":   1.25,
-  "min3":   1.2,
+  "1×1":    1,
+  "1×2":    2,
+  "3×2":    1.5,
+  "5×4":    1.25,
+  "6×5":    1.2,
 };
 var INTERVAL_NAMES = Object.keys(INTERVALS);
+// Human-readable labels for ADV page
+var INTERVAL_LABELS = {
+  "1×1": "unison",
+  "1×2": "octave",
+  "3×2": "fifth",
+  "5×4": "maj 3rd",
+  "6×5": "min 3rd",
+};
 
 function midiToHz(midi) {
   return 440 * Math.pow(2, (midi - 69) / 12);
@@ -627,7 +635,18 @@ function makeEngine2() {
     var gRatio = 1 + (INTERVALS[s.intervalG] - 1) * cn.g;
     var bRatio = 1 + (INTERVALS[s.intervalB] - 1) * cn.b;
 
-    // Oscillator intervals are free — scale only applies to ribbon pitch
+    // Quantize ratio to nearest scale degree if quantize on
+    function ratioToQuantized(ratio) {
+      var targetHz   = baseHz * ratio;
+      var targetMidi = 69 + 12 * Math.log2(targetHz / 440);
+      var qMidi      = quantizePitch(Math.round(targetMidi), s.scale, s.rootNote);
+      return midiToHz(qMidi) / baseHz;
+    }
+    if (s.quantize) {
+      rRatio = ratioToQuantized(rRatio);
+      gRatio = ratioToQuantized(gRatio);
+      bRatio = ratioToQuantized(bRatio);
+    }
 
     var glide = glideTC > 0.001 ? glideTC : 0.01;
     if (eng.oscR) eng.oscR.osc.frequency.setTargetAtTime(baseHz * rRatio, t, glide);
@@ -981,7 +1000,7 @@ function App() {
   // Engine 2 settings
   var rs2 = useState({ quantize:false, scale:"pentatonic", rootNote:48,
     pitchMin:36, pitchMax:72, reverbMix:0.3, fps:10, showScales:false,
-    intervalR:"octave", intervalG:"fifth", intervalB:"maj3", glide:200 });
+    intervalR:"1×2", intervalG:"3×2", intervalB:"5×4", glide:200 });
   var settings2 = rs2[0], setSettings2 = rs2[1];
 
   var settings    = activeEngine === "1" ? settings1 : settings2;
@@ -1150,39 +1169,40 @@ function App() {
   var handleFlip    = useCallback(function(){setFacingMode(function(f){return f==="environment"?"user":"environment";});}, []);
   var handleReload  = useCallback(function(){window.location.reload();}, []);
 
-  var handleLoopDown = function(e) {
+  var handleLoopPress = function(e) {
     e.preventDefault();
     var eng=synthRef.current;
     if(!eng||!eng.ctx)return;
+
     if(eng.isLooping()){
+      // State 3 → back to live
       eng.stopLoop();setLooping(false);setLoopCapturing(false);
       clearInterval(loopVidTimerRef.current);loopFramesRef.current=[];
       var ov=loopOverlayRef.current;
       if(ov)ov.getContext("2d").clearRect(0,0,ov.width,ov.height);
       return;
     }
-    loopFramesRef.current=[];eng.startLoopRecord();setLoopCapturing(true);
-  };
-
-  var handleLoopUp = function(e) {
-    e.preventDefault();
-    var eng=synthRef.current;
-    if(!eng||!eng._loopRecording)return;
-    var ok=eng.commitLoop();
-    setLoopCapturing(false);
-    if(!ok)return;
-    setLooping(true);
-    var frames=loopFramesRef.current;
-    if(frames.length>0){
-      loopFrameIdxRef.current=0;clearInterval(loopVidTimerRef.current);
-      var ov=loopOverlayRef.current;
-      loopVidTimerRef.current=setInterval(function(){
-        if(!ov||!frames.length)return;
-        ov.width=frames[0].width;ov.height=frames[0].height;
-        ov.getContext("2d").putImageData(frames[loopFrameIdxRef.current%frames.length],0,0);
-        loopFrameIdxRef.current++;
-      },100);
+    if(eng._loopRecording){
+      // State 2 → commit → play
+      var ok=eng.commitLoop();
+      setLoopCapturing(false);
+      if(!ok)return;
+      setLooping(true);
+      var frames=loopFramesRef.current;
+      if(frames.length>0){
+        loopFrameIdxRef.current=0;clearInterval(loopVidTimerRef.current);
+        var ov=loopOverlayRef.current;
+        loopVidTimerRef.current=setInterval(function(){
+          if(!ov||!frames.length)return;
+          ov.width=frames[0].width;ov.height=frames[0].height;
+          ov.getContext("2d").putImageData(frames[loopFrameIdxRef.current%frames.length],0,0);
+          loopFrameIdxRef.current++;
+        },100);
+      }
+      return;
     }
+    // State 1 → start recording
+    loopFramesRef.current=[];eng.startLoopRecord();setLoopCapturing(true);
   };
 
   var handleCamToggle = useCallback(function(){
@@ -1260,21 +1280,23 @@ function App() {
 
     // Pitch ribbon
     el("div", { style:{ flexShrink:0 } },
-      el("div", { style:{ display:"flex", alignItems:"center", padding:"3px 14px 2px", gap:8 } },
+      el("div", { style:{ display:"flex", alignItems:"center", padding:"2px 14px 1px", gap:8 } },
         el("span", { style:{ fontSize:8, color:"#2a2a2a", letterSpacing:"0.1em" } }, "PITCH"),
         el("span", { style:{ fontSize:13, color:"#7fff6a", letterSpacing:"0.04em", minWidth:34 } }, noteName),
         el("span", { style:{ fontSize:8, color:"#1a1a1a", marginLeft:"auto" } }, settings.quantize?settings.scale:"free")
       ),
       el("div", { ref:ribbonRef, onMouseDown:handleRibbon, onMouseMove:function(e){if(e.buttons)handleRibbon(e);}, onTouchStart:handleRibbon, onTouchMove:handleRibbon,
-        style:{ height:44, background:"linear-gradient(90deg,#070c07 0%,#101810 50%,#070c07 100%)", borderTop:"1px solid #141c14", borderBottom:"1px solid #141c14", position:"relative", cursor:"crosshair" } },
+        style:{ height:32, background:"linear-gradient(90deg,#070c07 0%,#101810 50%,#070c07 100%)", borderTop:"1px solid #141c14", borderBottom:"1px solid #141c14", position:"relative", cursor:"crosshair" } },
         Array.from({length:pr+1},function(_,i){
           var midi = settings.pitchMin + i;
           var semitone = midi % 12;
           var isOctave = semitone === (settings.rootNote % 12);
           var inScale = !settings.quantize || SCALES[settings.scale].indexOf(((semitone - settings.rootNote%12)+12)%12) >= 0;
-          var h = isOctave ? "100%" : inScale ? "55%" : "25%";
+          var tickH = isOctave ? 20 : inScale ? 12 : 6;
           var bg = isOctave ? "#2a4a2a" : inScale ? "#1c321c" : "#0e140e";
-          return el("div",{key:i,style:{position:"absolute",left:((i/pr)*100)+"%",top:isOctave?0:"65%",width:isOctave?2:1,height:h,background:bg}});
+          // Center ticks vertically within 32px ribbon
+          var topPx = (32 - tickH) / 2;
+          return el("div",{key:i,style:{position:"absolute",left:((i/pr)*100)+"%",top:topPx+"px",width:isOctave?2:1,height:tickH+"px",background:bg}});
         }),
         el("div", { style:{ position:"absolute", left:(ribbonX*100)+"%", top:0, bottom:0, width:2, background:"#7fff6a", boxShadow:"0 0 10px #7fff6a", transform:"translateX(-50%)", pointerEvents:"none" } })
       )
@@ -1282,7 +1304,7 @@ function App() {
 
     // Lowpass ribbon
     el("div", { style:{ flexShrink:0 } },
-      el("div", { style:{ display:"flex", alignItems:"center", padding:"3px 14px 2px", gap:8 } },
+      el("div", { style:{ display:"flex", alignItems:"center", padding:"2px 14px 1px", gap:8 } },
         el("span", { style:{ fontSize:8, color:"#2a2a2a", letterSpacing:"0.1em" } }, "FILTER"),
         el("span", { style:{ fontSize:11, color:"#6bb5ff", letterSpacing:"0.04em", minWidth:60 } },
           (150 * Math.pow(12000/150, lpX)).toFixed(0)+" Hz"
@@ -1313,7 +1335,7 @@ function App() {
     // Controls
     el("div", { style:{ display:"flex", gap:5, padding:"7px 14px", flexShrink:0 } },
       el("button", { className:cx("cb",soundOn&&"on"), onClick:handleSound, style:{ flex:2, fontSize:11, padding:"10px 0", letterSpacing:"0.1em" } }, soundOn?"\u25fc ON":"\u25b6 OFF"),
-      el("button", { className:cx("cb",loopCapturing&&"blink",looping&&"on"), onPointerDown:handleLoopDown, onPointerUp:handleLoopUp, style:{ flex:1, touchAction:"none" } }, loopCapturing?"\u25cf LOOP":looping?"\u21ba LOOP":"\u25cb LOOP"),
+      el("button", { className:cx("cb",loopCapturing&&"blink",looping&&"on"), onClick:handleLoopPress, style:{ flex:1 } }, loopCapturing?"\u25cf LOOP":looping?"\u21ba LOOP":"\u25cb LOOP"),
       el("button", { className:cx("cb",recording&&"rec"), onClick:handleRecord, style:{ flex:1 } }, recording?"\u25cf REC":"\u25cb REC"),
       el("button", { className:cx("cb",camOn&&"on"), onClick:handleCamToggle, style:{ flex:1 } }, "\u25a3 CAM"),
       el("button", { className:cx("cb",showScope&&"on"), onClick:function(){setShowScope(function(s){return !s;});}, style:{ flex:1 } }, "\u223f OSC"),
@@ -1335,7 +1357,7 @@ function App() {
         ),
         el("input",{type:"range",min:0,max:50,value:settings1.detune,onChange:function(e){var v=+e.target.value;setSettings1(function(s){var n=Object.assign({},s);n.detune=v;return n;});var eng=eng1Ref.current;if(eng)eng.updateDetune(v);}})
       ),
-      el("div",{className:"sr"},
+      el("div",{className:"sr",style:{paddingTop:3,paddingBottom:3}},
         el("label",null,"Scale"),
         el("div",{style:{display:"flex",gap:2,alignItems:"center"}},
           el("span",{style:{fontSize:9,color:"#7fff6a",marginRight:4}},settings1.quantize?settings1.scale:"off"),
@@ -1369,7 +1391,7 @@ function App() {
 
     // Settings drawer — engine 2
     showSettings && activeEngine==="2" && el("div", { style:{ padding:"8px 14px 14px", borderTop:"1px solid #141414", background:"#0c0c0d", overflowY:"auto", flexShrink:0, maxHeight:"42vh" } },
-      el("div",{className:"sr"},
+      el("div",{className:"sr",style:{paddingTop:3,paddingBottom:3}},
         el("label",null,"Scale"),
         el("div",{style:{display:"flex",gap:2,alignItems:"center"}},
           el("span",{style:{fontSize:9,color:"#7fff6a",marginRight:4}},settings2.quantize?settings2.scale:"off"),
@@ -1462,7 +1484,8 @@ function App() {
                   setSettings2(function(s){var ns=Object.assign({},s);ns[key]=n;return ns;});
                   var eng=eng2Ref.current;
                   if(eng){eng.settings[key]=n;eng.updateIntervals&&eng.updateIntervals();}
-                }
+                },
+                title: INTERVAL_LABELS[n]
               }, n);
             })
           )
@@ -1475,6 +1498,7 @@ function App() {
 
     el("style", null, `
       @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500&display=swap');
+      html,body{overscroll-behavior:none;overflow:hidden;}
       *{box-sizing:border-box;}
       .cb{background:transparent;border:1px solid #222;color:#777;font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.08em;padding:6px 10px;cursor:pointer;text-transform:uppercase;-webkit-tap-highlight-color:transparent;-webkit-touch-callout:none;user-select:none;-webkit-user-select:none;touch-action:manipulation;transition:border-color .15s,color .15s;}
       .cb:active{background:#111;}
