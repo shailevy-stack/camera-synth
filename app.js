@@ -55,7 +55,9 @@ function makeSynthEngine() {
 
   var eng = {
     ctx: null, voices: [],
-    filterNode: null, reverbNode: null, reverbGain: null,
+    combFilters: [],   // 8 peaking EQ nodes
+    lowpassNode: null, // master brightness lowpass after comb
+    reverbNode: null, reverbGain: null,
     dryGain: null, masterGain: null, limiterNode: null, analyserNode: null,
     active: false, currentPitchMidi: 60,
     wavetableData:    new Float32Array(ANALYSIS_RES),
@@ -85,10 +87,30 @@ function makeSynthEngine() {
       eng.reverbNode = eng.ctx.createConvolver();
       eng.reverbNode.buffer = buf;
 
-      eng.filterNode = eng.ctx.createBiquadFilter();
-      eng.filterNode.type = "lowpass";
-      eng.filterNode.frequency.value = 800;
-      eng.filterNode.Q.value = 1.5;
+      // ── Comb filter bank: 8 peaking EQ filters in series ──
+      // Frequencies set by luma (updated from camera)
+      // Gain of each set by vertical slice luma
+      var N_TEETH = 8;
+      eng.combFilters = [];
+      for (var ci = 0; ci < N_TEETH; ci++) {
+        var f = eng.ctx.createBiquadFilter();
+        f.type = "peaking";
+        f.frequency.value = 200 * (ci + 1); // initial: 200,400,600...1600Hz
+        f.Q.value = 3;                        // medium sharpness teeth
+        f.gain.value = 0;                     // start flat
+        eng.combFilters.push(f);
+      }
+      // Chain comb filters in series
+      for (var ci = 0; ci < N_TEETH - 1; ci++) {
+        eng.combFilters[ci].connect(eng.combFilters[ci + 1]);
+      }
+
+      // Master lowpass after comb — luma drives cutoff
+      eng.lowpassNode = eng.ctx.createBiquadFilter();
+      eng.lowpassNode.type = "lowpass";
+      eng.lowpassNode.frequency.value = 2000;
+      eng.lowpassNode.Q.value = 0.7;
+      eng.combFilters[N_TEETH - 1].connect(eng.lowpassNode);
 
       eng.dryGain = eng.ctx.createGain();
       eng.dryGain.gain.value = 1 - eng.settings.reverbMix;
@@ -109,8 +131,8 @@ function makeSynthEngine() {
       eng.analyserNode = eng.ctx.createAnalyser();
       eng.analyserNode.fftSize = 1024;
 
-      eng.filterNode.connect(eng.dryGain);
-      eng.filterNode.connect(eng.reverbNode);
+      eng.lowpassNode.connect(eng.dryGain);
+      eng.lowpassNode.connect(eng.reverbNode);
       eng.reverbNode.connect(eng.reverbGain);
       eng.dryGain.connect(eng.masterGain);
       eng.reverbGain.connect(eng.masterGain);
@@ -170,7 +192,7 @@ function makeSynthEngine() {
 
       osc.connect(gain);
       gain.connect(panner);
-      panner.connect(eng.filterNode);
+      panner.connect(eng.combFilters[0]);
       osc.start();
       eng.voices.push({ osc: osc, gain: gain, panner: panner });
     }
@@ -190,7 +212,7 @@ function makeSynthEngine() {
       eng.voices[0].gain.connect(delay);
       delay.connect(delayGain);
       delayGain.connect(delayPan);
-      delayPan.connect(eng.filterNode);
+      delayPan.connect(eng.combFilters[0]);
       eng.voices[0].delay     = delay;
       eng.voices[0].delayGain = delayGain;
       eng.voices[0].delayPan  = delayPan;
@@ -259,47 +281,56 @@ function makeSynthEngine() {
     eng._lfoGain = eng.ctx.createGain();
     eng._lfoGain.gain.value = 0;        // start silent
     eng._lfoNode.connect(eng._lfoGain);
-    eng._lfoGain.connect(eng.filterNode.frequency);
+    eng._lfoGain.connect(eng.lowpassNode.frequency);
     eng._lfoNode.start();
   };
 
-  eng.updateFromCamera = function(luma, hue, chromaContrast) {
-    if (!eng.ctx || !eng.filterNode) return;
+  eng.updateFromCamera = function(luma, hue, chromaContrast, slices) {
+    if (!eng.ctx || !eng.combFilters.length) return;
     var t = eng.ctx.currentTime;
 
     // Init LFO on first camera data
     if (!eng._lfoNode) eng.initLFO();
 
-    // Luma → filter base cutoff (brighter = brighter/more open sound)
-    // Map luma 0..1 → 150Hz..6000Hz
-    var cutoff = 150 + luma * 5850;
-    eng.filterNode.frequency.setTargetAtTime(cutoff, t, 0.2);
+    // ── Comb filter topography ──
+    // luma → fundamental frequency (tooth spacing)
+    // Map luma 0..1 → fundamental 80Hz..400Hz
+    // (delay equivalent: 12.5ms..2.5ms)
+    var fundamental = 80 + luma * 320;
 
-    // Chroma contrast → resonance (more color contrast = more resonant)
-    var q = 0.5 + chromaContrast * 14;
-    eng.filterNode.Q.setTargetAtTime(q, t, 0.2);
+    // Each slice luma → tooth gain at its harmonic
+    // Map slice 0..1 → gain -6dB..+14dB
+    for (var i = 0; i < eng.combFilters.length; i++) {
+      var freq     = fundamental * (i + 1);
+      var sliceLum = slices ? slices[i] : luma;
+      // Center around 0: dark=cut, bright=boost
+      var gainDB   = (sliceLum - 0.5) * 20; // -10dB..+10dB
+      // Q driven by chromaContrast — vivid scene = sharper teeth
+      var q        = 1.5 + chromaContrast * 8;
+      eng.combFilters[i].frequency.setTargetAtTime(freq, t, 0.3);
+      eng.combFilters[i].gain.setTargetAtTime(gainDB, t, 0.3);
+      eng.combFilters[i].Q.setTargetAtTime(q, t, 0.3);
+    }
 
-    // Hue velocity → LFO rate
-    // Measure how fast hue is changing between frames
+    // ── Lowpass master brightness ──
+    // luma → cutoff 300Hz..8000Hz
+    var cutoff = 300 + luma * 7700;
+    eng.lowpassNode.frequency.setTargetAtTime(cutoff, t, 0.2);
+
+    // ── LFO: hue velocity → rate, chromaContrast → depth ──
     var now      = eng.ctx.currentTime;
     var dt       = now - eng._prevHueTime;
     var hueDelta = 0;
     if (dt > 0 && dt < 2) {
-      // Circular delta — handle 0/1 wraparound
       hueDelta = Math.abs(hue - eng._prevHue);
       if (hueDelta > 0.5) hueDelta = 1 - hueDelta;
-      hueDelta = hueDelta / dt; // per-second rate
+      hueDelta = hueDelta / dt;
     }
     eng._prevHue     = hue;
     eng._prevHueTime = now;
-
-    // Map hue velocity → LFO frequency 0.05..2 Hz
-    var lfoRate = 0.05 + Math.min(hueDelta * 4, 1) * 1.95;
+    var lfoRate  = 0.05 + Math.min(hueDelta * 4, 1) * 1.95;
+    var lfoDepth = chromaContrast * 800; // gentler than before — acts on lowpass
     eng._lfoNode.frequency.setTargetAtTime(lfoRate, t, 0.5);
-
-    // Chroma contrast → LFO depth (vibrant scene = deeper wobble)
-    // Depth scaled so max swing is ±1500Hz around the cutoff
-    var lfoDepth = chromaContrast * 1500;
     eng._lfoGain.gain.setTargetAtTime(lfoDepth, t, 0.3);
   };
 
@@ -481,6 +512,7 @@ function makeSynthEngine() {
     eng.panic();
     if (eng._lfoNode) { try { eng._lfoNode.stop(); } catch(e) {} }
     for (var i = 0; i < eng.voices.length; i++) { try { eng.voices[i].osc.stop(); } catch(e) {} }
+    for (var i = 0; i < eng.combFilters.length; i++) { try { eng.combFilters[i].disconnect(); } catch(e) {} }
     if (eng.ctx) eng.ctx.close();
   };
 
@@ -587,7 +619,23 @@ function analyseFrame(canvas, ctx2d) {
     chromaContrast = Math.min(1, hVar * 8); // scale variance to 0..1
   }
 
-  return { luma: luma, hue: hue/360, saturation: sat, chromaContrast: chromaContrast, comX: comX, comY: comY, wavetable: wt };
+  // 8 vertical slices — luma of each → comb tooth heights
+  var slices = new Float32Array(8);
+  for (var si = 0; si < 8; si++) {
+    var sxS = Math.floor(si * w / 8);
+    var sxE = Math.floor((si+1) * w / 8);
+    var sSum = 0, sCnt = 0;
+    for (var sy = 0; sy < h; sy += 4) {
+      for (var sx = sxS; sx < sxE; sx += 4) {
+        var spi = (sy * w + sx) * 4;
+        sSum += 0.2126*(px[spi]/255) + 0.7152*(px[spi+1]/255) + 0.0722*(px[spi+2]/255);
+        sCnt++;
+      }
+    }
+    slices[si] = sCnt > 0 ? sSum / sCnt : 0.5;
+  }
+
+  return { luma: luma, hue: hue/360, saturation: sat, chromaContrast: chromaContrast, slices: slices, comX: comX, comY: comY, wavetable: wt };
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -690,7 +738,7 @@ function App() {
       if (data) {
         setFrameData(data);
         var eng = synthRef.current;
-        if (eng && eng.ctx) { eng.updateFromCamera(data.luma, data.hue, data.chromaContrast); eng.updateWavetable(data.wavetable); }
+        if (eng && eng.ctx) { eng.updateFromCamera(data.luma, data.hue, data.chromaContrast, data.slices); eng.updateWavetable(data.wavetable); }
         // Capture video frames while loop recording
         if (eng && eng._loopRecording) {
           var MAX_FRAMES = 100;
