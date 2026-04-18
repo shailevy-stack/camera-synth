@@ -1,5 +1,5 @@
 // Camera Synth — v3.0.0
-var VERSION = "3.2.0";
+var VERSION = "3.3.0";
 
 var useState    = React.useState;
 var useEffect   = React.useEffect;
@@ -98,6 +98,8 @@ var LFO_DESTS = {
 };
 var LFO_DEST_NAMES = Object.keys(LFO_DESTS);
 
+var LFO_WAVES = ["sine", "square", "s&h"];
+
 // ── Shared reverb IR (pre-built before gesture) ───────────────────────────────
 var REVERB_IR = (function() {
   var sr  = 44100;
@@ -171,8 +173,8 @@ function makeEngine1() {
       quantize: false, scale: "pentatonic", rootNote: 48,
       pitchMin: 36, pitchMax: 72, reverbMix: 0.3, fps: 10,
       showScales: false,
-      lfo1: { rate:0.5, depth:0, shape:0, dest:"filter cutoff", active:false },
-      lfo2: { rate:0.2, depth:0, shape:0, dest:"filter Q",      active:false },
+      lfo1: { rate:0.5, depth:0, wave:"sine", dest:"filter cutoff", active:false },
+      lfo2: { rate:0.2, depth:0, wave:"sine", dest:"filter Q",      active:false },
     },
   };
 
@@ -489,37 +491,56 @@ function makeEngine1() {
 
 
   // ── User LFOs ────────────────────────────────────────────────────────────────
-  eng._resolveLFOParam = function(dest) {
-    // Returns the AudioParam to modulate for a given destination key
+  // Each destination gets a dedicated offset GainNode that sums with the
+  // camera/ribbon signal at the AudioParam level — no conflict possible.
+  eng._lfoOffsets = {}; // dest key → GainNode already connected to param
+
+  eng._getOrCreateOffset = function(dest) {
+    if (eng._lfoOffsets[dest]) return eng._lfoOffsets[dest];
     var d = LFO_DESTS[dest];
     if (!d) return null;
-    if (d === "lp.freq")    return eng.lowpassNode ? eng.lowpassNode.frequency : null;
-    if (d === "lp.q")       return eng.lowpassNode ? eng.lowpassNode.Q : null;
-    if (d === "reverb.gain")return eng.reverbGain  ? eng.reverbGain.gain : null;
-    if (d === "master.gain")return eng.masterGain  ? eng.masterGain.gain : null;
-    // FM destinations (E2 only)
-    if (d === "fm.depth") {
-      // Modulate all three fmIndex gains via a shared gain before them
-      // For simplicity, modulate the existing fmIndex of oscR as proxy
-      return (eng.oscR && eng.oscR.fmIndex) ? eng.oscR.fmIndex.gain : null;
-    }
-    if (d === "fm.r") return (eng.oscR && eng.oscR.fmIndex) ? eng.oscR.fmIndex.gain : null;
-    if (d === "fm.g") return (eng.oscG && eng.oscG.fmIndex) ? eng.oscG.fmIndex.gain : null;
-    if (d === "fm.b") return (eng.oscB && eng.oscB.fmIndex) ? eng.oscB.fmIndex.gain : null;
-    if (d === "haas.gain") return (eng.oscR && eng.oscR.haasGain) ? eng.oscR.haasGain.gain : null;
-    return null;
+    var param = null;
+    if (d === "lp.freq")     param = eng.lowpassNode ? eng.lowpassNode.frequency : null;
+    if (d === "lp.q")        param = eng.lowpassNode ? eng.lowpassNode.Q : null;
+    if (d === "reverb.gain") param = eng.reverbGain  ? eng.reverbGain.gain : null;
+    if (d === "master.gain") param = eng.masterGain  ? eng.masterGain.gain : null;
+    if (d === "haas.gain")   param = (eng.oscR && eng.oscR.haasGain) ? eng.oscR.haasGain.gain : null;
+    if (d === "fm.depth")    param = (eng.oscR && eng.oscR.fmIndex) ? eng.oscR.fmIndex.gain : null;
+    if (d === "fm.r")        param = (eng.oscR && eng.oscR.fmIndex) ? eng.oscR.fmIndex.gain : null;
+    if (d === "fm.g")        param = (eng.oscG && eng.oscG.fmIndex) ? eng.oscG.fmIndex.gain : null;
+    if (d === "fm.b")        param = (eng.oscB && eng.oscB.fmIndex) ? eng.oscB.fmIndex.gain : null;
+    if (!param) return null;
+    // Create a gain node that adds to this param — LFO connects here
+    var offset = eng.ctx.createGain();
+    offset.gain.value = 1; // pass-through, depth controlled by lfo gain
+    offset.connect(param);
+    eng._lfoOffsets[dest] = offset;
+    return offset;
   };
 
   eng._makeLFONode = function(cfg) {
     if (!eng.ctx) return null;
-    var osc  = eng.ctx.createOscillator();
-    osc.setPeriodicWave(eng.makeLFOWave(cfg.shape || 0));
-    osc.frequency.value = cfg.rate || 0.5;
-    var gain = eng.ctx.createGain();
-    gain.gain.value = 0; // start silent
-    osc.connect(gain);
-    osc.start();
-    return { osc: osc, gain: gain, currentDest: null };
+    var wave = cfg.wave || "sine";
+    var node = { wave: wave, currentDest: null, shTimer: null };
+    if (wave === "s&h") {
+      // S&H: setInterval fires at rate, picks random value, ramps to it
+      var shGain = eng.ctx.createGain();
+      shGain.gain.value = 0;
+      node.gain = shGain;
+      node.osc  = null;
+      // timer started in applyUserLFO
+    } else {
+      var osc = eng.ctx.createOscillator();
+      osc.setPeriodicWave(eng.makeLFOWave(wave === "square" ? 1 : 0));
+      osc.frequency.value = cfg.rate || 0.5;
+      var gain = eng.ctx.createGain();
+      gain.gain.value = 0;
+      osc.connect(gain);
+      osc.start();
+      node.osc  = osc;
+      node.gain = gain;
+    }
+    return node;
   };
 
   eng.initUserLFOs = function() {
@@ -532,36 +553,73 @@ function makeEngine1() {
   };
 
   eng.applyUserLFO = function(key) {
-    var lfoState = eng[key];
-    var cfg      = eng.settings[key];
-    if (!lfoState || !cfg) return;
-    var t = eng.ctx.currentTime;
-    // Update rate and shape
-    lfoState.osc.frequency.setTargetAtTime(cfg.rate, t, 0.1);
-    try { lfoState.osc.setPeriodicWave(eng.makeLFOWave(cfg.shape)); } catch(e) {}
-    // Reconnect to new destination if changed
-    var newParam = cfg.active ? eng._resolveLFOParam(cfg.dest) : null;
-    if (lfoState.currentDest !== cfg.dest || !cfg.active) {
-      // Disconnect from old
-      try { lfoState.gain.disconnect(); } catch(e) {}
-      lfoState.currentDest = null;
-      if (newParam) {
-        lfoState.gain.connect(newParam);
-        lfoState.currentDest = cfg.dest;
-      }
+    var node = eng[key];
+    var cfg  = eng.settings[key];
+    if (!node || !cfg || !eng.ctx) return;
+    var t    = eng.ctx.currentTime;
+    var wave = cfg.wave || "sine";
+    var rate = Math.max(0.01, cfg.rate || 0.5);
+    var active = cfg.active && cfg.depth > 0;
+
+    // Update oscillator if not S&H
+    if (node.osc) {
+      node.osc.frequency.setTargetAtTime(rate, t, 0.1);
+      try { node.osc.setPeriodicWave(eng.makeLFOWave(wave === "square" ? 1 : 0)); } catch(e) {}
     }
-    // Set depth — scale by destination range
-    var depth = cfg.active ? (cfg.depth || 0) : 0;
-    lfoState.gain.gain.setTargetAtTime(depth, t, 0.05);
+
+    // Reconnect to destination if changed
+    if (node.currentDest !== cfg.dest) {
+      try { node.gain.disconnect(); } catch(e) {}
+      node.currentDest = null;
+    }
+    var offsetNode = active ? eng._getOrCreateOffset(cfg.dest) : null;
+    if (offsetNode && node.currentDest !== cfg.dest) {
+      node.gain.connect(offsetNode);
+      node.currentDest = cfg.dest;
+    } else if (!active && node.currentDest) {
+      try { node.gain.disconnect(); } catch(e) {}
+      node.currentDest = null;
+    }
+
+    // Depth scaling per destination
+    var depthScale = 1;
+    var d = LFO_DESTS[cfg.dest];
+    if (d === "lp.freq")     depthScale = 4000; // ±4000Hz max
+    if (d === "lp.q")        depthScale = 5;    // ±5 Q
+    if (d === "reverb.gain") depthScale = 0.4;
+    if (d === "master.gain") depthScale = 0.3;
+    if (d === "haas.gain")   depthScale = 0.5;
+    if (d && d.indexOf("fm") === 0) depthScale = 200; // FM index offset
+
+    var depth = active ? (cfg.depth || 0) * depthScale : 0;
+    node.gain.gain.setTargetAtTime(depth, t, 0.05);
+
+    // S&H timer management
+    if (node.shTimer) { clearInterval(node.shTimer); node.shTimer = null; }
+    if (wave === "s&h" && active) {
+      var intervalMs = Math.max(50, 1000 / rate);
+      node.shTimer = setInterval(function() {
+        if (!eng.ctx || !node.currentDest) return;
+        var rnd = (Math.random() * 2 - 1); // -1..1
+        node.gain.gain.setTargetAtTime(rnd * depth, eng.ctx.currentTime, 0.01);
+      }, intervalMs);
+    }
   };
 
   eng.destroyUserLFOs = function() {
     ["lfo1","lfo2"].forEach(function(k) {
       var l = eng[k];
       if (!l) return;
-      try { l.osc.stop(); l.osc.disconnect(); l.gain.disconnect(); } catch(e) {}
+      if (l.shTimer) clearInterval(l.shTimer);
+      if (l.osc) { try { l.osc.stop(); l.osc.disconnect(); } catch(e) {} }
+      try { l.gain.disconnect(); } catch(e) {}
       eng[k] = null;
     });
+    // Clean up offset nodes
+    Object.keys(eng._lfoOffsets).forEach(function(k) {
+      try { eng._lfoOffsets[k].disconnect(); } catch(e) {}
+    });
+    eng._lfoOffsets = {};
   };
 
   eng.destroy = function() {
@@ -617,8 +675,8 @@ function makeEngine2() {
       cmR: "1:1", cmG: "1:1", cmB: "1:1",
       fmDepth: 0.4,
       fmModShape: 0, // global modulator shape (0=sine, 0.5=tri, 1=square)
-      lfo1: { rate:0.5, depth:0, shape:0, dest:"filter cutoff", active:false },
-      lfo2: { rate:0.2, depth:0, shape:0, dest:"filter Q",      active:false },
+      lfo1: { rate:0.5, depth:0, wave:"sine", dest:"filter cutoff", active:false },
+      lfo2: { rate:0.2, depth:0, wave:"sine", dest:"filter Q",      active:false },
     },
   };
 
@@ -1078,37 +1136,56 @@ function makeEngine2() {
 
 
   // ── User LFOs ────────────────────────────────────────────────────────────────
-  eng._resolveLFOParam = function(dest) {
-    // Returns the AudioParam to modulate for a given destination key
+  // Each destination gets a dedicated offset GainNode that sums with the
+  // camera/ribbon signal at the AudioParam level — no conflict possible.
+  eng._lfoOffsets = {}; // dest key → GainNode already connected to param
+
+  eng._getOrCreateOffset = function(dest) {
+    if (eng._lfoOffsets[dest]) return eng._lfoOffsets[dest];
     var d = LFO_DESTS[dest];
     if (!d) return null;
-    if (d === "lp.freq")    return eng.lowpassNode ? eng.lowpassNode.frequency : null;
-    if (d === "lp.q")       return eng.lowpassNode ? eng.lowpassNode.Q : null;
-    if (d === "reverb.gain")return eng.reverbGain  ? eng.reverbGain.gain : null;
-    if (d === "master.gain")return eng.masterGain  ? eng.masterGain.gain : null;
-    // FM destinations (E2 only)
-    if (d === "fm.depth") {
-      // Modulate all three fmIndex gains via a shared gain before them
-      // For simplicity, modulate the existing fmIndex of oscR as proxy
-      return (eng.oscR && eng.oscR.fmIndex) ? eng.oscR.fmIndex.gain : null;
-    }
-    if (d === "fm.r") return (eng.oscR && eng.oscR.fmIndex) ? eng.oscR.fmIndex.gain : null;
-    if (d === "fm.g") return (eng.oscG && eng.oscG.fmIndex) ? eng.oscG.fmIndex.gain : null;
-    if (d === "fm.b") return (eng.oscB && eng.oscB.fmIndex) ? eng.oscB.fmIndex.gain : null;
-    if (d === "haas.gain") return (eng.oscR && eng.oscR.haasGain) ? eng.oscR.haasGain.gain : null;
-    return null;
+    var param = null;
+    if (d === "lp.freq")     param = eng.lowpassNode ? eng.lowpassNode.frequency : null;
+    if (d === "lp.q")        param = eng.lowpassNode ? eng.lowpassNode.Q : null;
+    if (d === "reverb.gain") param = eng.reverbGain  ? eng.reverbGain.gain : null;
+    if (d === "master.gain") param = eng.masterGain  ? eng.masterGain.gain : null;
+    if (d === "haas.gain")   param = (eng.oscR && eng.oscR.haasGain) ? eng.oscR.haasGain.gain : null;
+    if (d === "fm.depth")    param = (eng.oscR && eng.oscR.fmIndex) ? eng.oscR.fmIndex.gain : null;
+    if (d === "fm.r")        param = (eng.oscR && eng.oscR.fmIndex) ? eng.oscR.fmIndex.gain : null;
+    if (d === "fm.g")        param = (eng.oscG && eng.oscG.fmIndex) ? eng.oscG.fmIndex.gain : null;
+    if (d === "fm.b")        param = (eng.oscB && eng.oscB.fmIndex) ? eng.oscB.fmIndex.gain : null;
+    if (!param) return null;
+    // Create a gain node that adds to this param — LFO connects here
+    var offset = eng.ctx.createGain();
+    offset.gain.value = 1; // pass-through, depth controlled by lfo gain
+    offset.connect(param);
+    eng._lfoOffsets[dest] = offset;
+    return offset;
   };
 
   eng._makeLFONode = function(cfg) {
     if (!eng.ctx) return null;
-    var osc  = eng.ctx.createOscillator();
-    osc.setPeriodicWave(eng.makeLFOWave(cfg.shape || 0));
-    osc.frequency.value = cfg.rate || 0.5;
-    var gain = eng.ctx.createGain();
-    gain.gain.value = 0; // start silent
-    osc.connect(gain);
-    osc.start();
-    return { osc: osc, gain: gain, currentDest: null };
+    var wave = cfg.wave || "sine";
+    var node = { wave: wave, currentDest: null, shTimer: null };
+    if (wave === "s&h") {
+      // S&H: setInterval fires at rate, picks random value, ramps to it
+      var shGain = eng.ctx.createGain();
+      shGain.gain.value = 0;
+      node.gain = shGain;
+      node.osc  = null;
+      // timer started in applyUserLFO
+    } else {
+      var osc = eng.ctx.createOscillator();
+      osc.setPeriodicWave(eng.makeLFOWave(wave === "square" ? 1 : 0));
+      osc.frequency.value = cfg.rate || 0.5;
+      var gain = eng.ctx.createGain();
+      gain.gain.value = 0;
+      osc.connect(gain);
+      osc.start();
+      node.osc  = osc;
+      node.gain = gain;
+    }
+    return node;
   };
 
   eng.initUserLFOs = function() {
@@ -1121,36 +1198,73 @@ function makeEngine2() {
   };
 
   eng.applyUserLFO = function(key) {
-    var lfoState = eng[key];
-    var cfg      = eng.settings[key];
-    if (!lfoState || !cfg) return;
-    var t = eng.ctx.currentTime;
-    // Update rate and shape
-    lfoState.osc.frequency.setTargetAtTime(cfg.rate, t, 0.1);
-    try { lfoState.osc.setPeriodicWave(eng.makeLFOWave(cfg.shape)); } catch(e) {}
-    // Reconnect to new destination if changed
-    var newParam = cfg.active ? eng._resolveLFOParam(cfg.dest) : null;
-    if (lfoState.currentDest !== cfg.dest || !cfg.active) {
-      // Disconnect from old
-      try { lfoState.gain.disconnect(); } catch(e) {}
-      lfoState.currentDest = null;
-      if (newParam) {
-        lfoState.gain.connect(newParam);
-        lfoState.currentDest = cfg.dest;
-      }
+    var node = eng[key];
+    var cfg  = eng.settings[key];
+    if (!node || !cfg || !eng.ctx) return;
+    var t    = eng.ctx.currentTime;
+    var wave = cfg.wave || "sine";
+    var rate = Math.max(0.01, cfg.rate || 0.5);
+    var active = cfg.active && cfg.depth > 0;
+
+    // Update oscillator if not S&H
+    if (node.osc) {
+      node.osc.frequency.setTargetAtTime(rate, t, 0.1);
+      try { node.osc.setPeriodicWave(eng.makeLFOWave(wave === "square" ? 1 : 0)); } catch(e) {}
     }
-    // Set depth — scale by destination range
-    var depth = cfg.active ? (cfg.depth || 0) : 0;
-    lfoState.gain.gain.setTargetAtTime(depth, t, 0.05);
+
+    // Reconnect to destination if changed
+    if (node.currentDest !== cfg.dest) {
+      try { node.gain.disconnect(); } catch(e) {}
+      node.currentDest = null;
+    }
+    var offsetNode = active ? eng._getOrCreateOffset(cfg.dest) : null;
+    if (offsetNode && node.currentDest !== cfg.dest) {
+      node.gain.connect(offsetNode);
+      node.currentDest = cfg.dest;
+    } else if (!active && node.currentDest) {
+      try { node.gain.disconnect(); } catch(e) {}
+      node.currentDest = null;
+    }
+
+    // Depth scaling per destination
+    var depthScale = 1;
+    var d = LFO_DESTS[cfg.dest];
+    if (d === "lp.freq")     depthScale = 4000; // ±4000Hz max
+    if (d === "lp.q")        depthScale = 5;    // ±5 Q
+    if (d === "reverb.gain") depthScale = 0.4;
+    if (d === "master.gain") depthScale = 0.3;
+    if (d === "haas.gain")   depthScale = 0.5;
+    if (d && d.indexOf("fm") === 0) depthScale = 200; // FM index offset
+
+    var depth = active ? (cfg.depth || 0) * depthScale : 0;
+    node.gain.gain.setTargetAtTime(depth, t, 0.05);
+
+    // S&H timer management
+    if (node.shTimer) { clearInterval(node.shTimer); node.shTimer = null; }
+    if (wave === "s&h" && active) {
+      var intervalMs = Math.max(50, 1000 / rate);
+      node.shTimer = setInterval(function() {
+        if (!eng.ctx || !node.currentDest) return;
+        var rnd = (Math.random() * 2 - 1); // -1..1
+        node.gain.gain.setTargetAtTime(rnd * depth, eng.ctx.currentTime, 0.01);
+      }, intervalMs);
+    }
   };
 
   eng.destroyUserLFOs = function() {
     ["lfo1","lfo2"].forEach(function(k) {
       var l = eng[k];
       if (!l) return;
-      try { l.osc.stop(); l.osc.disconnect(); l.gain.disconnect(); } catch(e) {}
+      if (l.shTimer) clearInterval(l.shTimer);
+      if (l.osc) { try { l.osc.stop(); l.osc.disconnect(); } catch(e) {} }
+      try { l.gain.disconnect(); } catch(e) {}
       eng[k] = null;
     });
+    // Clean up offset nodes
+    Object.keys(eng._lfoOffsets).forEach(function(k) {
+      try { eng._lfoOffsets[k].disconnect(); } catch(e) {}
+    });
+    eng._lfoOffsets = {};
   };
 
   eng.destroy = function() {
@@ -1316,13 +1430,13 @@ function App() {
     pitchMin:36, pitchMax:72, reverbMix:0.3, fps:10, showScales:false,
     intervalR:"1×2", intervalG:"3×2", intervalB:"5×4", glide:200,
     cmR:"1:1", cmG:"1:1", cmB:"1:1", fmDepth:0.4, fmModShape:0,
-    lfo1:{ rate:0.5, depth:0, shape:0, dest:"filter cutoff", active:false },
-    lfo2:{ rate:0.2, depth:0, shape:0, dest:"filter Q",      active:false } });
+    lfo1:{ rate:0.5, depth:0, wave:"sine", dest:"filter cutoff", active:false },
+    lfo2:{ rate:0.2, depth:0, wave:"sine", dest:"filter Q",      active:false } });
 
   // Shared LFO UI state (same for both engines)
   var rlfo = useState({
-    lfo1:{ rate:0.5, depth:0, shape:0, dest:"filter cutoff", active:false },
-    lfo2:{ rate:0.2, depth:0, shape:0, dest:"filter Q",      active:false }
+    lfo1:{ rate:0.5, depth:0, wave:"sine", dest:"filter cutoff", active:false },
+    lfo2:{ rate:0.2, depth:0, wave:"sine", dest:"filter Q",      active:false }
   });
   var lfoState = rlfo[0], setLfoState = rlfo[1];
 
@@ -1886,58 +2000,52 @@ function App() {
     el("div", { style:{ padding:"8px 14px 14px", overflowY:"auto" } },
       el("div", { style:{ fontSize:8, color:"#444", letterSpacing:"0.15em", textTransform:"uppercase", marginBottom:8 } }, "LFO"),
       ["lfo1","lfo2"].map(function(which) {
-        var cfg = lfoState[which];
+        var cfg   = lfoState[which];
         var label = which === "lfo1" ? "LFO 1" : "LFO 2";
         return el("div", { key:which, style:{ borderBottom:"1px solid #141414", paddingBottom:8, marginBottom:8 } },
-          el("div", { style:{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:4 } },
-            el("span", { style:{ fontSize:9, color:"#7fff6a", letterSpacing:"0.1em" } }, label),
+
+          // Header row: label + wave dropdown + dest dropdown + on/off
+          el("div", { style:{ display:"flex", gap:4, alignItems:"center", marginBottom:6 } },
+            el("span", { style:{ fontSize:9, color:"#7fff6a", letterSpacing:"0.1em", minWidth:34 } }, label),
+            el("select", {
+              value: cfg.wave || "sine",
+              onChange: function(e){ setLfo(which, "wave", e.target.value); },
+              style:{ background:"#0a0a0b", border:"1px solid #222", color:"#888", fontFamily:"'IBM Plex Mono',monospace", fontSize:9, padding:"2px 4px", flex:1 }
+            },
+              LFO_WAVES.map(function(w){ return el("option",{key:w,value:w},w); })
+            ),
+            el("select", {
+              value: cfg.dest,
+              onChange: function(e){ setLfo(which, "dest", e.target.value); },
+              style:{ background:"#0a0a0b", border:"1px solid #222", color:"#888", fontFamily:"'IBM Plex Mono',monospace", fontSize:9, padding:"2px 4px", flex:2 }
+            },
+              LFO_DEST_NAMES.map(function(d){ return el("option",{key:d,value:d},d); })
+            ),
             el("button", {
               className:cx("sg", cfg.active&&"sel"),
-              onClick:function(){ setLfo(which, "active", !cfg.active); }
+              onClick:function(){ setLfo(which,"active",!cfg.active); },
+              style:{ minWidth:28 }
             }, cfg.active ? "ON" : "OFF")
           ),
-          el("div", { className:"sr", style:{ borderBottom:"none", paddingBottom:2 } },
-            el("label", null, "Wave"),
-            el("div", { style:{ display:"flex", gap:2 } },
-              [["sine",0],["tri",0.5],["sqr",1]].map(function(pair) {
-                return el("button", {
-                  key:pair[0],
-                  className:cx("sg", Math.abs(cfg.shape-pair[1])<0.1&&"sel"),
-                  onClick:function(){ setLfo(which,"shape",pair[1]); }
-                }, pair[0]);
-              })
-            )
+
+          // Rate slider
+          el("div", { style:{display:"flex",alignItems:"center",gap:6,marginBottom:3} },
+            el("span", { style:{fontSize:8,color:"#444",minWidth:30,letterSpacing:"0.08em"} }, "RATE"),
+            el("input", { type:"range", min:1, max:1000, value:Math.round((cfg.rate||0.5)*100),
+              onChange:function(e){ setLfo(which,"rate",e.target.value/100); },
+              style:{flex:1}
+            }),
+            el("span", { style:{fontSize:8,color:"#7fff6a",minWidth:40,textAlign:"right"} }, (cfg.rate||0.5).toFixed(2)+"Hz")
           ),
-          el("div", { className:"sr", style:{flexDirection:"column",alignItems:"flex-start",gap:2,borderBottom:"none"} },
-            el("div", { style:{display:"flex",width:"100%",justifyContent:"space-between"} },
-              el("label", null, "Rate"),
-              el("span", { style:{fontSize:9,color:"#7fff6a"} }, cfg.rate.toFixed(2)+" Hz")
-            ),
-            el("input", { type:"range", min:1, max:1000, value:Math.round(cfg.rate*100),
-              onChange:function(e){ setLfo(which,"rate",e.target.value/100); }
-            })
-          ),
-          el("div", { className:"sr", style:{flexDirection:"column",alignItems:"flex-start",gap:2,borderBottom:"none"} },
-            el("div", { style:{display:"flex",width:"100%",justifyContent:"space-between"} },
-              el("label", null, "Depth"),
-              el("span", { style:{fontSize:9,color:"#7fff6a"} }, Math.round(cfg.depth*100)+"%")
-            ),
-            el("input", { type:"range", min:0, max:100, value:Math.round(cfg.depth*100),
-              onChange:function(e){ setLfo(which,"depth",e.target.value/100); }
-            })
-          ),
-          el("div", { className:"sr", style:{ borderBottom:"none", paddingBottom:0 } },
-            el("label", null, "Dest"),
-            el("div", { style:{ display:"flex", gap:2, flexWrap:"wrap" } },
-              LFO_DEST_NAMES.map(function(d) {
-                return el("button", {
-                  key:d,
-                  className:cx("sg", cfg.dest===d&&"sel"),
-                  onClick:function(){ setLfo(which,"dest",d); },
-                  style:{ fontSize:8 }
-                }, d);
-              })
-            )
+
+          // Depth slider
+          el("div", { style:{display:"flex",alignItems:"center",gap:6} },
+            el("span", { style:{fontSize:8,color:"#444",minWidth:30,letterSpacing:"0.08em"} }, "DEPTH"),
+            el("input", { type:"range", min:0, max:100, value:Math.round((cfg.depth||0)*100),
+              onChange:function(e){ setLfo(which,"depth",e.target.value/100); },
+              style:{flex:1}
+            }),
+            el("span", { style:{fontSize:8,color:"#7fff6a",minWidth:40,textAlign:"right"} }, Math.round((cfg.depth||0)*100)+"%")
           )
         );
       })
