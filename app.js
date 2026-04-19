@@ -1,5 +1,5 @@
 // Camera Synth — v3.0.0
-var VERSION = "3.5.0";
+var VERSION = "3.5.1";
 
 var useState    = React.useState;
 var useEffect   = React.useEffect;
@@ -1970,16 +1970,6 @@ function App() {
         el("span", { style:{ fontSize:8, color:"#888", letterSpacing:"0.1em" } }, "v"+VERSION)
       ),
       el("div", { style:{ display:"flex", gap:4, alignItems:"center" } },
-        el("button", { className:cx("cb", seqMode==="drone"&&"on"), onClick:function(){
-          setSeqMode("drone");
-          if (seqPlaying && seqRef.current) { seqRef.current.stop(); setSeqPlaying(false); }
-          setShowSeq(false);
-        }, style:{ padding:"5px 8px" } }, "DRONE"),
-        el("button", { className:cx("cb", seqMode==="seq"&&"on"), onClick:function(){
-          var next = seqMode==="seq" ? "drone" : "seq";
-          setSeqMode(next);
-          if(next==="drone" && seqPlaying && seqRef.current){ seqRef.current.stop(); setSeqPlaying(false); }
-        }, style:{ padding:"5px 8px" } }, seqMode==="seq" ? "DRONE" : "SEQ"),
         el("button", { className:cx("cb", showAdv&&"on"), onClick:function(){setShowAdv(function(s){return !s;});setShowSeq(false);}, style:{ letterSpacing:"0.12em", padding:"5px 10px" } }, "ADV"),
         camOn && el("button", { className:"cb", onClick:handleFlip }, "\u21c4"),
         el("button", { className:"cb", onClick:handleReload }, "\u21ba")
@@ -2174,6 +2164,110 @@ function App() {
           var eng=eng2Ref.current;if(eng)eng.settings.glide=v;
         }})
       )
+    ),
+
+    // ── SEQ inline drawer ─────────────────────────────────────────────────────
+    showSeq && el("div", { style:{ padding:"8px 14px 10px", borderTop:"1px solid #141414", background:"#0c0c0d", flexShrink:0 } },
+
+      // PLAY + BPM + STEPS
+      el("div", { style:{ display:"flex", gap:6, alignItems:"center", marginBottom:8 } },
+        el("button", { className:cx("cb", seqPlaying&&"on"), onClick:function(){
+          var s=seqRef.current, eng=synthRef.current;
+          if(!s||!eng||!eng.ctx) return;
+          if(seqPlaying){ s.stop(); setSeqPlaying(false); }
+          else {
+            s.bpm=seqSettings.bpm; s.steps=seqSettings.steps;
+            s.pattern=seqSettings.pattern.slice();
+            s.envAmp=Object.assign({},seqSettings.envAmp);
+            s.envAmp.enabled=true;
+            s.start(); setSeqPlaying(true);
+          }
+        }, style:{ fontSize:10, padding:"5px 8px", flexShrink:0 } }, seqPlaying?"◼ STOP":"▶ PLAY"),
+
+        el("div", { style:{ display:"flex", flexDirection:"column", alignItems:"center", flex:1 } },
+          el("span", { style:{ fontSize:7, color:"#444", letterSpacing:"0.1em" } }, "BPM"),
+          el("div", { style:{ display:"flex", alignItems:"center", gap:2 } },
+            el("button", { className:"sg", style:{padding:"1px 5px"}, onClick:function(){ setSeqSettings(function(s){ var n=Object.assign({},s); n.bpm=Math.max(40,s.bpm-5); if(seqRef.current)seqRef.current.bpm=n.bpm; return n; }); } }, "-"),
+            el("input", { type:"text", inputMode:"numeric",
+              defaultValue:seqSettings.bpm, key:"bpm-"+seqSettings.bpm,
+              onBlur:function(e){ var v=Math.max(40,Math.min(500,parseInt(e.target.value)||120)); setSeqSettings(function(s){var n=Object.assign({},s);n.bpm=v;if(seqRef.current)seqRef.current.bpm=v;return n;}); },
+              onKeyDown:function(e){ if(e.key==="Enter") e.target.blur(); },
+              style:{ width:40, background:"transparent", border:"1px solid #222", color:"#7fff6a",
+                fontFamily:"'IBM Plex Mono',monospace", fontSize:12, textAlign:"center", padding:"1px 0",
+                userSelect:"text", WebkitUserSelect:"text" }
+            }),
+            el("button", { className:"sg", style:{padding:"1px 5px"}, onClick:function(){ setSeqSettings(function(s){ var n=Object.assign({},s); n.bpm=Math.min(500,s.bpm+5); if(seqRef.current)seqRef.current.bpm=n.bpm; return n; }); } }, "+")
+          )
+        ),
+
+        el("div", { style:{ display:"flex", flexDirection:"column", alignItems:"center", flex:1 } },
+          el("span", { style:{ fontSize:7, color:"#444", letterSpacing:"0.1em" } }, "STEPS"),
+          el("div", { style:{ display:"flex", alignItems:"center", gap:2 } },
+            el("button", { className:"sg", style:{padding:"1px 5px"}, onClick:function(){ setSeqSettings(function(s){ var n=Object.assign({},s); n.steps=Math.max(1,s.steps-1); if(seqRef.current)seqRef.current.steps=n.steps; return n; }); } }, "-"),
+            el("span", { style:{ fontSize:12, color:"#7fff6a", minWidth:18, textAlign:"center" } }, seqSettings.steps),
+            el("button", { className:"sg", style:{padding:"1px 5px"}, onClick:function(){ setSeqSettings(function(s){ var n=Object.assign({},s); n.steps=Math.min(16,s.steps+1); if(seqRef.current)seqRef.current.steps=n.steps; return n; }); } }, "+")
+          )
+        )
+      ),
+
+      // Step grid
+      el("div", { style:{ marginBottom:8 } },
+        [0,1].map(function(row){
+          var rowSteps=[];
+          for(var i=row*8; i<Math.min((row+1)*8,seqSettings.steps); i++) rowSteps.push(i);
+          if(!rowSteps.length) return null;
+          return el("div", { key:row, style:{ display:"flex", gap:3, marginBottom:3 } },
+            rowSteps.map(function(i){
+              var isOn=seqSettings.pattern[i];
+              var isCur=(i===currentStep)&&seqPlaying;
+              return el("div", { key:i,
+                onClick:function(){ setSeqSettings(function(s){ var n=Object.assign({},s); n.pattern=s.pattern.slice(); n.pattern[i]=!s.pattern[i]; if(seqRef.current)seqRef.current.pattern=n.pattern.slice(); return n; }); },
+                style:{ width:"calc((100% - 21px) / 8)", height:28, flexShrink:0, borderRadius:3, cursor:"pointer",
+                  border:isCur?"2px solid #7fff6a":"1px solid #1a3a1a",
+                  background:isCur?"#1a4a1a":isOn?"#0d2a0d":"#050805",
+                  boxShadow:isCur?"0 0 6px rgba(127,255,106,0.4)":"none" }
+              });
+            })
+          );
+        })
+      ),
+
+      // ADSR — 4 vertical ribbon sliders
+      el("div", { style:{ display:"flex", gap:6 } },
+        ["A","D","S","R"].map(function(label, idx){
+          var keys=["a","d","s","r"], mins=[1,1,0,10], maxs=[2000,2000,100,8000];
+          var key=keys[idx], val=seqSettings.envAmp[key], min=mins[idx], max=maxs[idx];
+          var pct=(val-min)/(max-min), topPx=Math.round((1-pct)*100);
+          function fmtV(v){ return label==="S"?v+"%":v<1000?v+"ms":(v/1000).toFixed(1)+"s"; }
+          var sliderRef=React.useRef(null), dragRef=React.useRef(null);
+          function onPD(e){
+            e.preventDefault(); e.stopPropagation();
+            sliderRef.current && sliderRef.current.setPointerCapture(e.pointerId);
+            var rect=sliderRef.current?sliderRef.current.getBoundingClientRect():{height:90};
+            dragRef.current={startY:e.clientY, startVal:val, height:Math.max(1,rect.height), range:max-min};
+          }
+          function onPM(e){
+            var d=dragRef.current; if(!d) return;
+            var nv=Math.max(min,Math.min(max, d.startVal+(d.startY-e.clientY)/d.height*d.range));
+            setSeqSettings(function(s){ var n=Object.assign({},s); n.envAmp=Object.assign({},s.envAmp); n.envAmp[key]=Math.round(nv); if(seqRef.current)seqRef.current.envAmp=n.envAmp; return n; });
+          }
+          function onPU(){ dragRef.current=null; }
+          return el("div", { key:label, style:{ flex:1, display:"flex", flexDirection:"column", alignItems:"center" } },
+            el("span", { style:{ fontSize:8, color:"#444", letterSpacing:"0.1em", marginBottom:3 } }, label),
+            el("div", { ref:sliderRef, onPointerDown:onPD, onPointerMove:onPM, onPointerUp:onPU, onPointerCancel:onPU,
+              style:{ width:"100%", height:90, position:"relative", borderRadius:4, cursor:"ns-resize",
+                background:"linear-gradient(180deg,rgba(127,255,106,0.12) 0%,rgba(127,255,106,0.02) 100%)",
+                border:"1px solid #1a2a1a", userSelect:"none", WebkitUserSelect:"none", touchAction:"none" }
+            },
+              el("div", { style:{ position:"absolute", left:0, right:0, top:topPx+"%", height:2,
+                background:"#7fff6a", transform:"translateY(-50%)", pointerEvents:"none", boxShadow:"0 0 4px #7fff6a" }}),
+              el("div", { style:{ position:"absolute", left:"50%", top:topPx+"%", width:12, height:12,
+                borderRadius:"50%", background:"#7fff6a", transform:"translate(-50%,-50%)", pointerEvents:"none" }})
+            ),
+            el("span", { style:{ fontSize:8, color:"#7fff6a", marginTop:3 } }, fmtV(val))
+          );
+        })
+      )
     )
   );
 
@@ -2347,56 +2441,6 @@ function App() {
       })
     )
   );
-
-
-  // ── SEQ PAGE ─────────────────────────────────────────────────────────────────
-  // Amp envelope — simple ADSR range sliders, always visible
-  function AmpEnvBlock(props) {
-    var env = props.env;
-    function set(k, v) { props.onChange(Object.assign({}, env, { [k]: v })); }
-    function fmtMs(v) { return v < 1000 ? v+"ms" : (v/1000).toFixed(1)+"s"; }
-
-    return el("div", { style:{ padding:"0" } },
-      el("div", { className:"sr", style:{ flexDirection:"column", alignItems:"flex-start", gap:2 } },
-        el("div", { style:{ display:"flex", width:"100%", justifyContent:"space-between" } },
-          el("label", null, "Attack"),
-          el("span", { style:{ fontSize:9, color:"#7fff6a" } }, fmtMs(env.a))
-        ),
-        el("input", { type:"range", min:1, max:2000, value:env.a,
-          onChange:function(e){ set("a", +e.target.value); }
-        })
-      ),
-      el("div", { className:"sr", style:{ flexDirection:"column", alignItems:"flex-start", gap:2 } },
-        el("div", { style:{ display:"flex", width:"100%", justifyContent:"space-between" } },
-          el("label", null, "Decay"),
-          el("span", { style:{ fontSize:9, color:"#7fff6a" } }, fmtMs(env.d))
-        ),
-        el("input", { type:"range", min:1, max:2000, value:env.d,
-          onChange:function(e){ set("d", +e.target.value); }
-        })
-      ),
-      el("div", { className:"sr", style:{ flexDirection:"column", alignItems:"flex-start", gap:2 } },
-        el("div", { style:{ display:"flex", width:"100%", justifyContent:"space-between" } },
-          el("label", null, "Sustain"),
-          el("span", { style:{ fontSize:9, color:"#7fff6a" } }, env.s+"%")
-        ),
-        el("input", { type:"range", min:0, max:100, value:env.s,
-          onChange:function(e){ set("s", +e.target.value); }
-        })
-      ),
-      el("div", { className:"sr", style:{ flexDirection:"column", alignItems:"flex-start", gap:2, borderBottom:"none" } },
-        el("div", { style:{ display:"flex", width:"100%", justifyContent:"space-between" } },
-          el("label", null, "Release"),
-          el("span", { style:{ fontSize:9, color:"#7fff6a" } }, fmtMs(env.r))
-        ),
-        el("input", { type:"range", min:10, max:8000, value:env.r,
-          onChange:function(e){ set("r", +e.target.value); }
-        })
-      )
-    );
-  }
-
-
 
   return el("div", { style:{ display:"flex", flexDirection:"column", width:"100%", height:"100dvh", background:"#0a0a0b", fontFamily:"'IBM Plex Mono','Courier New',monospace", color:"#c8c8b4", userSelect:"none", WebkitUserSelect:"none", WebkitTouchCallout:"none", touchAction:"none", overflow:"hidden", maxWidth:480, margin:"0 auto" } },
 
