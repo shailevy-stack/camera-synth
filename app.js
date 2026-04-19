@@ -1,5 +1,5 @@
 // Camera Synth — v3.0.0
-var VERSION = "3.4.3";
+var VERSION = "3.4.4";
 
 var useState    = React.useState;
 var useEffect   = React.useEffect;
@@ -2395,161 +2395,103 @@ function App() {
 
 
   // ── SEQ PAGE ─────────────────────────────────────────────────────────────────
-  function VertRibbon(props) {
-    var ref     = useRef(null);
-    var dragRef = useRef(null);
-
-    function onPointerDown(e) {
-      e.preventDefault();
-      e.stopPropagation();
-      ref.current && ref.current.setPointerCapture(e.pointerId);
-      var rect = ref.current ? ref.current.getBoundingClientRect() : { height:160 };
-      dragRef.current = {
-        startY:   e.clientY,
-        startVal: props.value,
-        height:   Math.max(1, rect.height),
-        range:    props.max - props.min,
-      };
-    }
-
-    function onPointerMove(e) {
-      var d = dragRef.current;
-      if (!d) return;
-      e.preventDefault();
-      var dy    = d.startY - e.clientY; // up = increase
-      var delta = (dy / d.height) * d.range;
-      var newVal = Math.max(props.min, Math.min(props.max, d.startVal + delta));
-      props.onChange(newVal);
-    }
-
-    function onPointerUp(e) {
-      dragRef.current = null;
-    }
-
-    var pct = (props.value - props.min) / (props.max - props.min);
-    var playheadTop = (1 - pct) * 100;
-
-    return el("div", { style:{ display:"flex", flexDirection:"column", alignItems:"center", flex:1 } },
-      el("span", { style:{ fontSize:7, color:"#444", letterSpacing:"0.1em", marginBottom:2 } }, props.label),
-      el("div", {
-        ref: ref,
-        onPointerDown: onPointerDown,
-        onPointerMove: onPointerMove,
-        onPointerUp:   onPointerUp,
-        onPointerCancel: onPointerUp,
-        style:{ width:"100%", height:160, position:"relative", cursor:"ns-resize",
-          background:"linear-gradient(180deg, "+props.colorHi+" 0%, "+props.colorLo+" 100%)",
-          borderRadius:4, border:"1px solid #1a1a1a", touchAction:"none",
-          userSelect:"none", WebkitUserSelect:"none" }
-      },
-        el("div", { style:{
-          position:"absolute", left:0, right:0,
-          top: playheadTop+"%",
-          height:2, background:props.color,
-          boxShadow:"0 0 6px "+props.color,
-          transform:"translateY(-50%)", pointerEvents:"none"
-        }}),
-        el("div", { style:{
-          position:"absolute", left:"50%", top: playheadTop+"%",
-          width:10, height:10, borderRadius:"50%",
-          background:props.color, transform:"translate(-50%,-50%)",
-          pointerEvents:"none"
-        }})
-      ),
-      el("span", { style:{ fontSize:7, color:props.color, marginTop:2, letterSpacing:"0.05em" } },
-        props.format ? props.format(props.value) : Math.round(props.value)
-      )
-    );
-  }
-
+  // Simple range-slider envelope block — for functional testing
   function EnvBlock(props) {
-    // props: label, color, colorHi, colorLo, env, onChange, freeDestVisible
     var env = props.env;
     var c   = props.color;
+    function setEnv(k, v) { props.onChange(Object.assign({}, env, { [k]: v })); }
+    function fmtMs(v) { return v < 1000 ? v+"ms" : (v/1000).toFixed(1)+"s"; }
 
-    function setEnv(k, v) {
-      props.onChange(Object.assign({}, env, { [k]: v }));
-    }
+    return el("div", { style:{ marginBottom:6, borderBottom:"1px solid #141414", paddingBottom:6 } },
 
-    // Amount ribbon (horizontal, like filter ribbon)
-    var amtRibbonRef  = useRef(null);
-    var amtDragRef    = useRef(false);
-    function onAmtPointerDown(e) {
-      e.preventDefault();
-      amtRibbonRef.current && amtRibbonRef.current.setPointerCapture(e.pointerId);
-      amtDragRef.current = true;
-      var rect = amtRibbonRef.current ? amtRibbonRef.current.getBoundingClientRect() : null;
-      if (!rect) return;
-      var x = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-      setEnv("amount", Math.round(x * 100));
-    }
-    function onAmtPointerMove(e) {
-      if (!amtDragRef.current) return;
-      var rect = amtRibbonRef.current ? amtRibbonRef.current.getBoundingClientRect() : null;
-      if (!rect) return;
-      var x = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-      setEnv("amount", Math.round(x * 100));
-    }
-    function onAmtPointerUp(e) { amtDragRef.current = false; }
+      // Header: label + ON/OFF + expand
+      el("div", { className:"sr", style:{ borderBottom:"none", paddingBottom:2 } },
+        el("label", { style:{ color:env.enabled!==false ? c : "#333" } }, props.label),
+        el("div", { style:{ display:"flex", gap:4, alignItems:"center" } },
+          el("button", {
+            className:cx("sg", env.enabled!==false&&"sel"),
+            onClick:function(){ setEnv("enabled", !env.enabled); },
+            style:{ padding:"2px 6px" }
+          }, env.enabled!==false ? "ON" : "OFF"),
+          el("button", {
+            className:"sg",
+            onClick:function(){ setEnv("open", !env.open); },
+            style:{ padding:"2px 6px" }
+          }, env.open ? "▲" : "▼")
+        )
+      ),
 
-    return el("div", { style:{ marginBottom:8, borderBottom:"1px solid #141414", paddingBottom:8 } },
+      // ADSR sliders — shown when expanded
+      env.open && el("div", { style:{ paddingTop:4 } },
 
-      // Header row: label + enabled toggle + amount ribbon (if not amp) + expand
-      el("div", { style:{ display:"flex", alignItems:"center", gap:6, marginBottom: env.open ? 8 : 0 } },
-        el("span", { style:{ fontSize:9, color:env.enabled!==false?c:"#333", letterSpacing:"0.1em", minWidth:40 } }, props.label),
-        el("button", {
-          className:cx("sg", env.enabled!==false&&"sel"),
-          onClick:function(){ setEnv("enabled", env.enabled===false?true:false); },
-          style:{ minWidth:28, padding:"2px 5px", fontSize:8 }
-        }, env.enabled!==false ? "ON" : "OFF"),
-        !props.noAmount && el("div", { style:{ flex:1, position:"relative" } },
-          el("div", {
-            ref: amtRibbonRef,
-            onPointerDown: onAmtPointerDown,
-            onPointerMove: onAmtPointerMove,
-            onPointerUp:   onAmtPointerUp,
-            onPointerCancel: onAmtPointerUp,
-            style:{ height:18, borderRadius:3, cursor:"crosshair", touchAction:"none",
-              background:"linear-gradient(90deg, #0a0a0b 0%, "+props.colorLo+" 100%)",
-              border:"1px solid #1a1a1a", position:"relative" }
-          },
-            el("div", { style:{
-              position:"absolute", left:((env.amount||50))+"%", top:0, bottom:0,
-              width:2, background:c, transform:"translateX(-50%)", pointerEvents:"none",
-              boxShadow:"0 0 5px "+c
-            }})
+        !props.noAmount && el("div", { className:"sr", style:{ flexDirection:"column", alignItems:"flex-start", gap:2, borderBottom:"none", paddingBottom:4 } },
+          el("div", { style:{ display:"flex", width:"100%", justifyContent:"space-between" } },
+            el("label", null, "Amount"),
+            el("span", { style:{ fontSize:9, color:c } }, (env.amount||50)+"%")
           ),
-          el("span", { style:{ position:"absolute", right:0, top:-1, fontSize:7, color:c } }, (env.amount||50)+"%")
-        ),
-        props.noAmount && el("div", { style:{ flex:1 } }),
-        el("button", {
-          className:"sg",
-          onClick: function(){ setEnv("open", !env.open); },
-          style:{ minWidth:20, padding:"2px 5px" }
-        }, env.open ? "▲" : "▼")
-      ),
-
-      // ADSR vertical ribbons — only when open
-      env.open && el("div", { style:{ display:"flex", gap:4 } },
-        el(VertRibbon, { label:"A", value:env.a, min:1, max:2000, color:c, colorHi:props.colorHi, colorLo:props.colorLo, onChange:function(v){setEnv("a",Math.round(v));}, format:function(v){return v<1000?v+"ms":(v/1000).toFixed(1)+"s";} }),
-        el(VertRibbon, { label:"D", value:env.d, min:1, max:2000, color:c, colorHi:props.colorHi, colorLo:props.colorLo, onChange:function(v){setEnv("d",Math.round(v));}, format:function(v){return v<1000?v+"ms":(v/1000).toFixed(1)+"s";} }),
-        el(VertRibbon, { label:"S", value:env.s, min:0, max:100,  color:c, colorHi:props.colorHi, colorLo:props.colorLo, onChange:function(v){setEnv("s",Math.round(v));}, format:function(v){return v+"%";} }),
-        el(VertRibbon, { label:"R", value:env.r, min:10, max:8000, color:c, colorHi:props.colorHi, colorLo:props.colorLo, onChange:function(v){setEnv("r",Math.round(v));}, format:function(v){return v<1000?v+"ms":(v/1000).toFixed(1)+"s";} })
-      ),
-
-      // Free env destination selector
-      env.open && props.freeDestVisible && el("div", { style:{ marginTop:6 } },
-        el("div", { style:{ fontSize:7, color:"#444", letterSpacing:"0.1em", marginBottom:4 } }, "DEST"),
-        el("div", { style:{ display:"flex", flexWrap:"wrap", gap:2 } },
-          LFO_DEST_NAMES.filter(function(d){
-            var k = LFO_DESTS[d];
-            return k !== "lp.freq" && k !== "master.gain";
-          }).map(function(d) {
-            return el("button", { key:d, className:cx("sg", env.dest===d&&"sel"),
-              onClick:function(){ setEnv("dest",d); var s=seqRef.current; if(s){s.envFree.dest=d;s._reconnectFreeEnv&&s._reconnectFreeEnv();} },
-              style:{ fontSize:7 }
-            }, d);
+          el("input", { type:"range", min:0, max:100, value:env.amount||50,
+            onChange:function(e){ setEnv("amount", +e.target.value); }
           })
+        ),
+
+        el("div", { className:"sr", style:{ flexDirection:"column", alignItems:"flex-start", gap:2, borderBottom:"none", paddingBottom:4 } },
+          el("div", { style:{ display:"flex", width:"100%", justifyContent:"space-between" } },
+            el("label", null, "Attack"),
+            el("span", { style:{ fontSize:9, color:c } }, fmtMs(env.a))
+          ),
+          el("input", { type:"range", min:1, max:2000, value:env.a,
+            onChange:function(e){ setEnv("a", +e.target.value); }
+          })
+        ),
+
+        el("div", { className:"sr", style:{ flexDirection:"column", alignItems:"flex-start", gap:2, borderBottom:"none", paddingBottom:4 } },
+          el("div", { style:{ display:"flex", width:"100%", justifyContent:"space-between" } },
+            el("label", null, "Decay"),
+            el("span", { style:{ fontSize:9, color:c } }, fmtMs(env.d))
+          ),
+          el("input", { type:"range", min:1, max:2000, value:env.d,
+            onChange:function(e){ setEnv("d", +e.target.value); }
+          })
+        ),
+
+        el("div", { className:"sr", style:{ flexDirection:"column", alignItems:"flex-start", gap:2, borderBottom:"none", paddingBottom:4 } },
+          el("div", { style:{ display:"flex", width:"100%", justifyContent:"space-between" } },
+            el("label", null, "Sustain"),
+            el("span", { style:{ fontSize:9, color:c } }, env.s+"%")
+          ),
+          el("input", { type:"range", min:0, max:100, value:env.s,
+            onChange:function(e){ setEnv("s", +e.target.value); }
+          })
+        ),
+
+        el("div", { className:"sr", style:{ flexDirection:"column", alignItems:"flex-start", gap:2, borderBottom:"none", paddingBottom:4 } },
+          el("div", { style:{ display:"flex", width:"100%", justifyContent:"space-between" } },
+            el("label", null, "Release"),
+            el("span", { style:{ fontSize:9, color:c } }, fmtMs(env.r))
+          ),
+          el("input", { type:"range", min:10, max:8000, value:env.r,
+            onChange:function(e){ setEnv("r", +e.target.value); }
+          })
+        ),
+
+        props.freeDestVisible && el("div", { className:"sr", style:{ borderBottom:"none", flexDirection:"column", alignItems:"flex-start", gap:4, paddingBottom:4 } },
+          el("label", null, "Destination"),
+          el("div", { style:{ display:"flex", flexWrap:"wrap", gap:2 } },
+            LFO_DEST_NAMES.filter(function(d){
+              var k = LFO_DESTS[d];
+              return k !== "lp.freq" && k !== "master.gain";
+            }).map(function(d) {
+              return el("button", { key:d,
+                className:cx("sg", env.dest===d&&"sel"),
+                onClick:function(){
+                  setEnv("dest", d);
+                  var s = seqRef.current;
+                  if (s) { s.envFree.dest=d; s._reconnectFreeEnv&&s._reconnectFreeEnv(); }
+                },
+                style:{ fontSize:8 }
+              }, d);
+            })
+          )
         )
       )
     );
@@ -2661,15 +2603,15 @@ function App() {
       // Envelopes
       el("div", { style:{ fontSize:8, color:"#444", letterSpacing:"0.15em", textTransform:"uppercase", marginBottom:6 } }, "Envelopes"),
 
-      el(EnvBlock, { label:"AMP", color:"#7fff6a", colorHi:"rgba(127,255,106,0.15)", colorLo:"rgba(127,255,106,0.02)",
+      el(EnvBlock, { label:"AMP", color:"#7fff6a",
         env:seqSettings.envAmp, freeDestVisible:false, noAmount:true,
         onChange:function(env){ setSeqSettings(function(s){var n=Object.assign({},s);n.envAmp=env;if(seqRef.current)seqRef.current.envAmp=env;return n;}); }
       }),
-      el(EnvBlock, { label:"FILTER", color:"#6bb5ff", colorHi:"rgba(107,181,255,0.15)", colorLo:"rgba(107,181,255,0.02)",
+      el(EnvBlock, { label:"FILTER", color:"#6bb5ff",
         env:seqSettings.envFilter, freeDestVisible:false,
         onChange:function(env){ setSeqSettings(function(s){var n=Object.assign({},s);n.envFilter=env;if(seqRef.current)seqRef.current.envFilter=env;return n;}); }
       }),
-      el(EnvBlock, { label:"FREE", color:"#ffb347", colorHi:"rgba(255,179,71,0.15)", colorLo:"rgba(255,179,71,0.02)",
+      el(EnvBlock, { label:"FREE", color:"#ffb347",
         env:seqSettings.envFree, freeDestVisible:true,
         onChange:function(env){ setSeqSettings(function(s){var n=Object.assign({},s);n.envFree=env;if(seqRef.current)seqRef.current.envFree=env;return n;}); }
       })
