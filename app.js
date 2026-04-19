@@ -1,5 +1,5 @@
 // Camera Synth — v3.0.0
-var VERSION = "3.4.0";
+var VERSION = "3.4.1";
 
 var useState    = React.useState;
 var useEffect   = React.useEffect;
@@ -1442,11 +1442,17 @@ function makeSequencer(getEngine) {
     if (!eng || !eng.ctx) return;
     var ctx = eng.ctx;
 
-    // Amp envelope — modulates preReverbGain
-    if (!seq._ampEnvGain && eng.preReverbGain) {
+    // Amp envelope — sits IN the signal path (not as an offset)
+    // preReverbGain → ampEnvNode → dryGain/reverbNode
+    if (!seq._ampEnvGain) {
       seq._ampEnvGain = ctx.createGain();
-      seq._ampEnvGain.gain.value = 0;
-      seq._ampEnvGain.connect(eng.preReverbGain.gain);
+      seq._ampEnvGain.gain.value = 0; // starts silent, envelope opens it
+      // Rewire: disconnect lowpass from preReverbGain, route through ampEnv
+      if (eng.lowpassNode && eng.preReverbGain) {
+        try { eng.lowpassNode.disconnect(eng.preReverbGain); } catch(e) {}
+        eng.lowpassNode.connect(seq._ampEnvGain);
+        seq._ampEnvGain.connect(eng.preReverbGain);
+      }
     }
 
     // Filter envelope — dedicated offset gain into lowpass frequency
@@ -1484,23 +1490,21 @@ function makeSequencer(getEngine) {
   seq._triggerEnv = function(envSettings, gainNode, time, gateOn, depthScale) {
     if (!gainNode) return;
     var g   = gainNode.gain;
-    var a   = Math.max(0.001, envSettings.a / 1000);
-    var d   = Math.max(0.001, envSettings.d / 1000);
-    var s   = envSettings.s / 100;
+    var a   = Math.max(0.002, envSettings.a / 1000);
+    var d   = Math.max(0.002, envSettings.d / 1000);
+    var sus = Math.max(0, Math.min(1, envSettings.s / 100));
     var r   = Math.max(0.01,  envSettings.r / 1000);
     var amt = (envSettings.amount / 100) * (depthScale || 1);
 
     if (gateOn) {
       g.cancelScheduledValues(time);
-      g.setValueAtTime(0, time);
-      g.linearRampToValueAtTime(amt, time + a);           // attack
-      g.linearRampToValueAtTime(amt * s, time + a + d);  // decay to sustain
+      g.setValueAtTime(g.value, time);  // start from current value (avoids click)
+      g.linearRampToValueAtTime(amt,         time + a);        // attack to peak
+      g.linearRampToValueAtTime(amt * sus,   time + a + d);    // decay to sustain
     } else {
-      // Gate off — release from current sustain level
-      var currentVal = amt * s;
       g.cancelScheduledValues(time);
-      g.setValueAtTime(currentVal, time);
-      g.linearRampToValueAtTime(0, time + r);             // release
+      g.setValueAtTime(g.value, time);
+      g.linearRampToValueAtTime(0, time + r);  // release to zero
     }
   };
 
@@ -1543,7 +1547,8 @@ function makeSequencer(getEngine) {
     seq._initEnvNodes();
     seq.running = true;
     seq._currentStep = 0;
-    seq._nextStepTime = eng.ctx.currentTime + 0.05;
+    seq._startTime    = eng.ctx.currentTime + 0.05;
+    seq._nextStepTime = seq._startTime;
     seq._timerID = setInterval(seq._scheduler, seq._lookahead);
     seq._scheduler();
   };
@@ -1551,30 +1556,46 @@ function makeSequencer(getEngine) {
   seq.stop = function() {
     seq.running = false;
     if (seq._timerID) { clearInterval(seq._timerID); seq._timerID = null; }
-    // Release all envelopes
     var eng = getEngine();
     if (eng && eng.ctx) {
       var t = eng.ctx.currentTime;
-      [seq._ampEnvGain, seq._filterEnvGain, seq._freeEnvGain].forEach(function(g) {
+      // Release filter + free envelopes
+      [seq._filterEnvGain, seq._freeEnvGain].forEach(function(g) {
         if (!g) return;
         g.gain.cancelScheduledValues(t);
-        g.gain.setTargetAtTime(0, t, 0.05);
+        g.gain.setTargetAtTime(0, t, 0.1);
       });
+      // Release amp with envelope release time
+      if (seq._ampEnvGain) {
+        var r = Math.max(0.05, seq.envAmp.r / 1000);
+        seq._ampEnvGain.gain.cancelScheduledValues(t);
+        seq._ampEnvGain.gain.setTargetAtTime(0, t, r / 3);
+      }
     }
   };
 
   seq.getCurrentStep = function() {
+    if (!seq.running || seq._startTime === undefined) return -1;
     var eng = getEngine();
-    if (!eng || !eng.ctx || !seq.running) return -1;
-    var elapsed = eng.ctx.currentTime - (seq._nextStepTime - seq.stepDuration() * seq.steps);
+    if (!eng || !eng.ctx) return -1;
+    var elapsed = eng.ctx.currentTime - seq._startTime;
+    if (elapsed < 0) return 0;
     return Math.floor(elapsed / seq.stepDuration()) % seq.steps;
   };
 
   seq.destroy = function() {
     seq.stop();
+    var eng = getEngine();
+    // Restore original signal path if amp env was inserted
+    if (seq._ampEnvGain && eng && eng.lowpassNode && eng.preReverbGain) {
+      try { eng.lowpassNode.disconnect(seq._ampEnvGain); } catch(e) {}
+      try { seq._ampEnvGain.disconnect(eng.preReverbGain); } catch(e) {}
+      try { eng.lowpassNode.connect(eng.preReverbGain); } catch(e) {}
+    }
     [seq._ampEnvGain, seq._filterEnvGain, seq._freeEnvGain].forEach(function(g) {
       if (g) try { g.disconnect(); } catch(e) {}
     });
+    seq._ampEnvGain = null; seq._filterEnvGain = null; seq._freeEnvGain = null;
   };
 
   return seq;
@@ -1802,16 +1823,27 @@ function App() {
     return function() { clearInterval(timerRef.current); };
   }, [camReady, settings.fps, activeEngine]);
 
-  // Sequencer step ticker
+  // Sequencer step ticker — uses ref to avoid React re-renders on every frame
+  var currentStepRef = useRef(-1);
   useEffect(function() {
-    if (!seqPlaying) { setCurrentStep(-1); return; }
+    if (!seqPlaying) {
+      currentStepRef.current = -1;
+      // Force one re-render to clear highlights
+      setCurrentStep(-1);
+      return;
+    }
     var alive = true;
+    var lastStep = -1;
     function tick() {
       if (!alive) return;
       var s = seqRef.current;
       if (s) {
         var step = s.getCurrentStep();
-        setCurrentStep(step);
+        if (step !== lastStep) {
+          lastStep = step;
+          currentStepRef.current = step;
+          setCurrentStep(step); // only re-render on step change (~every 125ms at 120bpm)
+        }
       }
       requestAnimationFrame(tick);
     }
@@ -1968,9 +2000,15 @@ function App() {
           setSeqMode("drone");
           if (seqPlaying && seqRef.current) { seqRef.current.stop(); setSeqPlaying(false); }
           setShowSeq(false);
+          // Restore drone gain
+          var eng = synthRef.current;
+          if (eng && eng.preReverbGain && eng.active) eng.preReverbGain.gain.value = 1.0;
         }, style:{ padding:"5px 8px" } }, "DRONE"),
         el("button", { className:cx("cb", seqMode==="seq"&&"on"), onClick:function(){
           setSeqMode("seq"); setShowSeq(true); setShowAdv(false);
+          // Mute drone — amp envelope will control volume in SEQ mode
+          var eng = synthRef.current;
+          if (eng && eng.preReverbGain) eng.preReverbGain.gain.value = 0;
         }, style:{ padding:"5px 8px" } }, "SEQ"),
         el("button", { className:cx("cb", showAdv&&"on"), onClick:function(){setShowAdv(function(s){return !s;});setShowSeq(false);}, style:{ letterSpacing:"0.12em", padding:"5px 10px" } }, "ADV"),
         camOn && el("button", { className:"cb", onClick:handleFlip }, "\u21c4"),
@@ -2334,39 +2372,44 @@ function App() {
 
   // ── SEQ PAGE ─────────────────────────────────────────────────────────────────
   function VertRibbon(props) {
-    // Vertical ribbon slider — drag up/down to set value
-    var ref = useRef(null);
-    var startY = useRef(null);
-    var startVal = useRef(null);
+    var ref      = useRef(null);
+    var dragRef  = useRef(null); // { startY, startVal, height }
 
-    function getVal(e) {
-      var touch = e.touches ? e.touches[0] : e;
-      return touch.clientY;
+    function getClientY(e) {
+      return e.touches ? e.touches[0].clientY : e.clientY;
     }
 
     function onStart(e) {
       e.preventDefault();
-      startY.current   = getVal(e);
-      startVal.current = props.value;
+      e.stopPropagation();
+      var rect = ref.current ? ref.current.getBoundingClientRect() : { height: 160 };
+      dragRef.current = {
+        startY:   getClientY(e),
+        startVal: props.value,
+        height:   rect.height,
+        range:    props.max - props.min,
+      };
       var move = function(e2) {
         e2.preventDefault();
-        var dy    = startY.current - getVal(e2); // up = positive
-        var range = props.max - props.min;
-        var rect  = ref.current ? ref.current.getBoundingClientRect() : { height: 160 };
-        var delta = (dy / rect.height) * range;
-        var newVal = Math.max(props.min, Math.min(props.max, startVal.current + delta));
-        props.onChange(props.log ? logMap(newVal, props.min, props.max) : newVal);
+        var d = dragRef.current;
+        if (!d) return;
+        var dy    = d.startY - getClientY(e2); // up = increase
+        // Scale: full ribbon height = full range. Sensitivity feels natural.
+        var delta = (dy / d.height) * d.range;
+        var newVal = Math.max(props.min, Math.min(props.max, d.startVal + delta));
+        props.onChange(newVal);
       };
       var up = function() {
+        dragRef.current = null;
         window.removeEventListener("touchmove", move);
-        window.removeEventListener("touchend", up);
+        window.removeEventListener("touchend",  up);
         window.removeEventListener("mousemove", move);
-        window.removeEventListener("mouseup", up);
+        window.removeEventListener("mouseup",   up);
       };
       window.addEventListener("touchmove", move, { passive: false });
-      window.addEventListener("touchend", up);
+      window.addEventListener("touchend",  up,   { passive: false });
       window.addEventListener("mousemove", move);
-      window.addEventListener("mouseup", up);
+      window.addEventListener("mouseup",   up);
     }
 
     var pct = (props.value - props.min) / (props.max - props.min);
@@ -2483,7 +2526,7 @@ function App() {
       padding:"10px 14px 6px", paddingTop:"max(env(safe-area-inset-top,10px),10px)",
       flexShrink:0, borderBottom:"1px solid #141414" } },
       el("span", { style:{ fontSize:10, letterSpacing:"0.2em", color:"#7fff6a", textTransform:"uppercase" } }, "Sequencer"),
-      el("button", { className:"cb on", onClick:function(){setShowSeq(false);setSeqMode("drone");if(seqPlaying&&seqRef.current){seqRef.current.stop();setSeqPlaying(false);}}, style:{letterSpacing:"0.1em"} }, "← back")
+      el("button", { className:"cb on", onClick:function(){setShowSeq(false);}, style:{letterSpacing:"0.1em"} }, "← back")
     ),
 
     el("div", { style:{ overflowY:"auto", flex:1, padding:"8px 14px 14px" } },
@@ -2537,7 +2580,7 @@ function App() {
           var rowSteps = [];
           for (var i = row*8; i < Math.min((row+1)*8, seqSettings.steps); i++) rowSteps.push(i);
           if (rowSteps.length === 0) return null;
-          return el("div", { key:row, style:{ display:"flex", gap:4, marginBottom:4 } },
+          return el("div", { key:row, style:{ display:"flex", gap:4, marginBottom:4, justifyContent:"flex-start" } },
             rowSteps.map(function(i) {
               var isOn      = seqSettings.pattern[i];
               var isCurrent = (i === currentStep) && seqPlaying;
@@ -2549,11 +2592,10 @@ function App() {
                   return n;
                 }); },
                 style:{
-                  flex:1, height:36, borderRadius:4, cursor:"pointer",
+                  width:36, height:36, flexShrink:0, borderRadius:4, cursor:"pointer",
                   border: isCurrent ? "2px solid #7fff6a" : "1px solid #1a3a1a",
                   background: isCurrent ? "#1a4a1a" : isOn ? "#0d2a0d" : "#050805",
                   boxShadow: isCurrent ? "0 0 8px rgba(127,255,106,0.4)" : "none",
-                  transition:"background 0.05s"
                 }
               });
             })
