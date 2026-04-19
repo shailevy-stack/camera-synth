@@ -1,5 +1,5 @@
 // Camera Synth — v3.0.0
-var VERSION = "3.5.1";
+var VERSION = "3.5.2";
 
 var useState    = React.useState;
 var useEffect   = React.useEffect;
@@ -1568,6 +1568,52 @@ function makeSequencer(getEngine) {
   return seq;
 }
 
+
+// ── ADSR vertical ribbon slider component ────────────────────────────────────
+function ADSRSlider(props) {
+  // props: label, value, min, max, onChange
+  var sliderRef = useRef(null);
+  var dragRef   = useRef(null);
+
+  function fmtV(v) {
+    if (props.label === "S") return v + "%";
+    return v < 1000 ? v + "ms" : (v / 1000).toFixed(1) + "s";
+  }
+
+  function onPD(e) {
+    e.preventDefault(); e.stopPropagation();
+    sliderRef.current && sliderRef.current.setPointerCapture(e.pointerId);
+    var rect = sliderRef.current ? sliderRef.current.getBoundingClientRect() : { height: 90 };
+    dragRef.current = { startY: e.clientY, startVal: props.value, height: Math.max(1, rect.height), range: props.max - props.min };
+  }
+  function onPM(e) {
+    var d = dragRef.current; if (!d) return;
+    var nv = Math.max(props.min, Math.min(props.max, d.startVal + (d.startY - e.clientY) / d.height * d.range));
+    props.onChange(Math.round(nv));
+  }
+  function onPU() { dragRef.current = null; }
+
+  var pct    = (props.value - props.min) / (props.max - props.min);
+  var topPct = Math.round((1 - pct) * 100);
+
+  return el("div", { style: { flex: 1, display: "flex", flexDirection: "column", alignItems: "center" } },
+    el("span", { style: { fontSize: 8, color: "#444", letterSpacing: "0.1em", marginBottom: 3 } }, props.label),
+    el("div", {
+      ref: sliderRef,
+      onPointerDown: onPD, onPointerMove: onPM, onPointerUp: onPU, onPointerCancel: onPU,
+      style: { width: "100%", height: 90, position: "relative", borderRadius: 4, cursor: "ns-resize",
+        background: "linear-gradient(180deg,rgba(127,255,106,0.12) 0%,rgba(127,255,106,0.02) 100%)",
+        border: "1px solid #1a2a1a", userSelect: "none", WebkitUserSelect: "none", touchAction: "none" }
+    },
+      el("div", { style: { position: "absolute", left: 0, right: 0, top: topPct + "%", height: 2,
+        background: "#7fff6a", transform: "translateY(-50%)", pointerEvents: "none", boxShadow: "0 0 4px #7fff6a" }}),
+      el("div", { style: { position: "absolute", left: "50%", top: topPct + "%", width: 12, height: 12,
+        borderRadius: "50%", background: "#7fff6a", transform: "translate(-50%,-50%)", pointerEvents: "none" }})
+    ),
+    el("span", { style: { fontSize: 8, color: "#7fff6a", marginTop: 3 } }, fmtV(props.value))
+  );
+}
+
 // ── App ───────────────────────────────────────────────────────────────────────
 function App() {
   var videoRef        = useRef(null);
@@ -2232,41 +2278,12 @@ function App() {
         })
       ),
 
-      // ADSR — 4 vertical ribbon sliders
+      // ADSR — 4 vertical ribbon sliders (proper components — no hooks in map)
       el("div", { style:{ display:"flex", gap:6 } },
-        ["A","D","S","R"].map(function(label, idx){
-          var keys=["a","d","s","r"], mins=[1,1,0,10], maxs=[2000,2000,100,8000];
-          var key=keys[idx], val=seqSettings.envAmp[key], min=mins[idx], max=maxs[idx];
-          var pct=(val-min)/(max-min), topPx=Math.round((1-pct)*100);
-          function fmtV(v){ return label==="S"?v+"%":v<1000?v+"ms":(v/1000).toFixed(1)+"s"; }
-          var sliderRef=React.useRef(null), dragRef=React.useRef(null);
-          function onPD(e){
-            e.preventDefault(); e.stopPropagation();
-            sliderRef.current && sliderRef.current.setPointerCapture(e.pointerId);
-            var rect=sliderRef.current?sliderRef.current.getBoundingClientRect():{height:90};
-            dragRef.current={startY:e.clientY, startVal:val, height:Math.max(1,rect.height), range:max-min};
-          }
-          function onPM(e){
-            var d=dragRef.current; if(!d) return;
-            var nv=Math.max(min,Math.min(max, d.startVal+(d.startY-e.clientY)/d.height*d.range));
-            setSeqSettings(function(s){ var n=Object.assign({},s); n.envAmp=Object.assign({},s.envAmp); n.envAmp[key]=Math.round(nv); if(seqRef.current)seqRef.current.envAmp=n.envAmp; return n; });
-          }
-          function onPU(){ dragRef.current=null; }
-          return el("div", { key:label, style:{ flex:1, display:"flex", flexDirection:"column", alignItems:"center" } },
-            el("span", { style:{ fontSize:8, color:"#444", letterSpacing:"0.1em", marginBottom:3 } }, label),
-            el("div", { ref:sliderRef, onPointerDown:onPD, onPointerMove:onPM, onPointerUp:onPU, onPointerCancel:onPU,
-              style:{ width:"100%", height:90, position:"relative", borderRadius:4, cursor:"ns-resize",
-                background:"linear-gradient(180deg,rgba(127,255,106,0.12) 0%,rgba(127,255,106,0.02) 100%)",
-                border:"1px solid #1a2a1a", userSelect:"none", WebkitUserSelect:"none", touchAction:"none" }
-            },
-              el("div", { style:{ position:"absolute", left:0, right:0, top:topPx+"%", height:2,
-                background:"#7fff6a", transform:"translateY(-50%)", pointerEvents:"none", boxShadow:"0 0 4px #7fff6a" }}),
-              el("div", { style:{ position:"absolute", left:"50%", top:topPx+"%", width:12, height:12,
-                borderRadius:"50%", background:"#7fff6a", transform:"translate(-50%,-50%)", pointerEvents:"none" }})
-            ),
-            el("span", { style:{ fontSize:8, color:"#7fff6a", marginTop:3 } }, fmtV(val))
-          );
-        })
+        el(ADSRSlider, { key:"A", label:"A", value:seqSettings.envAmp.a, min:1,  max:2000, onChange:function(v){ setSeqSettings(function(s){ var n=Object.assign({},s); n.envAmp=Object.assign({},s.envAmp); n.envAmp.a=v; if(seqRef.current)seqRef.current.envAmp=n.envAmp; return n; }); } }),
+        el(ADSRSlider, { key:"D", label:"D", value:seqSettings.envAmp.d, min:1,  max:2000, onChange:function(v){ setSeqSettings(function(s){ var n=Object.assign({},s); n.envAmp=Object.assign({},s.envAmp); n.envAmp.d=v; if(seqRef.current)seqRef.current.envAmp=n.envAmp; return n; }); } }),
+        el(ADSRSlider, { key:"S", label:"S", value:seqSettings.envAmp.s, min:0,  max:100,  onChange:function(v){ setSeqSettings(function(s){ var n=Object.assign({},s); n.envAmp=Object.assign({},s.envAmp); n.envAmp.s=v; if(seqRef.current)seqRef.current.envAmp=n.envAmp; return n; }); } }),
+        el(ADSRSlider, { key:"R", label:"R", value:seqSettings.envAmp.r, min:10, max:8000, onChange:function(v){ setSeqSettings(function(s){ var n=Object.assign({},s); n.envAmp=Object.assign({},s.envAmp); n.envAmp.r=v; if(seqRef.current)seqRef.current.envAmp=n.envAmp; return n; }); } })
       )
     )
   );
