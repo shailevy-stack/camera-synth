@@ -1,5 +1,5 @@
 // Camera Synth — v3.0.0
-var VERSION = "3.4.5";
+var VERSION = "3.4.6";
 
 var useState    = React.useState;
 var useEffect   = React.useEffect;
@@ -1446,11 +1446,9 @@ function makeSequencer(getEngine) {
   seq._initEnvNodes = function() {
     var eng = getEngine();
     if (!eng || !eng.ctx) return;
-    var ctx = eng.ctx;
-
-    // Amp envelope — drives seqAmpGain (always in signal path, no rewiring)
+    // Amp envelope drives seqAmpGain directly
     seq._ampTarget = eng.seqAmpGain ? eng.seqAmpGain.gain : null;
-
+    if (!seq._ampTarget) console.warn('[SEQ] seqAmpGain missing');
   };
 
   seq._triggerEnv = function(envSettings, gainNode, time, gateOn, depthScale) {
@@ -2354,7 +2352,6 @@ function App() {
           el("span", { style:{ fontSize:9, color:"#7fff6a" } }, fmtMs(env.a))
         ),
         el("input", { type:"range", min:1, max:2000, value:env.a,
-          style:{ touchAction:"auto" },
           onChange:function(e){ set("a", +e.target.value); }
         })
       ),
@@ -2364,7 +2361,6 @@ function App() {
           el("span", { style:{ fontSize:9, color:"#7fff6a" } }, fmtMs(env.d))
         ),
         el("input", { type:"range", min:1, max:2000, value:env.d,
-          style:{ touchAction:"auto" },
           onChange:function(e){ set("d", +e.target.value); }
         })
       ),
@@ -2374,7 +2370,6 @@ function App() {
           el("span", { style:{ fontSize:9, color:"#7fff6a" } }, env.s+"%")
         ),
         el("input", { type:"range", min:0, max:100, value:env.s,
-          style:{ touchAction:"auto" },
           onChange:function(e){ set("s", +e.target.value); }
         })
       ),
@@ -2384,7 +2379,6 @@ function App() {
           el("span", { style:{ fontSize:9, color:"#7fff6a" } }, fmtMs(env.r))
         ),
         el("input", { type:"range", min:10, max:8000, value:env.r,
-          style:{ touchAction:"auto" },
           onChange:function(e){ set("r", +e.target.value); }
         })
       )
@@ -2396,6 +2390,7 @@ function App() {
     s.steps   = seqSettings.steps;
     s.pattern = seqSettings.pattern.slice();
     s.envAmp  = Object.assign({}, seqSettings.envAmp);
+    s.envAmp.enabled = seqSettings.envAmp.enabled !== false; // default true
     s.start();
   }
 
@@ -2511,10 +2506,10 @@ function App() {
 
     el("div", { style:{ position:"relative", width:"100%", flex:1, minHeight:0, display:"flex", flexDirection:"column" } },
       mainView,
-      showAdv && el("div", { style:{ position:"absolute", inset:0, background:"#0a0a0b", zIndex:10, display:"flex", flexDirection:"column", overflow:"hidden" } },
+      showAdv && el("div", { style:{ position:"absolute", inset:0, background:"#0a0a0b", zIndex:10, display:"flex", flexDirection:"column", overflow:"hidden", touchAction:"pan-y" } },
         advView
       ),
-      showSeq && el("div", { style:{ position:"absolute", inset:0, background:"#0a0a0b", zIndex:10, display:"flex", flexDirection:"column", overflow:"hidden" } },
+      showSeq && el("div", { style:{ position:"absolute", inset:0, background:"#0a0a0b", zIndex:10, display:"flex", flexDirection:"column", overflow:"hidden", touchAction:"pan-y" } },
         seqView
       )
     )
