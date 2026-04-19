@@ -1,5 +1,5 @@
 // Camera Synth — v3.0.0
-var VERSION = "3.3.1";
+var VERSION = "3.4.0";
 
 var useState    = React.useState;
 var useEffect   = React.useEffect;
@@ -90,7 +90,7 @@ var LFO_DESTS = {
   "filter Q":        "lp.q",
   "FM depth":        "fm.depth",
   "reverb mix":      "reverb.gain",
-  "master vol":      "master.gain",
+  "amp":             "master.gain",
   "stereo width":    "haas.gain",
   "R FM depth":      "fm.r",
   "G FM depth":      "fm.g",
@@ -1404,6 +1404,182 @@ function cx() {
   return Array.prototype.slice.call(arguments).filter(Boolean).join(" ");
 }
 
+
+// ══════════════════════════════════════════════════════════════════════════════
+// SEQUENCER ENGINE
+// Web Audio clock-accurate 1/16 note gate sequencer
+// 3 ADSR envelopes: Amp (preReverbGain), Filter (lowpass offset), Free (assignable)
+// ══════════════════════════════════════════════════════════════════════════════
+function makeSequencer(getEngine) {
+  var seq = {
+    running: false,
+    bpm: 120,
+    steps: 16,
+    pattern: new Array(16).fill(false),
+    currentStep: -1,
+    _scheduleAhead: 0.1,   // seconds ahead to schedule
+    _lookahead: 25,         // ms between scheduler calls
+    _nextStepTime: 0,
+    _timerID: null,
+    _currentStep: 0,
+    // Envelope settings
+    envAmp:    { a:10,  d:100, s:80, r:300,  amount:100, open:false },
+    envFilter: { a:20,  d:200, s:50, r:500,  amount:60,  open:false },
+    envFree:   { a:50,  d:100, s:60, r:400,  amount:50,  open:false, dest:"FM depth" },
+    // Envelope gain nodes (created on first trigger)
+    _ampEnvGain:    null,
+    _filterEnvGain: null,
+    _freeEnvGain:   null,
+  };
+
+  seq.stepDuration = function() {
+    // 1/16 note in seconds
+    return (60 / seq.bpm) / 4;
+  };
+
+  seq._initEnvNodes = function() {
+    var eng = getEngine();
+    if (!eng || !eng.ctx) return;
+    var ctx = eng.ctx;
+
+    // Amp envelope — modulates preReverbGain
+    if (!seq._ampEnvGain && eng.preReverbGain) {
+      seq._ampEnvGain = ctx.createGain();
+      seq._ampEnvGain.gain.value = 0;
+      seq._ampEnvGain.connect(eng.preReverbGain.gain);
+    }
+
+    // Filter envelope — dedicated offset gain into lowpass frequency
+    if (!seq._filterEnvGain && eng.lowpassNode) {
+      seq._filterEnvGain = ctx.createGain();
+      seq._filterEnvGain.gain.value = 0;
+      seq._filterEnvGain.connect(eng.lowpassNode.frequency);
+    }
+
+    // Free envelope — resolved via LFO destination system
+    if (!seq._freeEnvGain) {
+      seq._freeEnvGain = ctx.createGain();
+      seq._freeEnvGain.gain.value = 0;
+      seq._reconnectFreeEnv();
+    }
+  };
+
+  seq._reconnectFreeEnv = function() {
+    var eng = getEngine();
+    if (!eng || !seq._freeEnvGain) return;
+    try { seq._freeEnvGain.disconnect(); } catch(e) {}
+    var dest = seq.envFree.dest;
+    var param = null;
+    var d = LFO_DESTS[dest];
+    if (d === "reverb.gain") param = eng.reverbGain ? eng.reverbGain.gain : null;
+    if (d === "master.gain") param = eng.preReverbGain ? eng.preReverbGain.gain : null;
+    if (d === "haas.gain")   param = (eng.oscR && eng.oscR.haasGain) ? eng.oscR.haasGain.gain : null;
+    if (d === "fm.depth")    param = (eng.oscR && eng.oscR.fmIndex) ? eng.oscR.fmIndex.gain : null;
+    if (d === "fm.r")        param = (eng.oscR && eng.oscR.fmIndex) ? eng.oscR.fmIndex.gain : null;
+    if (d === "fm.g")        param = (eng.oscG && eng.oscG.fmIndex) ? eng.oscG.fmIndex.gain : null;
+    if (d === "fm.b")        param = (eng.oscB && eng.oscB.fmIndex) ? eng.oscB.fmIndex.gain : null;
+    if (param) seq._freeEnvGain.connect(param);
+  };
+
+  seq._triggerEnv = function(envSettings, gainNode, time, gateOn, depthScale) {
+    if (!gainNode) return;
+    var g   = gainNode.gain;
+    var a   = Math.max(0.001, envSettings.a / 1000);
+    var d   = Math.max(0.001, envSettings.d / 1000);
+    var s   = envSettings.s / 100;
+    var r   = Math.max(0.01,  envSettings.r / 1000);
+    var amt = (envSettings.amount / 100) * (depthScale || 1);
+
+    if (gateOn) {
+      g.cancelScheduledValues(time);
+      g.setValueAtTime(0, time);
+      g.linearRampToValueAtTime(amt, time + a);           // attack
+      g.linearRampToValueAtTime(amt * s, time + a + d);  // decay to sustain
+    } else {
+      // Gate off — release from current sustain level
+      var currentVal = amt * s;
+      g.cancelScheduledValues(time);
+      g.setValueAtTime(currentVal, time);
+      g.linearRampToValueAtTime(0, time + r);             // release
+    }
+  };
+
+  seq._scheduleStep = function(stepIndex, time) {
+    var eng = getEngine();
+    if (!eng || !eng.ctx) return;
+    var gateOn = seq.pattern[stepIndex % seq.steps];
+
+    // Amp envelope
+    seq._triggerEnv(seq.envAmp, seq._ampEnvGain, time, gateOn, 1);
+
+    // Filter envelope — depth scaled to Hz range (0-100% → 0-8000Hz offset)
+    seq._triggerEnv(seq.envFilter, seq._filterEnvGain, time, gateOn, 8000);
+
+    // Free envelope
+    var freeDest = seq.envFree.dest;
+    var freeScale = 1;
+    var fd = LFO_DESTS[freeDest];
+    if (fd === "reverb.gain") freeScale = 0.5;
+    if (fd === "haas.gain")   freeScale = 0.7;
+    if (fd && fd.indexOf("fm") === 0) freeScale = 300;
+    seq._triggerEnv(seq.envFree, seq._freeEnvGain, time, gateOn, freeScale);
+  };
+
+  seq._scheduler = function() {
+    var eng = getEngine();
+    if (!eng || !eng.ctx) return;
+    var ctx = eng.ctx;
+
+    while (seq._nextStepTime < ctx.currentTime + seq._scheduleAhead) {
+      seq._scheduleStep(seq._currentStep, seq._nextStepTime);
+      seq._currentStep = (seq._currentStep + 1) % seq.steps;
+      seq._nextStepTime += seq.stepDuration();
+    }
+  };
+
+  seq.start = function() {
+    var eng = getEngine();
+    if (!eng || !eng.ctx || seq.running) return;
+    seq._initEnvNodes();
+    seq.running = true;
+    seq._currentStep = 0;
+    seq._nextStepTime = eng.ctx.currentTime + 0.05;
+    seq._timerID = setInterval(seq._scheduler, seq._lookahead);
+    seq._scheduler();
+  };
+
+  seq.stop = function() {
+    seq.running = false;
+    if (seq._timerID) { clearInterval(seq._timerID); seq._timerID = null; }
+    // Release all envelopes
+    var eng = getEngine();
+    if (eng && eng.ctx) {
+      var t = eng.ctx.currentTime;
+      [seq._ampEnvGain, seq._filterEnvGain, seq._freeEnvGain].forEach(function(g) {
+        if (!g) return;
+        g.gain.cancelScheduledValues(t);
+        g.gain.setTargetAtTime(0, t, 0.05);
+      });
+    }
+  };
+
+  seq.getCurrentStep = function() {
+    var eng = getEngine();
+    if (!eng || !eng.ctx || !seq.running) return -1;
+    var elapsed = eng.ctx.currentTime - (seq._nextStepTime - seq.stepDuration() * seq.steps);
+    return Math.floor(elapsed / seq.stepDuration()) % seq.steps;
+  };
+
+  seq.destroy = function() {
+    seq.stop();
+    [seq._ampEnvGain, seq._filterEnvGain, seq._freeEnvGain].forEach(function(g) {
+      if (g) try { g.disconnect(); } catch(e) {}
+    });
+  };
+
+  return seq;
+}
+
 // ── App ───────────────────────────────────────────────────────────────────────
 function App() {
   var videoRef        = useRef(null);
@@ -1437,7 +1613,7 @@ function App() {
   var rfd = useState(null);   var frameData     = rfd[0], setFrameData    = rfd[1];
 
   // Which engine is active: "1" or "2"
-  var ren = useState("1");    var activeEngine  = ren[0], setActiveEngine  = ren[1];
+  var ren = useState("2");    var activeEngine  = ren[0], setActiveEngine  = ren[1];
 
   // Engine 1 settings
   var rs1 = useState({ voices:1, detune:12, quantize:false, scale:"pentatonic",
@@ -1483,16 +1659,71 @@ function App() {
   // Init both engines, switch between them
   var eng1Ref = useRef(null);
   var eng2Ref = useRef(null);
+  var seqRef  = useRef(null);
+
+  // Sequencer UI state
+  var rmode = useState("drone"); var seqMode = rmode[0], setSeqMode = rmode[1];
+  var rseq  = useState({
+    bpm: 120, steps: 16,
+    pattern: new Array(16).fill(false),
+    envAmp:    { a:10,  d:100, s:80, r:300,  amount:100, open:false },
+    envFilter: { a:20,  d:200, s:50, r:500,  amount:60,  open:false },
+    envFree:   { a:50,  d:100, s:60, r:400,  amount:50,  open:false, dest:"FM depth" },
+  });
+  var seqSettings = rseq[0], setSeqSettings = rseq[1];
+  var rplay = useState(false); var seqPlaying = rplay[0], setSeqPlaying = rplay[1];
+  var rstep = useState(-1);    var currentStep = rstep[0], setCurrentStep = rstep[1];
+  var rshowSeq = useState(false); var showSeq = rshowSeq[0], setShowSeq = rshowSeq[1];
 
   useEffect(function() {
     eng1Ref.current = makeEngine1();
     eng2Ref.current = makeEngine2();
-    synthRef.current = eng1Ref.current;
+    seqRef.current  = makeSequencer(function(){ return synthRef.current; });
+
+    // Load last state from localStorage
+    try {
+      var saved = localStorage.getItem("camsynth_state");
+      if (saved) {
+        var state = JSON.parse(saved);
+        if (state.engine) {
+          var initEng = state.engine === "1" ? eng1Ref.current : eng2Ref.current;
+          synthRef.current = initEng;
+          setActiveEngine(state.engine);
+        } else {
+          synthRef.current = eng2Ref.current;
+        }
+        if (state.settings1) setSettings1(function(s){ return Object.assign({},s,state.settings1); });
+        if (state.settings2) setSettings2(function(s){ return Object.assign({},s,state.settings2); });
+        if (state.lfoState)  setLfoState(function(s){ return Object.assign({},s,state.lfoState); });
+        if (state.lpX !== undefined) setLpX(state.lpX);
+        if (state.ribbonX !== undefined) setRibbonX(state.ribbonX);
+      } else {
+        synthRef.current = eng2Ref.current; // default CamSynth_2
+      }
+    } catch(e) {
+      synthRef.current = eng2Ref.current;
+    }
+
     return function() {
       if (eng1Ref.current) eng1Ref.current.destroy();
       if (eng2Ref.current) eng2Ref.current.destroy();
+      if (seqRef.current)  seqRef.current.destroy();
     };
   }, []);
+
+  // Save state to localStorage on changes (debounced)
+  var saveTimerRef = useRef(null);
+  useEffect(function() {
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = setTimeout(function() {
+      try {
+        localStorage.setItem("camsynth_state", JSON.stringify({
+          engine: activeEngine, settings1: settings1, settings2: settings2,
+          lfoState: lfoState, lpX: lpX, ribbonX: ribbonX
+        }));
+      } catch(e) {}
+    }, 500);
+  }, [activeEngine, settings1, settings2, lfoState, lpX, ribbonX]);
 
   // Switch engine
   useEffect(function() {
@@ -1570,6 +1801,23 @@ function App() {
     }, ms);
     return function() { clearInterval(timerRef.current); };
   }, [camReady, settings.fps, activeEngine]);
+
+  // Sequencer step ticker
+  useEffect(function() {
+    if (!seqPlaying) { setCurrentStep(-1); return; }
+    var alive = true;
+    function tick() {
+      if (!alive) return;
+      var s = seqRef.current;
+      if (s) {
+        var step = s.getCurrentStep();
+        setCurrentStep(step);
+      }
+      requestAnimationFrame(tick);
+    }
+    tick();
+    return function() { alive = false; };
+  }, [seqPlaying]);
 
   // Scope
   useEffect(function() {
@@ -1716,7 +1964,15 @@ function App() {
         el("span", { style:{ fontSize:8, color:"#888", letterSpacing:"0.1em" } }, "v"+VERSION)
       ),
       el("div", { style:{ display:"flex", gap:4, alignItems:"center" } },
-        el("button", { className:cx("cb", showAdv&&"on"), onClick:function(){setShowAdv(function(s){return !s;});}, style:{ letterSpacing:"0.12em", padding:"5px 10px" } }, "ADV"),
+        el("button", { className:cx("cb", seqMode==="drone"&&"on"), onClick:function(){
+          setSeqMode("drone");
+          if (seqPlaying && seqRef.current) { seqRef.current.stop(); setSeqPlaying(false); }
+          setShowSeq(false);
+        }, style:{ padding:"5px 8px" } }, "DRONE"),
+        el("button", { className:cx("cb", seqMode==="seq"&&"on"), onClick:function(){
+          setSeqMode("seq"); setShowSeq(true); setShowAdv(false);
+        }, style:{ padding:"5px 8px" } }, "SEQ"),
+        el("button", { className:cx("cb", showAdv&&"on"), onClick:function(){setShowAdv(function(s){return !s;});setShowSeq(false);}, style:{ letterSpacing:"0.12em", padding:"5px 10px" } }, "ADV"),
         camOn && el("button", { className:"cb", onClick:handleFlip }, "\u21c4"),
         el("button", { className:"cb", onClick:handleReload }, "\u21ba")
       )
@@ -2075,6 +2331,254 @@ function App() {
     )
   );
 
+
+  // ── SEQ PAGE ─────────────────────────────────────────────────────────────────
+  function VertRibbon(props) {
+    // Vertical ribbon slider — drag up/down to set value
+    var ref = useRef(null);
+    var startY = useRef(null);
+    var startVal = useRef(null);
+
+    function getVal(e) {
+      var touch = e.touches ? e.touches[0] : e;
+      return touch.clientY;
+    }
+
+    function onStart(e) {
+      e.preventDefault();
+      startY.current   = getVal(e);
+      startVal.current = props.value;
+      var move = function(e2) {
+        e2.preventDefault();
+        var dy    = startY.current - getVal(e2); // up = positive
+        var range = props.max - props.min;
+        var rect  = ref.current ? ref.current.getBoundingClientRect() : { height: 160 };
+        var delta = (dy / rect.height) * range;
+        var newVal = Math.max(props.min, Math.min(props.max, startVal.current + delta));
+        props.onChange(props.log ? logMap(newVal, props.min, props.max) : newVal);
+      };
+      var up = function() {
+        window.removeEventListener("touchmove", move);
+        window.removeEventListener("touchend", up);
+        window.removeEventListener("mousemove", move);
+        window.removeEventListener("mouseup", up);
+      };
+      window.addEventListener("touchmove", move, { passive: false });
+      window.addEventListener("touchend", up);
+      window.addEventListener("mousemove", move);
+      window.addEventListener("mouseup", up);
+    }
+
+    var pct = (props.value - props.min) / (props.max - props.min);
+    var playheadTop = (1 - pct) * 100;
+
+    return el("div", { style:{ display:"flex", flexDirection:"column", alignItems:"center", flex:1 } },
+      el("span", { style:{ fontSize:7, color:"#444", letterSpacing:"0.1em", marginBottom:2 } }, props.label),
+      el("div", {
+        ref: ref,
+        onMouseDown: onStart, onTouchStart: onStart,
+        style:{ width:"100%", height:160, position:"relative", cursor:"ns-resize",
+          background:"linear-gradient(180deg, "+props.colorHi+" 0%, "+props.colorLo+" 100%)",
+          borderRadius:4, border:"1px solid #1a1a1a", touchAction:"none" }
+      },
+        el("div", { style:{
+          position:"absolute", left:0, right:0,
+          top: playheadTop+"%",
+          height:2, background:props.color,
+          boxShadow:"0 0 6px "+props.color,
+          transform:"translateY(-50%)", pointerEvents:"none"
+        }}),
+        el("div", { style:{
+          position:"absolute", left:"50%", top: playheadTop+"%",
+          width:10, height:10, borderRadius:"50%",
+          background:props.color, transform:"translate(-50%,-50%)",
+          pointerEvents:"none"
+        }})
+      ),
+      el("span", { style:{ fontSize:7, color:props.color, marginTop:2, letterSpacing:"0.05em" } },
+        props.format ? props.format(props.value) : Math.round(props.value)
+      )
+    );
+  }
+
+  function EnvBlock(props) {
+    // props: label, color, colorHi, colorLo, env, onChange, freeDestVisible
+    var env = props.env;
+    var c   = props.color;
+
+    function setEnv(k, v) {
+      props.onChange(Object.assign({}, env, { [k]: v }));
+    }
+
+    // Amount ribbon (horizontal, like filter ribbon)
+    var amtRibbonRef = useRef(null);
+    function onAmtTouch(e) {
+      e.preventDefault();
+      var rect = amtRibbonRef.current ? amtRibbonRef.current.getBoundingClientRect() : null;
+      if (!rect) return;
+      var cx2 = e.touches ? e.touches[0].clientX : e.clientX;
+      var x   = Math.max(0, Math.min(1, (cx2 - rect.left) / rect.width));
+      setEnv("amount", Math.round(x * 100));
+    }
+
+    return el("div", { style:{ marginBottom:8, borderBottom:"1px solid #141414", paddingBottom:8 } },
+
+      // Header row — label + amount ribbon + open/close
+      el("div", { style:{ display:"flex", alignItems:"center", gap:6, marginBottom: env.open ? 8 : 0 } },
+        el("span", { style:{ fontSize:9, color:c, letterSpacing:"0.1em", minWidth:40 } }, props.label),
+        el("div", { style:{ flex:1, position:"relative" } },
+          el("div", {
+            ref: amtRibbonRef,
+            onMouseDown: onAmtTouch, onMouseMove: function(e){ if(e.buttons) onAmtTouch(e); },
+            onTouchStart: onAmtTouch, onTouchMove: onAmtTouch,
+            style:{ height:18, borderRadius:3, cursor:"crosshair", touchAction:"none",
+              background:"linear-gradient(90deg, #0a0a0b 0%, "+props.colorLo+" 100%)",
+              border:"1px solid #1a1a1a", position:"relative" }
+          },
+            el("div", { style:{
+              position:"absolute", left:(env.amount)+"%", top:0, bottom:0,
+              width:2, background:c, transform:"translateX(-50%)", pointerEvents:"none",
+              boxShadow:"0 0 5px "+c
+            }})
+          ),
+          el("span", { style:{ position:"absolute", right:0, top:-1, fontSize:7, color:c } }, env.amount+"%")
+        ),
+        el("button", {
+          className:"sg",
+          onClick: function(){ setEnv("open", !env.open); },
+          style:{ minWidth:20, padding:"2px 5px" }
+        }, env.open ? "▲" : "▼")
+      ),
+
+      // ADSR vertical ribbons — only when open
+      env.open && el("div", { style:{ display:"flex", gap:4 } },
+        el(VertRibbon, { label:"A", value:env.a, min:1, max:2000, color:c, colorHi:props.colorHi, colorLo:props.colorLo, onChange:function(v){setEnv("a",Math.round(v));}, format:function(v){return v<1000?v+"ms":(v/1000).toFixed(1)+"s";} }),
+        el(VertRibbon, { label:"D", value:env.d, min:1, max:2000, color:c, colorHi:props.colorHi, colorLo:props.colorLo, onChange:function(v){setEnv("d",Math.round(v));}, format:function(v){return v<1000?v+"ms":(v/1000).toFixed(1)+"s";} }),
+        el(VertRibbon, { label:"S", value:env.s, min:0, max:100,  color:c, colorHi:props.colorHi, colorLo:props.colorLo, onChange:function(v){setEnv("s",Math.round(v));}, format:function(v){return v+"%";} }),
+        el(VertRibbon, { label:"R", value:env.r, min:10, max:8000, color:c, colorHi:props.colorHi, colorLo:props.colorLo, onChange:function(v){setEnv("r",Math.round(v));}, format:function(v){return v<1000?v+"ms":(v/1000).toFixed(1)+"s";} })
+      ),
+
+      // Free env destination selector
+      env.open && props.freeDestVisible && el("div", { style:{ marginTop:6 } },
+        el("div", { style:{ fontSize:7, color:"#444", letterSpacing:"0.1em", marginBottom:4 } }, "DEST"),
+        el("div", { style:{ display:"flex", flexWrap:"wrap", gap:2 } },
+          LFO_DEST_NAMES.filter(function(d){
+            var k = LFO_DESTS[d];
+            return k !== "lp.freq" && k !== "master.gain";
+          }).map(function(d) {
+            return el("button", { key:d, className:cx("sg", env.dest===d&&"sel"),
+              onClick:function(){ setEnv("dest",d); var s=seqRef.current; if(s){s.envFree.dest=d;s._reconnectFreeEnv&&s._reconnectFreeEnv();} },
+              style:{ fontSize:7 }
+            }, d);
+          })
+        )
+      )
+    );
+  }
+
+  var seqView = el("div", { style:{ display:"flex", flexDirection:"column", width:"100%", height:"100%", overflow:"hidden" } },
+
+    // Seq header
+    el("div", { style:{ display:"flex", justifyContent:"space-between", alignItems:"center",
+      padding:"10px 14px 6px", paddingTop:"max(env(safe-area-inset-top,10px),10px)",
+      flexShrink:0, borderBottom:"1px solid #141414" } },
+      el("span", { style:{ fontSize:10, letterSpacing:"0.2em", color:"#7fff6a", textTransform:"uppercase" } }, "Sequencer"),
+      el("button", { className:"cb on", onClick:function(){setShowSeq(false);setSeqMode("drone");if(seqPlaying&&seqRef.current){seqRef.current.stop();setSeqPlaying(false);}}, style:{letterSpacing:"0.1em"} }, "← back")
+    ),
+
+    el("div", { style:{ overflowY:"auto", flex:1, padding:"8px 14px 14px" } },
+
+      // BPM + Length + Play controls
+      el("div", { style:{ display:"flex", gap:8, alignItems:"center", marginBottom:10 } },
+        // Play/stop
+        el("button", { className:cx("cb", seqPlaying&&"on"), onClick:function(){
+          var s = seqRef.current;
+          if (!s) return;
+          var eng = synthRef.current;
+          if (!eng || !eng.ctx) return;
+          if (seqPlaying) {
+            s.stop(); setSeqPlaying(false);
+          } else {
+            // sync seq settings
+            s.bpm     = seqSettings.bpm;
+            s.steps   = seqSettings.steps;
+            s.pattern = seqSettings.pattern.slice();
+            s.envAmp    = Object.assign({}, seqSettings.envAmp);
+            s.envFilter = Object.assign({}, seqSettings.envFilter);
+            s.envFree   = Object.assign({}, seqSettings.envFree);
+            s.start(); setSeqPlaying(true);
+          }
+        }, style:{ padding:"8px 12px", fontSize:11 } }, seqPlaying ? "◼ STOP" : "▶ PLAY"),
+
+        // BPM
+        el("div", { style:{ display:"flex", flexDirection:"column", alignItems:"center", flex:1 } },
+          el("span", { style:{ fontSize:7, color:"#444", letterSpacing:"0.1em" } }, "BPM"),
+          el("div", { style:{ display:"flex", alignItems:"center", gap:4 } },
+            el("button", { className:"sg", onClick:function(){ setSeqSettings(function(s){ var n=Object.assign({},s); n.bpm=Math.max(40,s.bpm-1); if(seqRef.current)seqRef.current.bpm=n.bpm; return n; }) }, style:{padding:"2px 6px"} }, "-"),
+            el("span", { style:{ fontSize:14, color:"#7fff6a", minWidth:36, textAlign:"center" } }, seqSettings.bpm),
+            el("button", { className:"sg", onClick:function(){ setSeqSettings(function(s){ var n=Object.assign({},s); n.bpm=Math.min(500,s.bpm+1); if(seqRef.current)seqRef.current.bpm=n.bpm; return n; }) }, style:{padding:"2px 6px"} }, "+")
+          )
+        ),
+
+        // Length
+        el("div", { style:{ display:"flex", flexDirection:"column", alignItems:"center", flex:1 } },
+          el("span", { style:{ fontSize:7, color:"#444", letterSpacing:"0.1em" } }, "STEPS"),
+          el("div", { style:{ display:"flex", alignItems:"center", gap:4 } },
+            el("button", { className:"sg", onClick:function(){ setSeqSettings(function(s){ var n=Object.assign({},s); n.steps=Math.max(1,s.steps-1); if(seqRef.current)seqRef.current.steps=n.steps; return n; }) }, style:{padding:"2px 6px"} }, "-"),
+            el("span", { style:{ fontSize:14, color:"#7fff6a", minWidth:24, textAlign:"center" } }, seqSettings.steps),
+            el("button", { className:"sg", onClick:function(){ setSeqSettings(function(s){ var n=Object.assign({},s); n.steps=Math.min(16,s.steps+1); if(seqRef.current)seqRef.current.steps=n.steps; return n; }) }, style:{padding:"2px 6px"} }, "+")
+          )
+        )
+      ),
+
+      // Step grid — 2 rows of 8, scales with steps
+      el("div", { style:{ marginBottom:12 } },
+        [0,1].map(function(row) {
+          var rowSteps = [];
+          for (var i = row*8; i < Math.min((row+1)*8, seqSettings.steps); i++) rowSteps.push(i);
+          if (rowSteps.length === 0) return null;
+          return el("div", { key:row, style:{ display:"flex", gap:4, marginBottom:4 } },
+            rowSteps.map(function(i) {
+              var isOn      = seqSettings.pattern[i];
+              var isCurrent = (i === currentStep) && seqPlaying;
+              return el("div", { key:i,
+                onClick:function(){ setSeqSettings(function(s){
+                  var n=Object.assign({},s); n.pattern=s.pattern.slice();
+                  n.pattern[i]=!s.pattern[i];
+                  if(seqRef.current)seqRef.current.pattern=n.pattern.slice();
+                  return n;
+                }); },
+                style:{
+                  flex:1, height:36, borderRadius:4, cursor:"pointer",
+                  border: isCurrent ? "2px solid #7fff6a" : "1px solid #1a3a1a",
+                  background: isCurrent ? "#1a4a1a" : isOn ? "#0d2a0d" : "#050805",
+                  boxShadow: isCurrent ? "0 0 8px rgba(127,255,106,0.4)" : "none",
+                  transition:"background 0.05s"
+                }
+              });
+            })
+          );
+        })
+      ),
+
+      // Envelopes
+      el("div", { style:{ fontSize:8, color:"#444", letterSpacing:"0.15em", textTransform:"uppercase", marginBottom:6 } }, "Envelopes"),
+
+      el(EnvBlock, { label:"AMP", color:"#7fff6a", colorHi:"rgba(127,255,106,0.15)", colorLo:"rgba(127,255,106,0.02)",
+        env:seqSettings.envAmp, freeDestVisible:false,
+        onChange:function(env){ setSeqSettings(function(s){var n=Object.assign({},s);n.envAmp=env;if(seqRef.current)seqRef.current.envAmp=env;return n;}); }
+      }),
+      el(EnvBlock, { label:"FILTER", color:"#6bb5ff", colorHi:"rgba(107,181,255,0.15)", colorLo:"rgba(107,181,255,0.02)",
+        env:seqSettings.envFilter, freeDestVisible:false,
+        onChange:function(env){ setSeqSettings(function(s){var n=Object.assign({},s);n.envFilter=env;if(seqRef.current)seqRef.current.envFilter=env;return n;}); }
+      }),
+      el(EnvBlock, { label:"FREE", color:"#ffb347", colorHi:"rgba(255,179,71,0.15)", colorLo:"rgba(255,179,71,0.02)",
+        env:seqSettings.envFree, freeDestVisible:true,
+        onChange:function(env){ setSeqSettings(function(s){var n=Object.assign({},s);n.envFree=env;if(seqRef.current)seqRef.current.envFree=env;return n;}); }
+      })
+    )
+  );
+
   return el("div", { style:{ display:"flex", flexDirection:"column", width:"100%", height:"100dvh", background:"#0a0a0b", fontFamily:"'IBM Plex Mono','Courier New',monospace", color:"#c8c8b4", userSelect:"none", WebkitUserSelect:"none", WebkitTouchCallout:"none", touchAction:"none", overflow:"hidden", maxWidth:480, margin:"0 auto" } },
 
     el("style", null, `
@@ -2103,6 +2607,9 @@ function App() {
       mainView,
       showAdv && el("div", { style:{ position:"absolute", inset:0, background:"#0a0a0b", zIndex:10, display:"flex", flexDirection:"column", overflow:"hidden" } },
         advView
+      ),
+      showSeq && el("div", { style:{ position:"absolute", inset:0, background:"#0a0a0b", zIndex:10, display:"flex", flexDirection:"column", overflow:"hidden" } },
+        seqView
       )
     )
   );
