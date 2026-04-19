@@ -1,5 +1,5 @@
 // Camera Synth — v3.0.0
-var VERSION = "3.4.4";
+var VERSION = "3.4.5";
 
 var useState    = React.useState;
 var useEffect   = React.useEffect;
@@ -1432,12 +1432,10 @@ function makeSequencer(getEngine) {
     _currentStep: 0,
     // Envelope settings
     envAmp:    { a:10,  d:100, s:80, r:300,  enabled:true,  open:false },
-    envFilter: { a:20,  d:200, s:50, r:500,  amount:60,  enabled:false, open:false },
-    envFree:   { a:50,  d:100, s:60, r:400,  amount:50,  enabled:false, open:false, dest:"FM depth" },
+
     // Envelope gain nodes (created on first trigger)
     _ampEnvGain:    null,
     _filterEnvGain: null,
-    _freeEnvGain:   null,
   };
 
   seq.stepDuration = function() {
@@ -1453,36 +1451,6 @@ function makeSequencer(getEngine) {
     // Amp envelope — drives seqAmpGain (always in signal path, no rewiring)
     seq._ampTarget = eng.seqAmpGain ? eng.seqAmpGain.gain : null;
 
-    // Filter envelope — offset gain node connected to lowpass frequency
-    if (!seq._filterEnvGain && eng.lowpassNode) {
-      seq._filterEnvGain = ctx.createGain();
-      seq._filterEnvGain.gain.value = 0;
-      seq._filterEnvGain.connect(eng.lowpassNode.frequency);
-    }
-
-    // Free envelope
-    if (!seq._freeEnvGain) {
-      seq._freeEnvGain = ctx.createGain();
-      seq._freeEnvGain.gain.value = 0;
-      seq._reconnectFreeEnv();
-    }
-  };
-
-  seq._reconnectFreeEnv = function() {
-    var eng = getEngine();
-    if (!eng || !seq._freeEnvGain) return;
-    try { seq._freeEnvGain.disconnect(); } catch(e) {}
-    var dest = seq.envFree.dest;
-    var param = null;
-    var d = LFO_DESTS[dest];
-    if (d === "reverb.gain") param = eng.reverbGain ? eng.reverbGain.gain : null;
-    if (d === "master.gain") param = eng.preReverbGain ? eng.preReverbGain.gain : null;
-    if (d === "haas.gain")   param = (eng.oscR && eng.oscR.haasGain) ? eng.oscR.haasGain.gain : null;
-    if (d === "fm.depth")    param = (eng.oscR && eng.oscR.fmIndex) ? eng.oscR.fmIndex.gain : null;
-    if (d === "fm.r")        param = (eng.oscR && eng.oscR.fmIndex) ? eng.oscR.fmIndex.gain : null;
-    if (d === "fm.g")        param = (eng.oscG && eng.oscG.fmIndex) ? eng.oscG.fmIndex.gain : null;
-    if (d === "fm.b")        param = (eng.oscB && eng.oscB.fmIndex) ? eng.oscB.fmIndex.gain : null;
-    if (param) seq._freeEnvGain.connect(param);
   };
 
   seq._triggerEnv = function(envSettings, gainNode, time, gateOn, depthScale) {
@@ -1538,19 +1506,6 @@ function makeSequencer(getEngine) {
       seq._ampTarget.setValueAtTime(1.0, time);
     }
 
-    // Filter envelope — depth = amount% of 4000Hz
-    if (seq.envFilter.enabled) {
-      var filterDepth = ((seq.envFilter.amount||60) / 100) * 4000;
-      seq._triggerEnv(seq.envFilter, seq._filterEnvGain, time, gateOn, filterDepth);
-    }
-
-    // Free envelope
-    if (seq.envFree.enabled) {
-      var fd = LFO_DESTS[seq.envFree.dest] || "";
-      var baseScale = fd === "reverb.gain" ? 0.5 : fd === "haas.gain" ? 0.7 : fd.indexOf("fm")===0 ? 300 : 1;
-      var freeDepth = ((seq.envFree.amount||50) / 100) * baseScale;
-      seq._triggerEnv(seq.envFree, seq._freeEnvGain, time, gateOn, freeDepth);
-    }
   };
 
   seq._scheduler = function() {
@@ -1588,12 +1543,7 @@ function makeSequencer(getEngine) {
     var eng = getEngine();
     if (eng && eng.ctx) {
       var t = eng.ctx.currentTime;
-      // Release filter + free envelopes
-      [seq._filterEnvGain, seq._freeEnvGain].forEach(function(g) {
-        if (!g) return;
-        g.gain.cancelScheduledValues(t);
-        g.gain.setTargetAtTime(0, t, 0.1);
-      });
+
       // Restore seqAmpGain to full open (drone resumes)
       if (eng.seqAmpGain) {
         var r = Math.max(0.05, seq.envAmp.r / 1000);
@@ -1614,10 +1564,7 @@ function makeSequencer(getEngine) {
 
   seq.destroy = function() {
     seq.stop();
-    [seq._filterEnvGain, seq._freeEnvGain].forEach(function(g) {
-      if (g) try { g.disconnect(); } catch(e) {}
-    });
-    seq._filterEnvGain = null; seq._freeEnvGain = null; seq._ampTarget = null;
+    seq._ampTarget = null;
   };
 
   return seq;
@@ -1712,8 +1659,7 @@ function App() {
     bpm: 120, steps: 16,
     pattern: new Array(16).fill(false),
     envAmp:    { a:10,  d:100, s:80, r:300,  enabled:true,  open:false },
-    envFilter: { a:20,  d:200, s:50, r:500,  amount:60,  enabled:false, open:false },
-    envFree:   { a:50,  d:100, s:60, r:400,  amount:50,  enabled:false, open:false, dest:"FM depth" },
+
   });
   var seqSettings = rseq[0], setSeqSettings = rseq[1];
   var rplay = useState(false); var seqPlaying = rplay[0], setSeqPlaying = rplay[1];
@@ -2395,227 +2341,148 @@ function App() {
 
 
   // ── SEQ PAGE ─────────────────────────────────────────────────────────────────
-  // Simple range-slider envelope block — for functional testing
-  function EnvBlock(props) {
+  // Amp envelope — simple ADSR range sliders, always visible
+  function AmpEnvBlock(props) {
     var env = props.env;
-    var c   = props.color;
-    function setEnv(k, v) { props.onChange(Object.assign({}, env, { [k]: v })); }
+    function set(k, v) { props.onChange(Object.assign({}, env, { [k]: v })); }
     function fmtMs(v) { return v < 1000 ? v+"ms" : (v/1000).toFixed(1)+"s"; }
 
-    return el("div", { style:{ marginBottom:6, borderBottom:"1px solid #141414", paddingBottom:6 } },
-
-      // Header: label + ON/OFF + expand
-      el("div", { className:"sr", style:{ borderBottom:"none", paddingBottom:2 } },
-        el("label", { style:{ color:env.enabled!==false ? c : "#333" } }, props.label),
-        el("div", { style:{ display:"flex", gap:4, alignItems:"center" } },
-          el("button", {
-            className:cx("sg", env.enabled!==false&&"sel"),
-            onClick:function(){ setEnv("enabled", !env.enabled); },
-            style:{ padding:"2px 6px" }
-          }, env.enabled!==false ? "ON" : "OFF"),
-          el("button", {
-            className:"sg",
-            onClick:function(){ setEnv("open", !env.open); },
-            style:{ padding:"2px 6px" }
-          }, env.open ? "▲" : "▼")
-        )
+    return el("div", { style:{ padding:"0" } },
+      el("div", { className:"sr", style:{ flexDirection:"column", alignItems:"flex-start", gap:2 } },
+        el("div", { style:{ display:"flex", width:"100%", justifyContent:"space-between" } },
+          el("label", null, "Attack"),
+          el("span", { style:{ fontSize:9, color:"#7fff6a" } }, fmtMs(env.a))
+        ),
+        el("input", { type:"range", min:1, max:2000, value:env.a,
+          style:{ touchAction:"auto" },
+          onChange:function(e){ set("a", +e.target.value); }
+        })
       ),
-
-      // ADSR sliders — shown when expanded
-      env.open && el("div", { style:{ paddingTop:4 } },
-
-        !props.noAmount && el("div", { className:"sr", style:{ flexDirection:"column", alignItems:"flex-start", gap:2, borderBottom:"none", paddingBottom:4 } },
-          el("div", { style:{ display:"flex", width:"100%", justifyContent:"space-between" } },
-            el("label", null, "Amount"),
-            el("span", { style:{ fontSize:9, color:c } }, (env.amount||50)+"%")
-          ),
-          el("input", { type:"range", min:0, max:100, value:env.amount||50,
-            onChange:function(e){ setEnv("amount", +e.target.value); }
-          })
+      el("div", { className:"sr", style:{ flexDirection:"column", alignItems:"flex-start", gap:2 } },
+        el("div", { style:{ display:"flex", width:"100%", justifyContent:"space-between" } },
+          el("label", null, "Decay"),
+          el("span", { style:{ fontSize:9, color:"#7fff6a" } }, fmtMs(env.d))
         ),
-
-        el("div", { className:"sr", style:{ flexDirection:"column", alignItems:"flex-start", gap:2, borderBottom:"none", paddingBottom:4 } },
-          el("div", { style:{ display:"flex", width:"100%", justifyContent:"space-between" } },
-            el("label", null, "Attack"),
-            el("span", { style:{ fontSize:9, color:c } }, fmtMs(env.a))
-          ),
-          el("input", { type:"range", min:1, max:2000, value:env.a,
-            onChange:function(e){ setEnv("a", +e.target.value); }
-          })
+        el("input", { type:"range", min:1, max:2000, value:env.d,
+          style:{ touchAction:"auto" },
+          onChange:function(e){ set("d", +e.target.value); }
+        })
+      ),
+      el("div", { className:"sr", style:{ flexDirection:"column", alignItems:"flex-start", gap:2 } },
+        el("div", { style:{ display:"flex", width:"100%", justifyContent:"space-between" } },
+          el("label", null, "Sustain"),
+          el("span", { style:{ fontSize:9, color:"#7fff6a" } }, env.s+"%")
         ),
-
-        el("div", { className:"sr", style:{ flexDirection:"column", alignItems:"flex-start", gap:2, borderBottom:"none", paddingBottom:4 } },
-          el("div", { style:{ display:"flex", width:"100%", justifyContent:"space-between" } },
-            el("label", null, "Decay"),
-            el("span", { style:{ fontSize:9, color:c } }, fmtMs(env.d))
-          ),
-          el("input", { type:"range", min:1, max:2000, value:env.d,
-            onChange:function(e){ setEnv("d", +e.target.value); }
-          })
+        el("input", { type:"range", min:0, max:100, value:env.s,
+          style:{ touchAction:"auto" },
+          onChange:function(e){ set("s", +e.target.value); }
+        })
+      ),
+      el("div", { className:"sr", style:{ flexDirection:"column", alignItems:"flex-start", gap:2, borderBottom:"none" } },
+        el("div", { style:{ display:"flex", width:"100%", justifyContent:"space-between" } },
+          el("label", null, "Release"),
+          el("span", { style:{ fontSize:9, color:"#7fff6a" } }, fmtMs(env.r))
         ),
-
-        el("div", { className:"sr", style:{ flexDirection:"column", alignItems:"flex-start", gap:2, borderBottom:"none", paddingBottom:4 } },
-          el("div", { style:{ display:"flex", width:"100%", justifyContent:"space-between" } },
-            el("label", null, "Sustain"),
-            el("span", { style:{ fontSize:9, color:c } }, env.s+"%")
-          ),
-          el("input", { type:"range", min:0, max:100, value:env.s,
-            onChange:function(e){ setEnv("s", +e.target.value); }
-          })
-        ),
-
-        el("div", { className:"sr", style:{ flexDirection:"column", alignItems:"flex-start", gap:2, borderBottom:"none", paddingBottom:4 } },
-          el("div", { style:{ display:"flex", width:"100%", justifyContent:"space-between" } },
-            el("label", null, "Release"),
-            el("span", { style:{ fontSize:9, color:c } }, fmtMs(env.r))
-          ),
-          el("input", { type:"range", min:10, max:8000, value:env.r,
-            onChange:function(e){ setEnv("r", +e.target.value); }
-          })
-        ),
-
-        props.freeDestVisible && el("div", { className:"sr", style:{ borderBottom:"none", flexDirection:"column", alignItems:"flex-start", gap:4, paddingBottom:4 } },
-          el("label", null, "Destination"),
-          el("div", { style:{ display:"flex", flexWrap:"wrap", gap:2 } },
-            LFO_DEST_NAMES.filter(function(d){
-              var k = LFO_DESTS[d];
-              return k !== "lp.freq" && k !== "master.gain";
-            }).map(function(d) {
-              return el("button", { key:d,
-                className:cx("sg", env.dest===d&&"sel"),
-                onClick:function(){
-                  setEnv("dest", d);
-                  var s = seqRef.current;
-                  if (s) { s.envFree.dest=d; s._reconnectFreeEnv&&s._reconnectFreeEnv(); }
-                },
-                style:{ fontSize:8 }
-              }, d);
-            })
-          )
-        )
+        el("input", { type:"range", min:10, max:8000, value:env.r,
+          style:{ touchAction:"auto" },
+          onChange:function(e){ set("r", +e.target.value); }
+        })
       )
     );
   }
 
-  var seqView = el("div", { style:{ display:"flex", flexDirection:"column", width:"100%", height:"100%", overflow:"hidden" } },
+  function syncSeqAndPlay(s) {
+    s.bpm     = seqSettings.bpm;
+    s.steps   = seqSettings.steps;
+    s.pattern = seqSettings.pattern.slice();
+    s.envAmp  = Object.assign({}, seqSettings.envAmp);
+    s.start();
+  }
 
-    // Seq header
+  var seqView = el("div", { style:{ display:"flex", flexDirection:"column", width:"100%", height:"100%", overflow:"hidden", padding:"0 14px 14px" } },
+
+    // Header
     el("div", { style:{ display:"flex", justifyContent:"space-between", alignItems:"center",
-      padding:"10px 14px 6px", paddingTop:"max(env(safe-area-inset-top,10px),10px)",
-      flexShrink:0, borderBottom:"1px solid #141414" } },
+      paddingTop:"max(env(safe-area-inset-top,10px),10px)", paddingBottom:8,
+      borderBottom:"1px solid #141414", marginBottom:8, marginLeft:-14, marginRight:-14, paddingLeft:14, paddingRight:14 } },
       el("span", { style:{ fontSize:10, letterSpacing:"0.2em", color:"#7fff6a", textTransform:"uppercase" } }, "Sequencer"),
       el("button", { className:"cb on", onClick:function(){setShowSeq(false);}, style:{letterSpacing:"0.1em"} }, "← back")
     ),
 
-    el("div", { style:{ overflowY:"auto", flex:1, padding:"8px 14px 14px" } },
+    // Play + BPM + Steps — one row
+    el("div", { style:{ display:"flex", gap:8, alignItems:"center", marginBottom:10 } },
+      el("button", { className:cx("cb", seqPlaying&&"on"), onClick:function(){
+        var s = seqRef.current, eng = synthRef.current;
+        if (!s || !eng || !eng.ctx) return;
+        if (seqPlaying) { s.stop(); setSeqPlaying(false); }
+        else { syncSeqAndPlay(s); setSeqPlaying(true); }
+      }, style:{ padding:"8px 12px", fontSize:11, flexShrink:0 } }, seqPlaying ? "◼ STOP" : "▶ PLAY"),
 
-      // BPM + Length + Play controls
-      el("div", { style:{ display:"flex", gap:8, alignItems:"center", marginBottom:10 } },
-        // Play/stop
-        el("button", { className:cx("cb", seqPlaying&&"on"), onClick:function(){
-          var s = seqRef.current;
-          if (!s) return;
-          var eng = synthRef.current;
-          if (!eng || !eng.ctx) return;
-          if (seqPlaying) {
-            s.stop(); setSeqPlaying(false);
-          } else {
-            // sync seq settings
-            s.bpm     = seqSettings.bpm;
-            s.steps   = seqSettings.steps;
-            s.pattern = seqSettings.pattern.slice();
-            s.envAmp    = Object.assign({}, seqSettings.envAmp); s.envAmp.enabled = seqSettings.envAmp.enabled;
-            s.envFilter = Object.assign({}, seqSettings.envFilter);
-            s.envFree   = Object.assign({}, seqSettings.envFree);
-            s.start(); setSeqPlaying(true);
-          }
-        }, style:{ padding:"8px 12px", fontSize:11 } }, seqPlaying ? "◼ STOP" : "▶ PLAY"),
-
-        // BPM
-        el("div", { style:{ display:"flex", flexDirection:"column", alignItems:"center", flex:1 } },
-          el("span", { style:{ fontSize:7, color:"#444", letterSpacing:"0.1em", marginBottom:2 } }, "BPM"),
-          el("div", { style:{ display:"flex", alignItems:"center", gap:4 } },
-            el("button", { className:"sg", onClick:function(){ setSeqSettings(function(s){ var n=Object.assign({},s); n.bpm=Math.max(40,s.bpm-5); if(seqRef.current)seqRef.current.bpm=n.bpm; return n; }) }, style:{padding:"2px 8px"} }, "-"),
-            el("input", {
-              type:"text", inputMode:"numeric", pattern:"[0-9]*",
-              defaultValue: seqSettings.bpm,
-              key: "bpm-"+seqSettings.bpm, // remount when ±5 buttons change value
-              onBlur: function(e){
-                var v = Math.max(40, Math.min(500, parseInt(e.target.value)||120));
-                setSeqSettings(function(s){ var n=Object.assign({},s); n.bpm=v; if(seqRef.current)seqRef.current.bpm=v; return n; });
-              },
-              onKeyDown: function(e){
-                if(e.key==="Enter"){
-                  var v = Math.max(40, Math.min(500, parseInt(e.target.value)||120));
-                  setSeqSettings(function(s){ var n=Object.assign({},s); n.bpm=v; if(seqRef.current)seqRef.current.bpm=v; return n; });
-                  e.target.blur();
-                }
-              },
-              style:{ width:52, background:"transparent", border:"1px solid #222", color:"#7fff6a",
-                fontFamily:"'IBM Plex Mono',monospace", fontSize:14, textAlign:"center",
-                padding:"2px 0", WebkitAppearance:"none", MozAppearance:"textfield",
-                userSelect:"text", WebkitUserSelect:"text" }
-            }),
-            el("button", { className:"sg", onClick:function(){ setSeqSettings(function(s){ var n=Object.assign({},s); n.bpm=Math.min(500,s.bpm+5); if(seqRef.current)seqRef.current.bpm=n.bpm; return n; }) }, style:{padding:"2px 8px"} }, "+")
-          )
-        ),
-
-        // Length
-        el("div", { style:{ display:"flex", flexDirection:"column", alignItems:"center", flex:1 } },
-          el("span", { style:{ fontSize:7, color:"#444", letterSpacing:"0.1em" } }, "STEPS"),
-          el("div", { style:{ display:"flex", alignItems:"center", gap:4 } },
-            el("button", { className:"sg", onClick:function(){ setSeqSettings(function(s){ var n=Object.assign({},s); n.steps=Math.max(1,s.steps-1); if(seqRef.current)seqRef.current.steps=n.steps; return n; }) }, style:{padding:"2px 6px"} }, "-"),
-            el("span", { style:{ fontSize:14, color:"#7fff6a", minWidth:24, textAlign:"center" } }, seqSettings.steps),
-            el("button", { className:"sg", onClick:function(){ setSeqSettings(function(s){ var n=Object.assign({},s); n.steps=Math.min(16,s.steps+1); if(seqRef.current)seqRef.current.steps=n.steps; return n; }) }, style:{padding:"2px 6px"} }, "+")
-          )
+      el("div", { style:{ display:"flex", flexDirection:"column", alignItems:"center", flex:1 } },
+        el("span", { style:{ fontSize:7, color:"#444", letterSpacing:"0.1em", marginBottom:2 } }, "BPM"),
+        el("div", { style:{ display:"flex", alignItems:"center", gap:3 } },
+          el("button", { className:"sg", onClick:function(){ setSeqSettings(function(s){ var n=Object.assign({},s); n.bpm=Math.max(40,s.bpm-5); if(seqRef.current)seqRef.current.bpm=n.bpm; return n; }); }, style:{padding:"2px 6px"} }, "-"),
+          el("input", {
+            type:"text", inputMode:"numeric",
+            defaultValue: seqSettings.bpm,
+            key: "bpm-"+seqSettings.bpm,
+            onBlur:function(e){ var v=Math.max(40,Math.min(500,parseInt(e.target.value)||120)); setSeqSettings(function(s){var n=Object.assign({},s);n.bpm=v;if(seqRef.current)seqRef.current.bpm=v;return n;}); },
+            onKeyDown:function(e){ if(e.key==="Enter"){e.target.blur();} },
+            style:{ width:44, background:"transparent", border:"1px solid #222", color:"#7fff6a",
+              fontFamily:"'IBM Plex Mono',monospace", fontSize:13, textAlign:"center", padding:"2px 0",
+              userSelect:"text", WebkitUserSelect:"text", touchAction:"auto" }
+          }),
+          el("button", { className:"sg", onClick:function(){ setSeqSettings(function(s){ var n=Object.assign({},s); n.bpm=Math.min(500,s.bpm+5); if(seqRef.current)seqRef.current.bpm=n.bpm; return n; }); }, style:{padding:"2px 6px"} }, "+")
         )
       ),
 
-      // Step grid — 2 rows of 8, scales with steps
-      el("div", { style:{ marginBottom:12 } },
-        [0,1].map(function(row) {
-          var rowSteps = [];
-          for (var i = row*8; i < Math.min((row+1)*8, seqSettings.steps); i++) rowSteps.push(i);
-          if (rowSteps.length === 0) return null;
-          return el("div", { key:row, style:{ display:"flex", gap:4, marginBottom:4, justifyContent:"flex-start" } },
-            rowSteps.map(function(i) {
-              var isOn      = seqSettings.pattern[i];
-              var isCurrent = (i === currentStep) && seqPlaying;
-              return el("div", { key:i,
-                onClick:function(){ setSeqSettings(function(s){
-                  var n=Object.assign({},s); n.pattern=s.pattern.slice();
-                  n.pattern[i]=!s.pattern[i];
-                  if(seqRef.current)seqRef.current.pattern=n.pattern.slice();
-                  return n;
-                }); },
-                style:{
-                  width:"calc((100% - 28px) / 8)", height:36, flexShrink:0, borderRadius:4, cursor:"pointer",
-                  border: isCurrent ? "2px solid #7fff6a" : "1px solid #1a3a1a",
-                  background: isCurrent ? "#1a4a1a" : isOn ? "#0d2a0d" : "#050805",
-                  boxShadow: isCurrent ? "0 0 8px rgba(127,255,106,0.4)" : "none",
-                }
-              });
-            })
-          );
-        })
-      ),
+      el("div", { style:{ display:"flex", flexDirection:"column", alignItems:"center", flex:1 } },
+        el("span", { style:{ fontSize:7, color:"#444", letterSpacing:"0.1em", marginBottom:2 } }, "STEPS"),
+        el("div", { style:{ display:"flex", alignItems:"center", gap:3 } },
+          el("button", { className:"sg", onClick:function(){ setSeqSettings(function(s){ var n=Object.assign({},s); n.steps=Math.max(1,s.steps-1); if(seqRef.current)seqRef.current.steps=n.steps; return n; }); }, style:{padding:"2px 6px"} }, "-"),
+          el("span", { style:{ fontSize:13, color:"#7fff6a", minWidth:20, textAlign:"center" } }, seqSettings.steps),
+          el("button", { className:"sg", onClick:function(){ setSeqSettings(function(s){ var n=Object.assign({},s); n.steps=Math.min(16,s.steps+1); if(seqRef.current)seqRef.current.steps=n.steps; return n; }); }, style:{padding:"2px 6px"} }, "+")
+        )
+      )
+    ),
 
-      // Envelopes
-      el("div", { style:{ fontSize:8, color:"#444", letterSpacing:"0.15em", textTransform:"uppercase", marginBottom:6 } }, "Envelopes"),
-
-      el(EnvBlock, { label:"AMP", color:"#7fff6a",
-        env:seqSettings.envAmp, freeDestVisible:false, noAmount:true,
-        onChange:function(env){ setSeqSettings(function(s){var n=Object.assign({},s);n.envAmp=env;if(seqRef.current)seqRef.current.envAmp=env;return n;}); }
-      }),
-      el(EnvBlock, { label:"FILTER", color:"#6bb5ff",
-        env:seqSettings.envFilter, freeDestVisible:false,
-        onChange:function(env){ setSeqSettings(function(s){var n=Object.assign({},s);n.envFilter=env;if(seqRef.current)seqRef.current.envFilter=env;return n;}); }
-      }),
-      el(EnvBlock, { label:"FREE", color:"#ffb347",
-        env:seqSettings.envFree, freeDestVisible:true,
-        onChange:function(env){ setSeqSettings(function(s){var n=Object.assign({},s);n.envFree=env;if(seqRef.current)seqRef.current.envFree=env;return n;}); }
+    // Step grid
+    el("div", { style:{ marginBottom:10 } },
+      [0,1].map(function(row) {
+        var rowSteps = [];
+        for (var i = row*8; i < Math.min((row+1)*8, seqSettings.steps); i++) rowSteps.push(i);
+        if (!rowSteps.length) return null;
+        return el("div", { key:row, style:{ display:"flex", gap:4, marginBottom:4 } },
+          rowSteps.map(function(i) {
+            var isOn = seqSettings.pattern[i];
+            var isCurrent = (i === currentStep) && seqPlaying;
+            return el("div", { key:i,
+              onClick:function(){ setSeqSettings(function(s){
+                var n=Object.assign({},s); n.pattern=s.pattern.slice();
+                n.pattern[i]=!s.pattern[i];
+                if(seqRef.current)seqRef.current.pattern=n.pattern.slice();
+                return n;
+              }); },
+              style:{
+                width:"calc((100% - 28px) / 8)", height:40, flexShrink:0, borderRadius:4, cursor:"pointer",
+                border: isCurrent ? "2px solid #7fff6a" : "1px solid #1a3a1a",
+                background: isCurrent ? "#1a4a1a" : isOn ? "#0d2a0d" : "#050805",
+                boxShadow: isCurrent ? "0 0 8px rgba(127,255,106,0.4)" : "none",
+              }
+            });
+          })
+        );
       })
-    )
+    ),
+
+    // AMP envelope — always visible, no scroll container
+    el("div", { style:{ fontSize:8, color:"#444", letterSpacing:"0.15em", textTransform:"uppercase", marginBottom:6 } }, "Gate envelope"),
+    el(AmpEnvBlock, {
+      env: seqSettings.envAmp,
+      onChange: function(env){
+        setSeqSettings(function(s){ var n=Object.assign({},s); n.envAmp=env; if(seqRef.current)seqRef.current.envAmp=env; return n; });
+      }
+    })
   );
 
   return el("div", { style:{ display:"flex", flexDirection:"column", width:"100%", height:"100dvh", background:"#0a0a0b", fontFamily:"'IBM Plex Mono','Courier New',monospace", color:"#c8c8b4", userSelect:"none", WebkitUserSelect:"none", WebkitTouchCallout:"none", touchAction:"none", overflow:"hidden", maxWidth:480, margin:"0 auto" } },
