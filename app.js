@@ -1,5 +1,5 @@
 // Camera Synth — v3.0.0
-var VERSION = "3.5.2";
+var VERSION = "3.5.3";
 
 var useState    = React.useState;
 var useEffect   = React.useEffect;
@@ -1601,7 +1601,7 @@ function ADSRSlider(props) {
     el("div", {
       ref: sliderRef,
       onPointerDown: onPD, onPointerMove: onPM, onPointerUp: onPU, onPointerCancel: onPU,
-      style: { width: "100%", height: 90, position: "relative", borderRadius: 4, cursor: "ns-resize",
+      style: { width: "100%", height: 75, position: "relative", borderRadius: 4, cursor: "ns-resize",
         background: "linear-gradient(180deg,rgba(127,255,106,0.12) 0%,rgba(127,255,106,0.02) 100%)",
         border: "1px solid #1a2a1a", userSelect: "none", WebkitUserSelect: "none", touchAction: "none" }
     },
@@ -2213,10 +2213,11 @@ function App() {
     ),
 
     // ── SEQ inline drawer ─────────────────────────────────────────────────────
-    showSeq && el("div", { style:{ padding:"8px 14px 10px", borderTop:"1px solid #141414", background:"#0c0c0d", flexShrink:0 } },
+    showSeq && el("div", { style:{ padding:"6px 14px 8px", borderTop:"1px solid #141414", background:"#0c0c0d", flexShrink:0 } },
 
-      // PLAY + BPM + STEPS
-      el("div", { style:{ display:"flex", gap:6, alignItems:"center", marginBottom:8 } },
+      // PLAY + BPM + STEPS — single evenly spaced row
+      el("div", { style:{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:8, gap:8 } },
+
         el("button", { className:cx("cb", seqPlaying&&"on"), onClick:function(){
           var s=seqRef.current, eng=synthRef.current;
           if(!s||!eng||!eng.ctx) return;
@@ -2228,31 +2229,27 @@ function App() {
             s.envAmp.enabled=true;
             s.start(); setSeqPlaying(true);
           }
-        }, style:{ fontSize:10, padding:"5px 8px", flexShrink:0 } }, seqPlaying?"◼ STOP":"▶ PLAY"),
+        }, style:{ padding:"6px 14px", fontSize:10, flexShrink:0 } }, seqPlaying?"◼ STOP":"▶ PLAY"),
 
-        el("div", { style:{ display:"flex", flexDirection:"column", alignItems:"center", flex:1 } },
-          el("span", { style:{ fontSize:7, color:"#444", letterSpacing:"0.1em" } }, "BPM"),
-          el("div", { style:{ display:"flex", alignItems:"center", gap:2 } },
-            el("button", { className:"sg", style:{padding:"1px 5px"}, onClick:function(){ setSeqSettings(function(s){ var n=Object.assign({},s); n.bpm=Math.max(40,s.bpm-5); if(seqRef.current)seqRef.current.bpm=n.bpm; return n; }); } }, "-"),
-            el("input", { type:"text", inputMode:"numeric",
-              defaultValue:seqSettings.bpm, key:"bpm-"+seqSettings.bpm,
-              onBlur:function(e){ var v=Math.max(40,Math.min(500,parseInt(e.target.value)||120)); setSeqSettings(function(s){var n=Object.assign({},s);n.bpm=v;if(seqRef.current)seqRef.current.bpm=v;return n;}); },
-              onKeyDown:function(e){ if(e.key==="Enter") e.target.blur(); },
-              style:{ width:40, background:"transparent", border:"1px solid #222", color:"#7fff6a",
-                fontFamily:"'IBM Plex Mono',monospace", fontSize:12, textAlign:"center", padding:"1px 0",
-                userSelect:"text", WebkitUserSelect:"text" }
-            }),
-            el("button", { className:"sg", style:{padding:"1px 5px"}, onClick:function(){ setSeqSettings(function(s){ var n=Object.assign({},s); n.bpm=Math.min(500,s.bpm+5); if(seqRef.current)seqRef.current.bpm=n.bpm; return n; }); } }, "+")
-          )
+        el("div", { style:{ display:"flex", alignItems:"center", gap:4 } },
+          el("span", { style:{ fontSize:8, color:"#444", letterSpacing:"0.1em", marginRight:2 } }, "BPM"),
+          el("button", { className:"sg", style:{padding:"2px 7px"}, onClick:function(){ setSeqSettings(function(s){ var n=Object.assign({},s); n.bpm=Math.max(40,s.bpm-5); if(seqRef.current)seqRef.current.bpm=n.bpm; return n; }); } }, "-"),
+          el("input", { type:"text", inputMode:"numeric",
+            defaultValue:seqSettings.bpm, key:"bpm-"+seqSettings.bpm,
+            onBlur:function(e){ var v=Math.max(40,Math.min(500,parseInt(e.target.value)||120)); setSeqSettings(function(s){var n=Object.assign({},s);n.bpm=v;if(seqRef.current)seqRef.current.bpm=v;return n;}); },
+            onKeyDown:function(e){ if(e.key==="Enter") e.target.blur(); },
+            style:{ width:44, background:"transparent", border:"1px solid #222", color:"#7fff6a",
+              fontFamily:"'IBM Plex Mono',monospace", fontSize:13, textAlign:"center", padding:"2px 0",
+              userSelect:"text", WebkitUserSelect:"text" }
+          }),
+          el("button", { className:"sg", style:{padding:"2px 7px"}, onClick:function(){ setSeqSettings(function(s){ var n=Object.assign({},s); n.bpm=Math.min(500,s.bpm+5); if(seqRef.current)seqRef.current.bpm=n.bpm; return n; }); } }, "+")
         ),
 
-        el("div", { style:{ display:"flex", flexDirection:"column", alignItems:"center", flex:1 } },
-          el("span", { style:{ fontSize:7, color:"#444", letterSpacing:"0.1em" } }, "STEPS"),
-          el("div", { style:{ display:"flex", alignItems:"center", gap:2 } },
-            el("button", { className:"sg", style:{padding:"1px 5px"}, onClick:function(){ setSeqSettings(function(s){ var n=Object.assign({},s); n.steps=Math.max(1,s.steps-1); if(seqRef.current)seqRef.current.steps=n.steps; return n; }); } }, "-"),
-            el("span", { style:{ fontSize:12, color:"#7fff6a", minWidth:18, textAlign:"center" } }, seqSettings.steps),
-            el("button", { className:"sg", style:{padding:"1px 5px"}, onClick:function(){ setSeqSettings(function(s){ var n=Object.assign({},s); n.steps=Math.min(16,s.steps+1); if(seqRef.current)seqRef.current.steps=n.steps; return n; }); } }, "+")
-          )
+        el("div", { style:{ display:"flex", alignItems:"center", gap:4 } },
+          el("span", { style:{ fontSize:8, color:"#444", letterSpacing:"0.1em", marginRight:2 } }, "STEPS"),
+          el("button", { className:"sg", style:{padding:"2px 7px"}, onClick:function(){ setSeqSettings(function(s){ var n=Object.assign({},s); n.steps=Math.max(1,s.steps-1); if(seqRef.current)seqRef.current.steps=n.steps; return n; }); } }, "-"),
+          el("span", { style:{ fontSize:13, color:"#7fff6a", minWidth:20, textAlign:"center" } }, seqSettings.steps),
+          el("button", { className:"sg", style:{padding:"2px 7px"}, onClick:function(){ setSeqSettings(function(s){ var n=Object.assign({},s); n.steps=Math.min(16,s.steps+1); if(seqRef.current)seqRef.current.steps=n.steps; return n; }); } }, "+")
         )
       ),
 
@@ -2268,7 +2265,7 @@ function App() {
               var isCur=(i===currentStep)&&seqPlaying;
               return el("div", { key:i,
                 onClick:function(){ setSeqSettings(function(s){ var n=Object.assign({},s); n.pattern=s.pattern.slice(); n.pattern[i]=!s.pattern[i]; if(seqRef.current)seqRef.current.pattern=n.pattern.slice(); return n; }); },
-                style:{ width:"calc((100% - 21px) / 8)", height:28, flexShrink:0, borderRadius:3, cursor:"pointer",
+                style:{ width:"calc((100% - 21px) / 8)", height:26, flexShrink:0, borderRadius:3, cursor:"pointer",
                   border:isCur?"2px solid #7fff6a":"1px solid #1a3a1a",
                   background:isCur?"#1a4a1a":isOn?"#0d2a0d":"#050805",
                   boxShadow:isCur?"0 0 6px rgba(127,255,106,0.4)":"none" }
