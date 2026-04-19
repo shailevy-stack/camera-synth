@@ -1,5 +1,5 @@
 // Camera Synth — v3.0.0
-var VERSION = "3.4.6";
+var VERSION = "3.5.0";
 
 var useState    = React.useState;
 var useEffect   = React.useEffect;
@@ -1976,8 +1976,10 @@ function App() {
           setShowSeq(false);
         }, style:{ padding:"5px 8px" } }, "DRONE"),
         el("button", { className:cx("cb", seqMode==="seq"&&"on"), onClick:function(){
-          setSeqMode("seq"); setShowSeq(true); setShowAdv(false);
-        }, style:{ padding:"5px 8px" } }, "SEQ"),
+          var next = seqMode==="seq" ? "drone" : "seq";
+          setSeqMode(next);
+          if(next==="drone" && seqPlaying && seqRef.current){ seqRef.current.stop(); setSeqPlaying(false); }
+        }, style:{ padding:"5px 8px" } }, seqMode==="seq" ? "DRONE" : "SEQ"),
         el("button", { className:cx("cb", showAdv&&"on"), onClick:function(){setShowAdv(function(s){return !s;});setShowSeq(false);}, style:{ letterSpacing:"0.12em", padding:"5px 10px" } }, "ADV"),
         camOn && el("button", { className:"cb", onClick:handleFlip }, "\u21c4"),
         el("button", { className:"cb", onClick:handleReload }, "\u21ba")
@@ -2073,7 +2075,14 @@ function App() {
       el("button", { className:cx("cb",recording&&"rec"), onClick:handleRecord, style:{ flex:1 } }, recording?"\u25cf REC":"\u25cb REC"),
       el("button", { className:cx("cb",camOn&&"on"), onClick:handleCamToggle, style:{ flex:1 } }, "\u25a3 CAM"),
       el("button", { className:cx("cb",showScope&&"on"), onClick:function(){setShowScope(function(s){return !s;});}, style:{ flex:1 } }, "\u223f OSC"),
-      el("button", { className:cx("cb",showSettings&&"on"), onClick:function(){setShowSettings(function(s){return !s;});setShowAdv(false);}, style:{ flex:1 } }, "\u2699")
+      el("button", { className:cx("cb",showSeq&&"on"), onClick:function(){
+        setShowSeq(function(s){return !s;});
+        setShowSettings(false);
+        // sync seq settings on open
+        var sq=seqRef.current;
+        if(sq){sq.bpm=seqSettings.bpm;sq.steps=seqSettings.steps;sq.pattern=seqSettings.pattern.slice();}
+      }, style:{ flex:1 } }, "SEQ"),
+      el("button", { className:cx("cb",showSettings&&"on"), onClick:function(){setShowSettings(function(s){return !s;});setShowSeq(false);}, style:{ flex:1 } }, "\u2699")
     ),
 
     // Settings drawer — engine 1
@@ -2169,6 +2178,143 @@ function App() {
   );
 
   // ── ADVANCED PAGE ─────────────────────────────────────────────────────────────
+
+    // ── SEQ inline drawer ────────────────────────────────────────────────────────
+    showSeq && el("div", { style:{ padding:"8px 14px 10px", borderTop:"1px solid #141414", background:"#0c0c0d", flexShrink:0 } },
+
+      // Row 1: PLAY + BPM + STEPS
+      el("div", { style:{ display:"flex", gap:6, alignItems:"center", marginBottom:8 } },
+        el("button", { className:cx("cb", seqPlaying&&"on"), onClick:function(){
+          var s=seqRef.current, eng=synthRef.current;
+          if(!s||!eng||!eng.ctx)return;
+          if(seqPlaying){s.stop();setSeqPlaying(false);}
+          else{
+            s.bpm=seqSettings.bpm; s.steps=seqSettings.steps;
+            s.pattern=seqSettings.pattern.slice();
+            s.envAmp=Object.assign({},seqSettings.envAmp);
+            s.envAmp.enabled=true;
+            s.start(); setSeqPlaying(true);
+          }
+        }, style:{ fontSize:10, padding:"5px 8px", flexShrink:0 } }, seqPlaying?"◼":"▶"),
+
+        el("div", { style:{ display:"flex", flexDirection:"column", alignItems:"center", flex:1 } },
+          el("span", { style:{ fontSize:7, color:"#444", letterSpacing:"0.1em" } }, "BPM"),
+          el("div", { style:{ display:"flex", alignItems:"center", gap:2 } },
+            el("button", { className:"sg", onClick:function(){setSeqSettings(function(s){var n=Object.assign({},s);n.bpm=Math.max(40,s.bpm-5);if(seqRef.current)seqRef.current.bpm=n.bpm;return n;});}, style:{padding:"1px 5px",fontSize:9} }, "-"),
+            el("input", {
+              type:"text", inputMode:"numeric",
+              defaultValue:seqSettings.bpm,
+              key:"bpm-"+seqSettings.bpm,
+              onBlur:function(e){var v=Math.max(40,Math.min(500,parseInt(e.target.value)||120));setSeqSettings(function(s){var n=Object.assign({},s);n.bpm=v;if(seqRef.current)seqRef.current.bpm=v;return n;});},
+              onKeyDown:function(e){if(e.key==="Enter")e.target.blur();},
+              style:{width:40,background:"transparent",border:"1px solid #222",color:"#7fff6a",
+                fontFamily:"'IBM Plex Mono',monospace",fontSize:12,textAlign:"center",padding:"1px 0",
+                userSelect:"text",WebkitUserSelect:"text"}
+            }),
+            el("button", { className:"sg", onClick:function(){setSeqSettings(function(s){var n=Object.assign({},s);n.bpm=Math.min(500,s.bpm+5);if(seqRef.current)seqRef.current.bpm=n.bpm;return n;});}, style:{padding:"1px 5px",fontSize:9} }, "+")
+          )
+        ),
+
+        el("div", { style:{ display:"flex", flexDirection:"column", alignItems:"center", flex:1 } },
+          el("span", { style:{ fontSize:7, color:"#444", letterSpacing:"0.1em" } }, "STEPS"),
+          el("div", { style:{ display:"flex", alignItems:"center", gap:2 } },
+            el("button", { className:"sg", onClick:function(){setSeqSettings(function(s){var n=Object.assign({},s);n.steps=Math.max(1,s.steps-1);if(seqRef.current)seqRef.current.steps=n.steps;return n;});}, style:{padding:"1px 5px",fontSize:9} }, "-"),
+            el("span", { style:{ fontSize:12, color:"#7fff6a", minWidth:18, textAlign:"center" } }, seqSettings.steps),
+            el("button", { className:"sg", onClick:function(){setSeqSettings(function(s){var n=Object.assign({},s);n.steps=Math.min(16,s.steps+1);if(seqRef.current)seqRef.current.steps=n.steps;return n;});}, style:{padding:"1px 5px",fontSize:9} }, "+")
+          )
+        )
+      ),
+
+      // Step grid rows
+      el("div", { style:{ marginBottom:8 } },
+        [0,1].map(function(row){
+          var rowSteps=[];
+          for(var i=row*8;i<Math.min((row+1)*8,seqSettings.steps);i++) rowSteps.push(i);
+          if(!rowSteps.length) return null;
+          return el("div",{key:row,style:{display:"flex",gap:3,marginBottom:3}},
+            rowSteps.map(function(i){
+              var isOn=seqSettings.pattern[i];
+              var isCur=(i===currentStep)&&seqPlaying;
+              return el("div",{key:i,
+                onClick:function(){setSeqSettings(function(s){
+                  var n=Object.assign({},s);n.pattern=s.pattern.slice();
+                  n.pattern[i]=!s.pattern[i];
+                  if(seqRef.current)seqRef.current.pattern=n.pattern.slice();
+                  return n;
+                });},
+                style:{
+                  width:"calc((100% - 21px) / 8)",height:28,flexShrink:0,borderRadius:3,cursor:"pointer",
+                  border:isCur?"2px solid #7fff6a":"1px solid #1a3a1a",
+                  background:isCur?"#1a4a1a":isOn?"#0d2a0d":"#050805",
+                  boxShadow:isCur?"0 0 6px rgba(127,255,106,0.4)":"none"
+                }
+              });
+            })
+          );
+        })
+      ),
+
+      // ADSR vertical ribbon sliders — inline, full width, 4 columns
+      el("div", { style:{ display:"flex", gap:6 } },
+        ["A","D","S","R"].map(function(label, idx) {
+          var keys  = ["a","d","s","r"];
+          var mins  = [1,1,0,10];
+          var maxs  = [2000,2000,100,8000];
+          var key   = keys[idx];
+          var val   = seqSettings.envAmp[key];
+          var min   = mins[idx];
+          var max   = maxs[idx];
+          var pct   = (val-min)/(max-min);
+          var topPx = Math.round((1-pct)*100); // 0=top=max, 100=bottom=min
+
+          function fmtV(v){ return label==="S"?v+"%":v<1000?v+"ms":(v/1000).toFixed(1)+"s"; }
+
+          var sliderRef = React.useRef(null);
+          var dragRef   = React.useRef(null);
+
+          function onPD(e){
+            e.preventDefault();e.stopPropagation();
+            sliderRef.current&&sliderRef.current.setPointerCapture(e.pointerId);
+            var rect=sliderRef.current?sliderRef.current.getBoundingClientRect():{height:100};
+            dragRef.current={startY:e.clientY,startVal:val,height:Math.max(1,rect.height),range:max-min};
+          }
+          function onPM(e){
+            var d=dragRef.current; if(!d)return;
+            var dy=d.startY-e.clientY;
+            var delta=(dy/d.height)*d.range;
+            var nv=Math.max(min,Math.min(max,d.startVal+delta));
+            setSeqSettings(function(s){
+              var n=Object.assign({},s);
+              n.envAmp=Object.assign({},s.envAmp);
+              n.envAmp[key]=Math.round(nv);
+              if(seqRef.current)seqRef.current.envAmp=n.envAmp;
+              return n;
+            });
+          }
+          function onPU(){ dragRef.current=null; }
+
+          return el("div",{key:label,style:{flex:1,display:"flex",flexDirection:"column",alignItems:"center"}},
+            el("span",{style:{fontSize:8,color:"#444",letterSpacing:"0.1em",marginBottom:3}},label),
+            el("div",{
+              ref:sliderRef,
+              onPointerDown:onPD,onPointerMove:onPM,onPointerUp:onPU,onPointerCancel:onPU,
+              style:{width:"100%",height:90,position:"relative",borderRadius:4,
+                background:"linear-gradient(180deg,rgba(127,255,106,0.12) 0%,rgba(127,255,106,0.02) 100%)",
+                border:"1px solid #1a2a1a",cursor:"ns-resize",userSelect:"none",WebkitUserSelect:"none",touchAction:"none"}
+            },
+              el("div",{style:{position:"absolute",left:0,right:0,top:topPx+"%",
+                height:2,background:"#7fff6a",transform:"translateY(-50%)",pointerEvents:"none",
+                boxShadow:"0 0 4px #7fff6a"}}),
+              el("div",{style:{position:"absolute",left:"50%",top:topPx+"%",
+                width:12,height:12,borderRadius:"50%",background:"#7fff6a",
+                transform:"translate(-50%,-50%)",pointerEvents:"none"}})
+            ),
+            el("span",{style:{fontSize:8,color:"#7fff6a",marginTop:3}},fmtV(val))
+          );
+        })
+      )
+    ),
+
   var advView = el("div", { style:{ display:"flex", flexDirection:"column", width:"100%", height:"100%", overflow:"hidden" } },
 
     // Adv header
@@ -2385,100 +2531,7 @@ function App() {
     );
   }
 
-  function syncSeqAndPlay(s) {
-    s.bpm     = seqSettings.bpm;
-    s.steps   = seqSettings.steps;
-    s.pattern = seqSettings.pattern.slice();
-    s.envAmp  = Object.assign({}, seqSettings.envAmp);
-    s.envAmp.enabled = seqSettings.envAmp.enabled !== false; // default true
-    s.start();
-  }
 
-  var seqView = el("div", { style:{ display:"flex", flexDirection:"column", width:"100%", height:"100%", overflow:"hidden", padding:"0 14px 14px" } },
-
-    // Header
-    el("div", { style:{ display:"flex", justifyContent:"space-between", alignItems:"center",
-      paddingTop:"max(env(safe-area-inset-top,10px),10px)", paddingBottom:8,
-      borderBottom:"1px solid #141414", marginBottom:8, marginLeft:-14, marginRight:-14, paddingLeft:14, paddingRight:14 } },
-      el("span", { style:{ fontSize:10, letterSpacing:"0.2em", color:"#7fff6a", textTransform:"uppercase" } }, "Sequencer"),
-      el("button", { className:"cb on", onClick:function(){setShowSeq(false);}, style:{letterSpacing:"0.1em"} }, "← back")
-    ),
-
-    // Play + BPM + Steps — one row
-    el("div", { style:{ display:"flex", gap:8, alignItems:"center", marginBottom:10 } },
-      el("button", { className:cx("cb", seqPlaying&&"on"), onClick:function(){
-        var s = seqRef.current, eng = synthRef.current;
-        if (!s || !eng || !eng.ctx) return;
-        if (seqPlaying) { s.stop(); setSeqPlaying(false); }
-        else { syncSeqAndPlay(s); setSeqPlaying(true); }
-      }, style:{ padding:"8px 12px", fontSize:11, flexShrink:0 } }, seqPlaying ? "◼ STOP" : "▶ PLAY"),
-
-      el("div", { style:{ display:"flex", flexDirection:"column", alignItems:"center", flex:1 } },
-        el("span", { style:{ fontSize:7, color:"#444", letterSpacing:"0.1em", marginBottom:2 } }, "BPM"),
-        el("div", { style:{ display:"flex", alignItems:"center", gap:3 } },
-          el("button", { className:"sg", onClick:function(){ setSeqSettings(function(s){ var n=Object.assign({},s); n.bpm=Math.max(40,s.bpm-5); if(seqRef.current)seqRef.current.bpm=n.bpm; return n; }); }, style:{padding:"2px 6px"} }, "-"),
-          el("input", {
-            type:"text", inputMode:"numeric",
-            defaultValue: seqSettings.bpm,
-            key: "bpm-"+seqSettings.bpm,
-            onBlur:function(e){ var v=Math.max(40,Math.min(500,parseInt(e.target.value)||120)); setSeqSettings(function(s){var n=Object.assign({},s);n.bpm=v;if(seqRef.current)seqRef.current.bpm=v;return n;}); },
-            onKeyDown:function(e){ if(e.key==="Enter"){e.target.blur();} },
-            style:{ width:44, background:"transparent", border:"1px solid #222", color:"#7fff6a",
-              fontFamily:"'IBM Plex Mono',monospace", fontSize:13, textAlign:"center", padding:"2px 0",
-              userSelect:"text", WebkitUserSelect:"text", touchAction:"auto" }
-          }),
-          el("button", { className:"sg", onClick:function(){ setSeqSettings(function(s){ var n=Object.assign({},s); n.bpm=Math.min(500,s.bpm+5); if(seqRef.current)seqRef.current.bpm=n.bpm; return n; }); }, style:{padding:"2px 6px"} }, "+")
-        )
-      ),
-
-      el("div", { style:{ display:"flex", flexDirection:"column", alignItems:"center", flex:1 } },
-        el("span", { style:{ fontSize:7, color:"#444", letterSpacing:"0.1em", marginBottom:2 } }, "STEPS"),
-        el("div", { style:{ display:"flex", alignItems:"center", gap:3 } },
-          el("button", { className:"sg", onClick:function(){ setSeqSettings(function(s){ var n=Object.assign({},s); n.steps=Math.max(1,s.steps-1); if(seqRef.current)seqRef.current.steps=n.steps; return n; }); }, style:{padding:"2px 6px"} }, "-"),
-          el("span", { style:{ fontSize:13, color:"#7fff6a", minWidth:20, textAlign:"center" } }, seqSettings.steps),
-          el("button", { className:"sg", onClick:function(){ setSeqSettings(function(s){ var n=Object.assign({},s); n.steps=Math.min(16,s.steps+1); if(seqRef.current)seqRef.current.steps=n.steps; return n; }); }, style:{padding:"2px 6px"} }, "+")
-        )
-      )
-    ),
-
-    // Step grid
-    el("div", { style:{ marginBottom:10 } },
-      [0,1].map(function(row) {
-        var rowSteps = [];
-        for (var i = row*8; i < Math.min((row+1)*8, seqSettings.steps); i++) rowSteps.push(i);
-        if (!rowSteps.length) return null;
-        return el("div", { key:row, style:{ display:"flex", gap:4, marginBottom:4 } },
-          rowSteps.map(function(i) {
-            var isOn = seqSettings.pattern[i];
-            var isCurrent = (i === currentStep) && seqPlaying;
-            return el("div", { key:i,
-              onClick:function(){ setSeqSettings(function(s){
-                var n=Object.assign({},s); n.pattern=s.pattern.slice();
-                n.pattern[i]=!s.pattern[i];
-                if(seqRef.current)seqRef.current.pattern=n.pattern.slice();
-                return n;
-              }); },
-              style:{
-                width:"calc((100% - 28px) / 8)", height:40, flexShrink:0, borderRadius:4, cursor:"pointer",
-                border: isCurrent ? "2px solid #7fff6a" : "1px solid #1a3a1a",
-                background: isCurrent ? "#1a4a1a" : isOn ? "#0d2a0d" : "#050805",
-                boxShadow: isCurrent ? "0 0 8px rgba(127,255,106,0.4)" : "none",
-              }
-            });
-          })
-        );
-      })
-    ),
-
-    // AMP envelope — always visible, no scroll container
-    el("div", { style:{ fontSize:8, color:"#444", letterSpacing:"0.15em", textTransform:"uppercase", marginBottom:6 } }, "Gate envelope"),
-    el(AmpEnvBlock, {
-      env: seqSettings.envAmp,
-      onChange: function(env){
-        setSeqSettings(function(s){ var n=Object.assign({},s); n.envAmp=env; if(seqRef.current)seqRef.current.envAmp=env; return n; });
-      }
-    })
-  );
 
   return el("div", { style:{ display:"flex", flexDirection:"column", width:"100%", height:"100dvh", background:"#0a0a0b", fontFamily:"'IBM Plex Mono','Courier New',monospace", color:"#c8c8b4", userSelect:"none", WebkitUserSelect:"none", WebkitTouchCallout:"none", touchAction:"none", overflow:"hidden", maxWidth:480, margin:"0 auto" } },
 
@@ -2509,9 +2562,7 @@ function App() {
       showAdv && el("div", { style:{ position:"absolute", inset:0, background:"#0a0a0b", zIndex:10, display:"flex", flexDirection:"column", overflow:"hidden", touchAction:"pan-y" } },
         advView
       ),
-      showSeq && el("div", { style:{ position:"absolute", inset:0, background:"#0a0a0b", zIndex:10, display:"flex", flexDirection:"column", overflow:"hidden", touchAction:"pan-y" } },
-        seqView
-      )
+
     )
   );
 }
