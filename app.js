@@ -1,5 +1,5 @@
 // Camera Synth — v3.0.0
-var VERSION = "3.4.1";
+var VERSION = "3.4.2";
 
 var useState    = React.useState;
 var useEffect   = React.useEffect;
@@ -209,7 +209,10 @@ function makeEngine1() {
       eng.combFilters[N - 1].connect(eng.lowpassNode);
 
       eng.preReverbGain = eng.ctx.createGain();
-      eng.preReverbGain.gain.value = 1.0; // LFO vol modulates this
+      eng.preReverbGain.gain.value = 1.0; // LFO amp modulates this
+
+      eng.seqAmpGain = eng.ctx.createGain();
+      eng.seqAmpGain.gain.value = 1.0; // sequencer amp env drives this (1.0 = drone mode)
 
       eng.dryGain = eng.ctx.createGain();
       eng.dryGain.gain.value = 1 - eng.settings.reverbMix;
@@ -228,10 +231,11 @@ function makeEngine1() {
       eng.analyserNode = eng.ctx.createAnalyser();
       eng.analyserNode.fftSize = 1024;
 
-      // Signal chain: lowpass → preReverbGain → dry/reverb split → master
+      // Signal chain: lowpass → preReverbGain → seqAmpGain → dry/reverb → master
       eng.lowpassNode.connect(eng.preReverbGain);
-      eng.preReverbGain.connect(eng.dryGain);
-      eng.preReverbGain.connect(eng.reverbNode);
+      eng.preReverbGain.connect(eng.seqAmpGain);
+      eng.seqAmpGain.connect(eng.dryGain);
+      eng.seqAmpGain.connect(eng.reverbNode);
       eng.reverbNode.connect(eng.reverbGain);
       eng.dryGain.connect(eng.masterGain);
       eng.reverbGain.connect(eng.masterGain);
@@ -720,6 +724,9 @@ function makeEngine2() {
       eng.preReverbGain = eng.ctx.createGain();
       eng.preReverbGain.gain.value = 1.0;
 
+      eng.seqAmpGain = eng.ctx.createGain();
+      eng.seqAmpGain.gain.value = 1.0;
+
       eng.dryGain = eng.ctx.createGain(); eng.dryGain.gain.value = 1 - eng.settings.reverbMix;
       eng.reverbGain = eng.ctx.createGain(); eng.reverbGain.gain.value = eng.settings.reverbMix;
       eng.masterGain = eng.ctx.createGain(); eng.masterGain.gain.value = 0;
@@ -731,8 +738,9 @@ function makeEngine2() {
       eng.analyserNode = eng.ctx.createAnalyser(); eng.analyserNode.fftSize = 1024;
 
       eng.lowpassNode.connect(eng.preReverbGain);
-      eng.preReverbGain.connect(eng.dryGain);
-      eng.preReverbGain.connect(eng.reverbNode);
+      eng.preReverbGain.connect(eng.seqAmpGain);
+      eng.seqAmpGain.connect(eng.dryGain);
+      eng.seqAmpGain.connect(eng.reverbNode);
       eng.reverbNode.connect(eng.reverbGain);
       eng.dryGain.connect(eng.masterGain);
       eng.reverbGain.connect(eng.masterGain);
@@ -1423,9 +1431,9 @@ function makeSequencer(getEngine) {
     _timerID: null,
     _currentStep: 0,
     // Envelope settings
-    envAmp:    { a:10,  d:100, s:80, r:300,  amount:100, open:false },
-    envFilter: { a:20,  d:200, s:50, r:500,  amount:60,  open:false },
-    envFree:   { a:50,  d:100, s:60, r:400,  amount:50,  open:false, dest:"FM depth" },
+    envAmp:    { a:10,  d:100, s:80, r:300,  enabled:true,  open:false },
+    envFilter: { a:20,  d:200, s:50, r:500,  amount:60,  enabled:false, open:false },
+    envFree:   { a:50,  d:100, s:60, r:400,  amount:50,  enabled:false, open:false, dest:"FM depth" },
     // Envelope gain nodes (created on first trigger)
     _ampEnvGain:    null,
     _filterEnvGain: null,
@@ -1442,27 +1450,17 @@ function makeSequencer(getEngine) {
     if (!eng || !eng.ctx) return;
     var ctx = eng.ctx;
 
-    // Amp envelope — sits IN the signal path (not as an offset)
-    // preReverbGain → ampEnvNode → dryGain/reverbNode
-    if (!seq._ampEnvGain) {
-      seq._ampEnvGain = ctx.createGain();
-      seq._ampEnvGain.gain.value = 0; // starts silent, envelope opens it
-      // Rewire: disconnect lowpass from preReverbGain, route through ampEnv
-      if (eng.lowpassNode && eng.preReverbGain) {
-        try { eng.lowpassNode.disconnect(eng.preReverbGain); } catch(e) {}
-        eng.lowpassNode.connect(seq._ampEnvGain);
-        seq._ampEnvGain.connect(eng.preReverbGain);
-      }
-    }
+    // Amp envelope — drives seqAmpGain (always in signal path, no rewiring)
+    seq._ampTarget = eng.seqAmpGain ? eng.seqAmpGain.gain : null;
 
-    // Filter envelope — dedicated offset gain into lowpass frequency
+    // Filter envelope — offset gain node connected to lowpass frequency
     if (!seq._filterEnvGain && eng.lowpassNode) {
       seq._filterEnvGain = ctx.createGain();
       seq._filterEnvGain.gain.value = 0;
       seq._filterEnvGain.connect(eng.lowpassNode.frequency);
     }
 
-    // Free envelope — resolved via LFO destination system
+    // Free envelope
     if (!seq._freeEnvGain) {
       seq._freeEnvGain = ctx.createGain();
       seq._freeEnvGain.gain.value = 0;
@@ -1513,20 +1511,40 @@ function makeSequencer(getEngine) {
     if (!eng || !eng.ctx) return;
     var gateOn = seq.pattern[stepIndex % seq.steps];
 
-    // Amp envelope
-    seq._triggerEnv(seq.envAmp, seq._ampEnvGain, time, gateOn, 1);
+    // Amp envelope — drives seqAmpGain directly
+    if (seq.envAmp.enabled && seq._ampTarget) {
+      var a   = Math.max(0.002, seq.envAmp.a / 1000);
+      var d   = Math.max(0.002, seq.envAmp.d / 1000);
+      var sus = Math.max(0, Math.min(1, seq.envAmp.s / 100));
+      var r   = Math.max(0.01,  seq.envAmp.r / 1000);
+      var g   = seq._ampTarget;
+      if (gateOn) {
+        g.cancelScheduledValues(time);
+        g.setValueAtTime(0, time);
+        g.linearRampToValueAtTime(1.0,       time + a);
+        g.linearRampToValueAtTime(sus,       time + a + d);
+      } else {
+        g.cancelScheduledValues(time);
+        g.setValueAtTime(g.value, time);
+        g.linearRampToValueAtTime(0, time + r);
+      }
+    } else if (seq._ampTarget) {
+      // Amp env off = open gate always (drone through)
+      seq._ampTarget.cancelScheduledValues(time);
+      seq._ampTarget.setValueAtTime(1.0, time);
+    }
 
-    // Filter envelope — depth scaled to Hz range (0-100% → 0-8000Hz offset)
-    seq._triggerEnv(seq.envFilter, seq._filterEnvGain, time, gateOn, 8000);
+    // Filter envelope
+    if (seq.envFilter.enabled) {
+      seq._triggerEnv(seq.envFilter, seq._filterEnvGain, time, gateOn, 4000);
+    }
 
     // Free envelope
-    var freeDest = seq.envFree.dest;
-    var freeScale = 1;
-    var fd = LFO_DESTS[freeDest];
-    if (fd === "reverb.gain") freeScale = 0.5;
-    if (fd === "haas.gain")   freeScale = 0.7;
-    if (fd && fd.indexOf("fm") === 0) freeScale = 300;
-    seq._triggerEnv(seq.envFree, seq._freeEnvGain, time, gateOn, freeScale);
+    if (seq.envFree.enabled) {
+      var fd = LFO_DESTS[seq.envFree.dest] || "";
+      var freeScale = fd === "reverb.gain" ? 0.5 : fd === "haas.gain" ? 0.7 : fd.indexOf("fm")===0 ? 300 : 1;
+      seq._triggerEnv(seq.envFree, seq._freeEnvGain, time, gateOn, freeScale);
+    }
   };
 
   seq._scheduler = function() {
@@ -1545,6 +1563,11 @@ function makeSequencer(getEngine) {
     var eng = getEngine();
     if (!eng || !eng.ctx || seq.running) return;
     seq._initEnvNodes();
+    // Set initial amp state
+    if (eng.seqAmpGain) {
+      eng.seqAmpGain.gain.cancelScheduledValues(eng.ctx.currentTime);
+      eng.seqAmpGain.gain.value = seq.envAmp.enabled ? 0 : 1.0;
+    }
     seq.running = true;
     seq._currentStep = 0;
     seq._startTime    = eng.ctx.currentTime + 0.05;
@@ -1565,11 +1588,11 @@ function makeSequencer(getEngine) {
         g.gain.cancelScheduledValues(t);
         g.gain.setTargetAtTime(0, t, 0.1);
       });
-      // Release amp with envelope release time
-      if (seq._ampEnvGain) {
+      // Restore seqAmpGain to full open (drone resumes)
+      if (eng.seqAmpGain) {
         var r = Math.max(0.05, seq.envAmp.r / 1000);
-        seq._ampEnvGain.gain.cancelScheduledValues(t);
-        seq._ampEnvGain.gain.setTargetAtTime(0, t, r / 3);
+        eng.seqAmpGain.gain.cancelScheduledValues(t);
+        eng.seqAmpGain.gain.linearRampToValueAtTime(1.0, t + r);
       }
     }
   };
@@ -1585,17 +1608,10 @@ function makeSequencer(getEngine) {
 
   seq.destroy = function() {
     seq.stop();
-    var eng = getEngine();
-    // Restore original signal path if amp env was inserted
-    if (seq._ampEnvGain && eng && eng.lowpassNode && eng.preReverbGain) {
-      try { eng.lowpassNode.disconnect(seq._ampEnvGain); } catch(e) {}
-      try { seq._ampEnvGain.disconnect(eng.preReverbGain); } catch(e) {}
-      try { eng.lowpassNode.connect(eng.preReverbGain); } catch(e) {}
-    }
-    [seq._ampEnvGain, seq._filterEnvGain, seq._freeEnvGain].forEach(function(g) {
+    [seq._filterEnvGain, seq._freeEnvGain].forEach(function(g) {
       if (g) try { g.disconnect(); } catch(e) {}
     });
-    seq._ampEnvGain = null; seq._filterEnvGain = null; seq._freeEnvGain = null;
+    seq._filterEnvGain = null; seq._freeEnvGain = null; seq._ampTarget = null;
   };
 
   return seq;
@@ -1632,6 +1648,8 @@ function App() {
   var rl  = useState(false);  var looping       = rl[0],  setLooping      = rl[1];
   var rlc = useState(false);  var loopCapturing = rlc[0], setLoopCapturing= rlc[1];
   var rfd = useState(null);   var frameData     = rfd[0], setFrameData    = rfd[1];
+  var frameDataRef = useRef(null); // raw ref for engine — no re-renders
+  var hudTimerRef  = useRef(0);   // throttle HUD updates to 4fps
 
   // Which engine is active: "1" or "2"
   var ren = useState("2");    var activeEngine  = ren[0], setActiveEngine  = ren[1];
@@ -1687,9 +1705,9 @@ function App() {
   var rseq  = useState({
     bpm: 120, steps: 16,
     pattern: new Array(16).fill(false),
-    envAmp:    { a:10,  d:100, s:80, r:300,  amount:100, open:false },
-    envFilter: { a:20,  d:200, s:50, r:500,  amount:60,  open:false },
-    envFree:   { a:50,  d:100, s:60, r:400,  amount:50,  open:false, dest:"FM depth" },
+    envAmp:    { a:10,  d:100, s:80, r:300,  enabled:true,  open:false },
+    envFilter: { a:20,  d:200, s:50, r:500,  amount:60,  enabled:false, open:false },
+    envFree:   { a:50,  d:100, s:60, r:400,  amount:50,  enabled:false, open:false, dest:"FM depth" },
   });
   var seqSettings = rseq[0], setSeqSettings = rseq[1];
   var rplay = useState(false); var seqPlaying = rplay[0], setSeqPlaying = rplay[1];
@@ -1804,7 +1822,13 @@ function App() {
       ctx2d.drawImage(v,0,0,c.width,c.height);
       var data=analyseFrame(c,ctx2d);
       if (data) {
-        setFrameData(data);
+        frameDataRef.current = data;
+        // Only update React state (HUD) at ~4fps to avoid re-renders
+        hudTimerRef.current++;
+        if (hudTimerRef.current >= Math.ceil(settings.fps / 4)) {
+          hudTimerRef.current = 0;
+          setFrameData(data);
+        }
         var eng=synthRef.current;
         if (eng && eng.ctx) {
           if (activeEngine==="1") {
@@ -2000,15 +2024,9 @@ function App() {
           setSeqMode("drone");
           if (seqPlaying && seqRef.current) { seqRef.current.stop(); setSeqPlaying(false); }
           setShowSeq(false);
-          // Restore drone gain
-          var eng = synthRef.current;
-          if (eng && eng.preReverbGain && eng.active) eng.preReverbGain.gain.value = 1.0;
         }, style:{ padding:"5px 8px" } }, "DRONE"),
         el("button", { className:cx("cb", seqMode==="seq"&&"on"), onClick:function(){
           setSeqMode("seq"); setShowSeq(true); setShowAdv(false);
-          // Mute drone — amp envelope will control volume in SEQ mode
-          var eng = synthRef.current;
-          if (eng && eng.preReverbGain) eng.preReverbGain.gain.value = 0;
         }, style:{ padding:"5px 8px" } }, "SEQ"),
         el("button", { className:cx("cb", showAdv&&"on"), onClick:function(){setShowAdv(function(s){return !s;});setShowSeq(false);}, style:{ letterSpacing:"0.12em", padding:"5px 10px" } }, "ADV"),
         camOn && el("button", { className:"cb", onClick:handleFlip }, "\u21c4"),
@@ -2466,10 +2484,15 @@ function App() {
 
     return el("div", { style:{ marginBottom:8, borderBottom:"1px solid #141414", paddingBottom:8 } },
 
-      // Header row — label + amount ribbon + open/close
+      // Header row: label + enabled toggle + amount ribbon (if not amp) + expand
       el("div", { style:{ display:"flex", alignItems:"center", gap:6, marginBottom: env.open ? 8 : 0 } },
-        el("span", { style:{ fontSize:9, color:c, letterSpacing:"0.1em", minWidth:40 } }, props.label),
-        el("div", { style:{ flex:1, position:"relative" } },
+        el("span", { style:{ fontSize:9, color:env.enabled!==false?c:"#333", letterSpacing:"0.1em", minWidth:40 } }, props.label),
+        el("button", {
+          className:cx("sg", env.enabled!==false&&"sel"),
+          onClick:function(){ setEnv("enabled", env.enabled===false?true:false); },
+          style:{ minWidth:28, padding:"2px 5px", fontSize:8 }
+        }, env.enabled!==false ? "ON" : "OFF"),
+        !props.noAmount && el("div", { style:{ flex:1, position:"relative" } },
           el("div", {
             ref: amtRibbonRef,
             onMouseDown: onAmtTouch, onMouseMove: function(e){ if(e.buttons) onAmtTouch(e); },
@@ -2479,13 +2502,14 @@ function App() {
               border:"1px solid #1a1a1a", position:"relative" }
           },
             el("div", { style:{
-              position:"absolute", left:(env.amount)+"%", top:0, bottom:0,
+              position:"absolute", left:((env.amount||50))+"%", top:0, bottom:0,
               width:2, background:c, transform:"translateX(-50%)", pointerEvents:"none",
               boxShadow:"0 0 5px "+c
             }})
           ),
-          el("span", { style:{ position:"absolute", right:0, top:-1, fontSize:7, color:c } }, env.amount+"%")
+          el("span", { style:{ position:"absolute", right:0, top:-1, fontSize:7, color:c } }, (env.amount||50)+"%")
         ),
+        props.noAmount && el("div", { style:{ flex:1 } }),
         el("button", {
           className:"sg",
           onClick: function(){ setEnv("open", !env.open); },
@@ -2546,7 +2570,7 @@ function App() {
             s.bpm     = seqSettings.bpm;
             s.steps   = seqSettings.steps;
             s.pattern = seqSettings.pattern.slice();
-            s.envAmp    = Object.assign({}, seqSettings.envAmp);
+            s.envAmp    = Object.assign({}, seqSettings.envAmp); s.envAmp.enabled = seqSettings.envAmp.enabled;
             s.envFilter = Object.assign({}, seqSettings.envFilter);
             s.envFree   = Object.assign({}, seqSettings.envFree);
             s.start(); setSeqPlaying(true);
@@ -2555,11 +2579,21 @@ function App() {
 
         // BPM
         el("div", { style:{ display:"flex", flexDirection:"column", alignItems:"center", flex:1 } },
-          el("span", { style:{ fontSize:7, color:"#444", letterSpacing:"0.1em" } }, "BPM"),
+          el("span", { style:{ fontSize:7, color:"#444", letterSpacing:"0.1em", marginBottom:2 } }, "BPM"),
           el("div", { style:{ display:"flex", alignItems:"center", gap:4 } },
-            el("button", { className:"sg", onClick:function(){ setSeqSettings(function(s){ var n=Object.assign({},s); n.bpm=Math.max(40,s.bpm-1); if(seqRef.current)seqRef.current.bpm=n.bpm; return n; }) }, style:{padding:"2px 6px"} }, "-"),
-            el("span", { style:{ fontSize:14, color:"#7fff6a", minWidth:36, textAlign:"center" } }, seqSettings.bpm),
-            el("button", { className:"sg", onClick:function(){ setSeqSettings(function(s){ var n=Object.assign({},s); n.bpm=Math.min(500,s.bpm+1); if(seqRef.current)seqRef.current.bpm=n.bpm; return n; }) }, style:{padding:"2px 6px"} }, "+")
+            el("button", { className:"sg", onClick:function(){ setSeqSettings(function(s){ var n=Object.assign({},s); n.bpm=Math.max(40,s.bpm-5); if(seqRef.current)seqRef.current.bpm=n.bpm; return n; }) }, style:{padding:"2px 8px"} }, "-"),
+            el("input", {
+              type:"number", min:40, max:500,
+              value: seqSettings.bpm,
+              onChange: function(e){
+                var v = Math.max(40, Math.min(500, parseInt(e.target.value)||120));
+                setSeqSettings(function(s){ var n=Object.assign({},s); n.bpm=v; if(seqRef.current)seqRef.current.bpm=v; return n; });
+              },
+              style:{ width:52, background:"transparent", border:"1px solid #222", color:"#7fff6a",
+                fontFamily:"'IBM Plex Mono',monospace", fontSize:14, textAlign:"center",
+                padding:"2px 0", WebkitAppearance:"none", MozAppearance:"textfield" }
+            }),
+            el("button", { className:"sg", onClick:function(){ setSeqSettings(function(s){ var n=Object.assign({},s); n.bpm=Math.min(500,s.bpm+5); if(seqRef.current)seqRef.current.bpm=n.bpm; return n; }) }, style:{padding:"2px 8px"} }, "+")
           )
         ),
 
@@ -2592,7 +2626,7 @@ function App() {
                   return n;
                 }); },
                 style:{
-                  width:36, height:36, flexShrink:0, borderRadius:4, cursor:"pointer",
+                  width:"calc((100% - 28px) / 8)", height:36, flexShrink:0, borderRadius:4, cursor:"pointer",
                   border: isCurrent ? "2px solid #7fff6a" : "1px solid #1a3a1a",
                   background: isCurrent ? "#1a4a1a" : isOn ? "#0d2a0d" : "#050805",
                   boxShadow: isCurrent ? "0 0 8px rgba(127,255,106,0.4)" : "none",
@@ -2607,7 +2641,7 @@ function App() {
       el("div", { style:{ fontSize:8, color:"#444", letterSpacing:"0.15em", textTransform:"uppercase", marginBottom:6 } }, "Envelopes"),
 
       el(EnvBlock, { label:"AMP", color:"#7fff6a", colorHi:"rgba(127,255,106,0.15)", colorLo:"rgba(127,255,106,0.02)",
-        env:seqSettings.envAmp, freeDestVisible:false,
+        env:seqSettings.envAmp, freeDestVisible:false, noAmount:true,
         onChange:function(env){ setSeqSettings(function(s){var n=Object.assign({},s);n.envAmp=env;if(seqRef.current)seqRef.current.envAmp=env;return n;}); }
       }),
       el(EnvBlock, { label:"FILTER", color:"#6bb5ff", colorHi:"rgba(107,181,255,0.15)", colorLo:"rgba(107,181,255,0.02)",
