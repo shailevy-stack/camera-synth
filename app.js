@@ -1,5 +1,5 @@
 // Camera Synth — v3.0.0
-var VERSION = "3.4.2";
+var VERSION = "3.4.3";
 
 var useState    = React.useState;
 var useEffect   = React.useEffect;
@@ -1492,17 +1492,21 @@ function makeSequencer(getEngine) {
     var d   = Math.max(0.002, envSettings.d / 1000);
     var sus = Math.max(0, Math.min(1, envSettings.s / 100));
     var r   = Math.max(0.01,  envSettings.r / 1000);
-    var amt = (envSettings.amount / 100) * (depthScale || 1);
+    var amt = depthScale || 1; // for amp: always 1.0 peak
 
     if (gateOn) {
+      // Cancel any pending automation and hard-set to 0 at gate time
+      // This avoids reading g.value which reflects current (not future) state
       g.cancelScheduledValues(time);
-      g.setValueAtTime(g.value, time);  // start from current value (avoids click)
-      g.linearRampToValueAtTime(amt,         time + a);        // attack to peak
-      g.linearRampToValueAtTime(amt * sus,   time + a + d);    // decay to sustain
+      g.setValueAtTime(0, time);
+      g.linearRampToValueAtTime(amt,       time + a);      // attack
+      g.linearRampToValueAtTime(amt * sus, time + a + d);  // decay to sustain
     } else {
+      // Release from sustain level — use the expected sustain value, not g.value
+      var susVal = amt * sus;
       g.cancelScheduledValues(time);
-      g.setValueAtTime(g.value, time);
-      g.linearRampToValueAtTime(0, time + r);  // release to zero
+      g.setValueAtTime(susVal, time);
+      g.linearRampToValueAtTime(0, time + r);
     }
   };
 
@@ -1520,30 +1524,32 @@ function makeSequencer(getEngine) {
       var g   = seq._ampTarget;
       if (gateOn) {
         g.cancelScheduledValues(time);
-        g.setValueAtTime(0, time);
-        g.linearRampToValueAtTime(1.0,       time + a);
-        g.linearRampToValueAtTime(sus,       time + a + d);
+        g.setValueAtTime(0, time);          // hard reset at gate on — no click
+        g.linearRampToValueAtTime(1.0, time + a);
+        g.linearRampToValueAtTime(sus, time + a + d);
       } else {
+        var susVal = sus; // expected sustain level
         g.cancelScheduledValues(time);
-        g.setValueAtTime(g.value, time);
+        g.setValueAtTime(susVal, time);     // set from known sustain, not g.value
         g.linearRampToValueAtTime(0, time + r);
       }
     } else if (seq._ampTarget) {
-      // Amp env off = open gate always (drone through)
       seq._ampTarget.cancelScheduledValues(time);
       seq._ampTarget.setValueAtTime(1.0, time);
     }
 
-    // Filter envelope
+    // Filter envelope — depth = amount% of 4000Hz
     if (seq.envFilter.enabled) {
-      seq._triggerEnv(seq.envFilter, seq._filterEnvGain, time, gateOn, 4000);
+      var filterDepth = ((seq.envFilter.amount||60) / 100) * 4000;
+      seq._triggerEnv(seq.envFilter, seq._filterEnvGain, time, gateOn, filterDepth);
     }
 
     // Free envelope
     if (seq.envFree.enabled) {
       var fd = LFO_DESTS[seq.envFree.dest] || "";
-      var freeScale = fd === "reverb.gain" ? 0.5 : fd === "haas.gain" ? 0.7 : fd.indexOf("fm")===0 ? 300 : 1;
-      seq._triggerEnv(seq.envFree, seq._freeEnvGain, time, gateOn, freeScale);
+      var baseScale = fd === "reverb.gain" ? 0.5 : fd === "haas.gain" ? 0.7 : fd.indexOf("fm")===0 ? 300 : 1;
+      var freeDepth = ((seq.envFree.amount||50) / 100) * baseScale;
+      seq._triggerEnv(seq.envFree, seq._freeEnvGain, time, gateOn, freeDepth);
     }
   };
 
@@ -2390,44 +2396,34 @@ function App() {
 
   // ── SEQ PAGE ─────────────────────────────────────────────────────────────────
   function VertRibbon(props) {
-    var ref      = useRef(null);
-    var dragRef  = useRef(null); // { startY, startVal, height }
+    var ref     = useRef(null);
+    var dragRef = useRef(null);
 
-    function getClientY(e) {
-      return e.touches ? e.touches[0].clientY : e.clientY;
-    }
-
-    function onStart(e) {
+    function onPointerDown(e) {
       e.preventDefault();
       e.stopPropagation();
-      var rect = ref.current ? ref.current.getBoundingClientRect() : { height: 160 };
+      ref.current && ref.current.setPointerCapture(e.pointerId);
+      var rect = ref.current ? ref.current.getBoundingClientRect() : { height:160 };
       dragRef.current = {
-        startY:   getClientY(e),
+        startY:   e.clientY,
         startVal: props.value,
-        height:   rect.height,
+        height:   Math.max(1, rect.height),
         range:    props.max - props.min,
       };
-      var move = function(e2) {
-        e2.preventDefault();
-        var d = dragRef.current;
-        if (!d) return;
-        var dy    = d.startY - getClientY(e2); // up = increase
-        // Scale: full ribbon height = full range. Sensitivity feels natural.
-        var delta = (dy / d.height) * d.range;
-        var newVal = Math.max(props.min, Math.min(props.max, d.startVal + delta));
-        props.onChange(newVal);
-      };
-      var up = function() {
-        dragRef.current = null;
-        window.removeEventListener("touchmove", move);
-        window.removeEventListener("touchend",  up);
-        window.removeEventListener("mousemove", move);
-        window.removeEventListener("mouseup",   up);
-      };
-      window.addEventListener("touchmove", move, { passive: false });
-      window.addEventListener("touchend",  up,   { passive: false });
-      window.addEventListener("mousemove", move);
-      window.addEventListener("mouseup",   up);
+    }
+
+    function onPointerMove(e) {
+      var d = dragRef.current;
+      if (!d) return;
+      e.preventDefault();
+      var dy    = d.startY - e.clientY; // up = increase
+      var delta = (dy / d.height) * d.range;
+      var newVal = Math.max(props.min, Math.min(props.max, d.startVal + delta));
+      props.onChange(newVal);
+    }
+
+    function onPointerUp(e) {
+      dragRef.current = null;
     }
 
     var pct = (props.value - props.min) / (props.max - props.min);
@@ -2437,10 +2433,14 @@ function App() {
       el("span", { style:{ fontSize:7, color:"#444", letterSpacing:"0.1em", marginBottom:2 } }, props.label),
       el("div", {
         ref: ref,
-        onMouseDown: onStart, onTouchStart: onStart,
+        onPointerDown: onPointerDown,
+        onPointerMove: onPointerMove,
+        onPointerUp:   onPointerUp,
+        onPointerCancel: onPointerUp,
         style:{ width:"100%", height:160, position:"relative", cursor:"ns-resize",
           background:"linear-gradient(180deg, "+props.colorHi+" 0%, "+props.colorLo+" 100%)",
-          borderRadius:4, border:"1px solid #1a1a1a", touchAction:"none" }
+          borderRadius:4, border:"1px solid #1a1a1a", touchAction:"none",
+          userSelect:"none", WebkitUserSelect:"none" }
       },
         el("div", { style:{
           position:"absolute", left:0, right:0,
@@ -2472,15 +2472,25 @@ function App() {
     }
 
     // Amount ribbon (horizontal, like filter ribbon)
-    var amtRibbonRef = useRef(null);
-    function onAmtTouch(e) {
+    var amtRibbonRef  = useRef(null);
+    var amtDragRef    = useRef(false);
+    function onAmtPointerDown(e) {
       e.preventDefault();
+      amtRibbonRef.current && amtRibbonRef.current.setPointerCapture(e.pointerId);
+      amtDragRef.current = true;
       var rect = amtRibbonRef.current ? amtRibbonRef.current.getBoundingClientRect() : null;
       if (!rect) return;
-      var cx2 = e.touches ? e.touches[0].clientX : e.clientX;
-      var x   = Math.max(0, Math.min(1, (cx2 - rect.left) / rect.width));
+      var x = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
       setEnv("amount", Math.round(x * 100));
     }
+    function onAmtPointerMove(e) {
+      if (!amtDragRef.current) return;
+      var rect = amtRibbonRef.current ? amtRibbonRef.current.getBoundingClientRect() : null;
+      if (!rect) return;
+      var x = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+      setEnv("amount", Math.round(x * 100));
+    }
+    function onAmtPointerUp(e) { amtDragRef.current = false; }
 
     return el("div", { style:{ marginBottom:8, borderBottom:"1px solid #141414", paddingBottom:8 } },
 
@@ -2495,8 +2505,10 @@ function App() {
         !props.noAmount && el("div", { style:{ flex:1, position:"relative" } },
           el("div", {
             ref: amtRibbonRef,
-            onMouseDown: onAmtTouch, onMouseMove: function(e){ if(e.buttons) onAmtTouch(e); },
-            onTouchStart: onAmtTouch, onTouchMove: onAmtTouch,
+            onPointerDown: onAmtPointerDown,
+            onPointerMove: onAmtPointerMove,
+            onPointerUp:   onAmtPointerUp,
+            onPointerCancel: onAmtPointerUp,
             style:{ height:18, borderRadius:3, cursor:"crosshair", touchAction:"none",
               background:"linear-gradient(90deg, #0a0a0b 0%, "+props.colorLo+" 100%)",
               border:"1px solid #1a1a1a", position:"relative" }
@@ -2583,15 +2595,24 @@ function App() {
           el("div", { style:{ display:"flex", alignItems:"center", gap:4 } },
             el("button", { className:"sg", onClick:function(){ setSeqSettings(function(s){ var n=Object.assign({},s); n.bpm=Math.max(40,s.bpm-5); if(seqRef.current)seqRef.current.bpm=n.bpm; return n; }) }, style:{padding:"2px 8px"} }, "-"),
             el("input", {
-              type:"number", min:40, max:500,
-              value: seqSettings.bpm,
-              onChange: function(e){
+              type:"text", inputMode:"numeric", pattern:"[0-9]*",
+              defaultValue: seqSettings.bpm,
+              key: "bpm-"+seqSettings.bpm, // remount when ±5 buttons change value
+              onBlur: function(e){
                 var v = Math.max(40, Math.min(500, parseInt(e.target.value)||120));
                 setSeqSettings(function(s){ var n=Object.assign({},s); n.bpm=v; if(seqRef.current)seqRef.current.bpm=v; return n; });
               },
+              onKeyDown: function(e){
+                if(e.key==="Enter"){
+                  var v = Math.max(40, Math.min(500, parseInt(e.target.value)||120));
+                  setSeqSettings(function(s){ var n=Object.assign({},s); n.bpm=v; if(seqRef.current)seqRef.current.bpm=v; return n; });
+                  e.target.blur();
+                }
+              },
               style:{ width:52, background:"transparent", border:"1px solid #222", color:"#7fff6a",
                 fontFamily:"'IBM Plex Mono',monospace", fontSize:14, textAlign:"center",
-                padding:"2px 0", WebkitAppearance:"none", MozAppearance:"textfield" }
+                padding:"2px 0", WebkitAppearance:"none", MozAppearance:"textfield",
+                userSelect:"text", WebkitUserSelect:"text" }
             }),
             el("button", { className:"sg", onClick:function(){ setSeqSettings(function(s){ var n=Object.assign({},s); n.bpm=Math.min(500,s.bpm+5); if(seqRef.current)seqRef.current.bpm=n.bpm; return n; }) }, style:{padding:"2px 8px"} }, "+")
           )
