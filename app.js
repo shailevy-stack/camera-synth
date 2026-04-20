@@ -1,5 +1,5 @@
 // Camera Synth — v3.0.0
-var VERSION = "3.5.3";
+var VERSION = "3.5.4";
 
 var useState    = React.useState;
 var useEffect   = React.useEffect;
@@ -1431,7 +1431,7 @@ function makeSequencer(getEngine) {
     _timerID: null,
     _currentStep: 0,
     // Envelope settings
-    envAmp:    { a:10,  d:100, s:80, r:300,  enabled:true,  open:false },
+    envAmp:    { a:10,  h:80,  r:300, enabled:true },  // h=hold % of step
 
     // Envelope gain nodes (created on first trigger)
     _ampEnvGain:    null,
@@ -1451,59 +1451,50 @@ function makeSequencer(getEngine) {
     if (!seq._ampTarget) console.warn('[SEQ] seqAmpGain missing');
   };
 
-  seq._triggerEnv = function(envSettings, gainNode, time, gateOn, depthScale) {
-    if (!gainNode) return;
-    var g   = gainNode.gain;
-    var a   = Math.max(0.002, envSettings.a / 1000);
-    var d   = Math.max(0.002, envSettings.d / 1000);
-    var sus = Math.max(0, Math.min(1, envSettings.s / 100));
-    var r   = Math.max(0.01,  envSettings.r / 1000);
-    var amt = depthScale || 1; // for amp: always 1.0 peak
-
-    if (gateOn) {
-      // Cancel any pending automation and hard-set to 0 at gate time
-      // This avoids reading g.value which reflects current (not future) state
-      g.cancelScheduledValues(time);
-      g.setValueAtTime(0, time);
-      g.linearRampToValueAtTime(amt,       time + a);      // attack
-      g.linearRampToValueAtTime(amt * sus, time + a + d);  // decay to sustain
-    } else {
-      // Release from sustain level — use the expected sustain value, not g.value
-      var susVal = amt * sus;
-      g.cancelScheduledValues(time);
-      g.setValueAtTime(susVal, time);
-      g.linearRampToValueAtTime(0, time + r);
-    }
-  };
+  // _triggerEnv kept for potential future use
+  seq._triggerEnv = function(envSettings, gainNode, time, gateOn, depthScale) {};
 
   seq._scheduleStep = function(stepIndex, time) {
     var eng = getEngine();
     if (!eng || !eng.ctx) return;
-    var gateOn = seq.pattern[stepIndex % seq.steps];
+    var steps    = seq.steps;
+    var gateOn   = seq.pattern[stepIndex % steps];
+    var nextOn   = seq.pattern[(stepIndex + 1) % steps]; // lookahead
+    var stepDur  = seq.stepDuration();
 
-    // Amp envelope — drives seqAmpGain directly
-    if (seq.envAmp.enabled && seq._ampTarget) {
-      var a   = Math.max(0.002, seq.envAmp.a / 1000);
-      var d   = Math.max(0.002, seq.envAmp.d / 1000);
-      var sus = Math.max(0, Math.min(1, seq.envAmp.s / 100));
-      var r   = Math.max(0.01,  seq.envAmp.r / 1000);
-      var g   = seq._ampTarget;
+    if (seq._ampTarget) {
+      var g = seq._ampTarget;
       if (gateOn) {
+        // Attack: ramp from 0 to 1
+        var a = Math.max(0.002, seq.envAmp.a / 1000);
+        // Hold: % of step duration the gate stays fully open
+        var holdSec = stepDur * Math.max(0, Math.min(1, seq.envAmp.h / 100));
+        // Release: only schedule if next step is OFF (no overlap)
+        var r = Math.max(0.01, Math.min(1.0, seq.envAmp.r / 1000));
+
         g.cancelScheduledValues(time);
-        g.setValueAtTime(0, time);          // hard reset at gate on — no click
-        g.linearRampToValueAtTime(1.0, time + a);
-        g.linearRampToValueAtTime(sus, time + a + d);
+        g.setValueAtTime(0, time);
+        g.linearRampToValueAtTime(1.0, time + a);       // attack to full
+
+        if (!nextOn) {
+          // Next step is off — schedule release after hold
+          var releaseStart = time + a + holdSec;
+          g.setValueAtTime(1.0, releaseStart);
+          g.linearRampToValueAtTime(0, releaseStart + r);
+        }
+        // If nextOn: stay open — next step's attack will retrigger if needed
+        // or simply hold through (no release scheduled)
+
       } else {
-        var susVal = sus; // expected sustain level
+        // Gate OFF — if previous step was ON, release is already scheduled
+        // Just ensure gain goes to 0 at this step time if somehow still open
+        // Use a very short ramp to avoid click (don't hard-cut)
+        var r = Math.max(0.01, Math.min(1.0, seq.envAmp.r / 1000));
         g.cancelScheduledValues(time);
-        g.setValueAtTime(susVal, time);     // set from known sustain, not g.value
+        g.setValueAtTime(g.value, time);
         g.linearRampToValueAtTime(0, time + r);
       }
-    } else if (seq._ampTarget) {
-      seq._ampTarget.cancelScheduledValues(time);
-      seq._ampTarget.setValueAtTime(1.0, time);
     }
-
   };
 
   seq._scheduler = function() {
@@ -1544,8 +1535,9 @@ function makeSequencer(getEngine) {
 
       // Restore seqAmpGain to full open (drone resumes)
       if (eng.seqAmpGain) {
-        var r = Math.max(0.05, seq.envAmp.r / 1000);
+        var r = Math.max(0.05, Math.min(1.0, seq.envAmp.r / 1000));
         eng.seqAmpGain.gain.cancelScheduledValues(t);
+        eng.seqAmpGain.gain.setValueAtTime(0, t);
         eng.seqAmpGain.gain.linearRampToValueAtTime(1.0, t + r);
       }
     }
@@ -1576,7 +1568,7 @@ function ADSRSlider(props) {
   var dragRef   = useRef(null);
 
   function fmtV(v) {
-    if (props.label === "S") return v + "%";
+    if (props.label === "H") return v + "%";
     return v < 1000 ? v + "ms" : (v / 1000).toFixed(1) + "s";
   }
 
@@ -1702,7 +1694,7 @@ function App() {
   var rseq  = useState({
     bpm: 120, steps: 16,
     pattern: new Array(16).fill(false),
-    envAmp:    { a:10,  d:100, s:80, r:300,  enabled:true,  open:false },
+    envAmp:    { a:10,  h:80,  r:300, enabled:true },  // h=hold % of step
 
   });
   var seqSettings = rseq[0], setSeqSettings = rseq[1];
@@ -2275,12 +2267,11 @@ function App() {
         })
       ),
 
-      // ADSR — 4 vertical ribbon sliders (proper components — no hooks in map)
-      el("div", { style:{ display:"flex", gap:6 } },
-        el(ADSRSlider, { key:"A", label:"A", value:seqSettings.envAmp.a, min:1,  max:2000, onChange:function(v){ setSeqSettings(function(s){ var n=Object.assign({},s); n.envAmp=Object.assign({},s.envAmp); n.envAmp.a=v; if(seqRef.current)seqRef.current.envAmp=n.envAmp; return n; }); } }),
-        el(ADSRSlider, { key:"D", label:"D", value:seqSettings.envAmp.d, min:1,  max:2000, onChange:function(v){ setSeqSettings(function(s){ var n=Object.assign({},s); n.envAmp=Object.assign({},s.envAmp); n.envAmp.d=v; if(seqRef.current)seqRef.current.envAmp=n.envAmp; return n; }); } }),
-        el(ADSRSlider, { key:"S", label:"S", value:seqSettings.envAmp.s, min:0,  max:100,  onChange:function(v){ setSeqSettings(function(s){ var n=Object.assign({},s); n.envAmp=Object.assign({},s.envAmp); n.envAmp.s=v; if(seqRef.current)seqRef.current.envAmp=n.envAmp; return n; }); } }),
-        el(ADSRSlider, { key:"R", label:"R", value:seqSettings.envAmp.r, min:10, max:8000, onChange:function(v){ setSeqSettings(function(s){ var n=Object.assign({},s); n.envAmp=Object.assign({},s.envAmp); n.envAmp.r=v; if(seqRef.current)seqRef.current.envAmp=n.envAmp; return n; }); } })
+      // AHR — 3 vertical ribbon sliders, half width, left-aligned
+      el("div", { style:{ display:"flex", gap:6, width:"50%" } },
+        el(ADSRSlider, { key:"A", label:"A", value:seqSettings.envAmp.a, min:1,   max:500,  onChange:function(v){ setSeqSettings(function(s){ var n=Object.assign({},s); n.envAmp=Object.assign({},s.envAmp); n.envAmp.a=v; if(seqRef.current)seqRef.current.envAmp=n.envAmp; return n; }); } }),
+        el(ADSRSlider, { key:"H", label:"H", value:seqSettings.envAmp.h, min:0,   max:100,  onChange:function(v){ setSeqSettings(function(s){ var n=Object.assign({},s); n.envAmp=Object.assign({},s.envAmp); n.envAmp.h=v; if(seqRef.current)seqRef.current.envAmp=n.envAmp; return n; }); } }),
+        el(ADSRSlider, { key:"R", label:"R", value:seqSettings.envAmp.r, min:10,  max:1000, onChange:function(v){ setSeqSettings(function(s){ var n=Object.assign({},s); n.envAmp=Object.assign({},s.envAmp); n.envAmp.r=v; if(seqRef.current)seqRef.current.envAmp=n.envAmp; return n; }); } })
       )
     )
   );
