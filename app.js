@@ -415,7 +415,14 @@ function makeEngine1() {
     if (!eng._lpBase) {
       eng._lpBase = eng.ctx.createConstantSource();
       eng._lpBase.offset.value = 2000; // default
-      eng._lpBase.connect(eng.lowpassNode.frequency);
+      eng._lpFloor = eng.ctx.createWaveShaper();
+      eng._lpFloor.curve = makeFilterFloorCurve();
+      eng._lpFloor.oversample = "2x";
+      eng._lpFloorGain = eng.ctx.createGain();
+      eng._lpFloorGain.gain.value = 24000;
+      eng._lpBase.connect(eng._lpFloor);
+      eng._lpFloor.connect(eng._lpFloorGain);
+      eng._lpFloorGain.connect(eng.lowpassNode.frequency);
       eng._lpBase.start();
     }
     eng._lfoNode = eng.ctx.createOscillator();
@@ -424,19 +431,23 @@ function makeEngine1() {
     eng._lfoGain = eng.ctx.createGain();
     eng._lfoGain.gain.value = 0;
     eng._lfoNode.connect(eng._lfoGain);
-    eng._lfoGain.connect(eng.lowpassNode.frequency); // offset summed with base
+    // Connect to _lpBase.offset so ribbon and LFO both target same node
+    if (eng._lpBase) {
+      eng._lfoGain.connect(eng._lpBase.offset);
+    } else {
+      eng._lfoGain.connect(eng.lowpassNode.frequency);
+    }
     eng._lfoNode.start();
   };
 
   eng.setLpFreq = function(freq) {
-    // Clamp to safe range — prevents negative frequency when LFO pushes below 0
     var safeFreq = Math.max(20, Math.min(20000, freq));
     if (eng._lpBase) {
       eng._lpBase.offset.setTargetAtTime(safeFreq, eng.ctx.currentTime, 0.02);
     } else {
       eng.lowpassNode.frequency.setTargetAtTime(safeFreq, eng.ctx.currentTime, 0.02);
     }
-    eng._lpBaseValue = safeFreq; // track for LFO depth clamping
+    eng._lpBaseValue = safeFreq;
   };
 
   eng.updateFromCamera = function(luma, hue, chromaContrast, slices) {
@@ -1121,7 +1132,14 @@ function makeEngine2() {
     if (!eng._lpBase) {
       eng._lpBase = eng.ctx.createConstantSource();
       eng._lpBase.offset.value = 2000;
-      eng._lpBase.connect(eng.lowpassNode.frequency);
+      eng._lpFloor = eng.ctx.createWaveShaper();
+      eng._lpFloor.curve = makeFilterFloorCurve();
+      eng._lpFloor.oversample = "2x";
+      eng._lpFloorGain = eng.ctx.createGain();
+      eng._lpFloorGain.gain.value = 24000;
+      eng._lpBase.connect(eng._lpFloor);
+      eng._lpFloor.connect(eng._lpFloorGain);
+      eng._lpFloorGain.connect(eng.lowpassNode.frequency);
       eng._lpBase.start();
     }
     eng._lfoNode = eng.ctx.createOscillator();
@@ -1130,7 +1148,11 @@ function makeEngine2() {
     eng._lfoGain = eng.ctx.createGain();
     eng._lfoGain.gain.value = 0;
     eng._lfoNode.connect(eng._lfoGain);
-    eng._lfoGain.connect(eng.lowpassNode.frequency);
+    if (eng._lpBase) {
+      eng._lfoGain.connect(eng._lpBase.offset);
+    } else {
+      eng._lfoGain.connect(eng.lowpassNode.frequency);
+    }
     eng._lfoNode.start();
   };
 
@@ -1578,40 +1600,31 @@ function makeSequencer(getEngine) {
   seq._scheduleStep = function(stepIndex, time) {
     var eng = getEngine();
     if (!eng || !eng.ctx) return;
-    var steps    = seq.steps;
-    var gateOn   = seq.pattern[stepIndex % steps];
-    var nextOn   = seq.pattern[(stepIndex + 1) % steps]; // lookahead
-    var stepDur  = seq.stepDuration();
+    var steps   = seq.steps;
+    var gateOn  = seq.pattern[stepIndex % steps];
+    var stepDur = seq.stepDuration();
 
     if (seq._ampTarget) {
       var g = seq._ampTarget;
       if (gateOn) {
-        // Attack: ramp from 0 to 1
-        var a = Math.max(0.002, seq.envAmp.a / 1000);
-        // Hold: % of step duration the gate stays fully open
-        var holdSec = stepDur * Math.max(0, Math.min(1, seq.envAmp.h / 100));
-        // Release: only schedule if next step is OFF (no overlap)
-        var r = Math.max(0.01, Math.min(1.0, seq.envAmp.r / 1000));
+        var a        = Math.max(0.002, seq.envAmp.a / 1000);
+        var holdSec  = stepDur * Math.max(0, Math.min(1, seq.envAmp.h / 100));
+        var r        = Math.max(0.01, Math.min(1.0, seq.envAmp.r / 1000));
+        var releaseStart = time + a + holdSec;
 
+        // Always trigger full AHR — consecutive steps pump/breathe based on A time
+        // Short A = audible pumping between steps, long A = smooth legato
         g.cancelScheduledValues(time);
-        // Soft start — tiny exponential ramp prevents click
-        g.setTargetAtTime(0, time, 0.001);
-        g.linearRampToValueAtTime(1.0, time + a);       // attack to full
-
-        if (!nextOn) {
-          // Next step is off — schedule release after hold
-          var releaseStart = time + a + holdSec;
-          g.setValueAtTime(1.0, releaseStart);
-          g.linearRampToValueAtTime(0, releaseStart + r);
-        }
-        // If nextOn: stay open — next step's attack will retrigger if needed
-        // or simply hold through (no release scheduled)
+        g.setTargetAtTime(0, time, 0.001);              // soft zero at gate time
+        g.linearRampToValueAtTime(1.0, time + a);       // attack
+        g.setValueAtTime(1.0, releaseStart);            // hold
+        g.linearRampToValueAtTime(0, releaseStart + r); // release
 
       } else {
-        // Gate OFF — release with exponential tail (no hard cut)
+        // Gate OFF step — ensure silence
         var r = Math.max(0.01, Math.min(1.0, seq.envAmp.r / 1000));
         g.cancelScheduledValues(time);
-        g.setTargetAtTime(0, time, r / 3); // exponential — sounds natural
+        g.setTargetAtTime(0, time, r / 3);
       }
     }
   };
@@ -1728,6 +1741,33 @@ function ADSRSlider(props) {
 // Division time multipliers (fraction of one beat)
 var DIV_MULTS = {"1/16":0.25,"1/8":0.5,"1/4":1,"1/2":2,"1/1":4,
   "1/16T":0.1667,"1/8T":0.3333,"1/4T":0.6667,"1/8.":0.75,"1/4.":1.5};
+
+
+// Build soft-floor WaveShaper curve for filter frequency
+// Smoothly prevents negative/zero frequency — approaches 20Hz asymptotically
+function makeFilterFloorCurve() {
+  var n = 4096;
+  var curve = new Float32Array(n);
+  var minHz = 20, maxHz = 18000;
+  for (var i = 0; i < n; i++) {
+    // Input maps -24000..+24000 (Web Audio AudioParam range)
+    var x = (i / (n - 1)) * 48000 - 24000;
+    // Soft-clamp: use exponential approach near floor
+    var clamped;
+    if (x <= minHz) {
+      // Below floor: asymptotic approach — never reaches 0
+      // e^(x/200) * 20 gives smooth curve that approaches 20 from below
+      clamped = minHz * Math.exp(Math.max(-10, (x - minHz) / 200));
+    } else if (x >= maxHz) {
+      clamped = maxHz;
+    } else {
+      clamped = x;
+    }
+    // Normalize to -1..+1 for WaveShaper
+    curve[i] = (clamped / 24000);
+  }
+  return curve;
+}
 
 // ── App ───────────────────────────────────────────────────────────────────────
 function App() {
