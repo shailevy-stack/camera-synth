@@ -1,5 +1,5 @@
 // Camera Synth — v3.0.0
-var VERSION = "3.5.4";
+var VERSION = "3.6.0";
 
 var useState    = React.useState;
 var useEffect   = React.useEffect;
@@ -231,17 +231,55 @@ function makeEngine1() {
       eng.analyserNode = eng.ctx.createAnalyser();
       eng.analyserNode.fftSize = 1024;
 
-      // Signal chain: lowpass → preReverbGain → seqAmpGain → dry/reverb → master
+      // ── Tape delay (ping-pong) ──────────────────────────────────────────────────
+      // delayL → panL ↘
+      //               merge → reverbNode
+      // delayR → panR ↗
+      // feedback: delayR → fbGain → delayL.input (cross-ping-pong)
+      eng.delayL    = eng.ctx.createDelay(4.0);
+      eng.delayR    = eng.ctx.createDelay(4.0);
+      eng.delayL.delayTime.value = 0.25;
+      eng.delayR.delayTime.value = 0.25;
+      eng.fbGain    = eng.ctx.createGain();   // feedback amount
+      eng.fbGain.gain.value = 0;
+      eng.delayWetL = eng.ctx.createStereoPanner(); // ping-pong width
+      eng.delayWetR = eng.ctx.createStereoPanner();
+      eng.delayWetL.pan.value = -1;
+      eng.delayWetR.pan.value =  1;
+      eng.delayWet  = eng.ctx.createGain();   // wet mix
+      eng.delayWet.gain.value = 0;
+      eng.delayDry  = eng.ctx.createGain();   // dry pass-through
+      eng.delayDry.gain.value = 1;
+
+      // Ping-pong routing:
+      // input → delayL → panL → delayWet
+      // input → delayR → panR → delayWet (offset by one step = ping-pong)
+      // delayL output → delayR input (cross-feed for ping-pong)
+      // delayR output → fbGain → delayL input (feedback loop)
+      eng.seqAmpGain.connect(eng.delayDry);
+      eng.seqAmpGain.connect(eng.delayL);
+      eng.delayL.connect(eng.delayWetL);
+      eng.delayL.connect(eng.delayR);       // ping feeds pong
+      eng.delayR.connect(eng.delayWetR);
+      eng.delayR.connect(eng.fbGain);
+      eng.fbGain.connect(eng.delayL);       // feedback loop
+      eng.delayWetL.connect(eng.delayWet);
+      eng.delayWetR.connect(eng.delayWet);
+
+      // Signal chain: lowpass → preReverbGain → seqAmpGain → dry+delay → reverb → master
       eng.lowpassNode.connect(eng.preReverbGain);
       eng.preReverbGain.connect(eng.seqAmpGain);
-      eng.seqAmpGain.connect(eng.dryGain);
-      eng.seqAmpGain.connect(eng.reverbNode);
+      eng.delayDry.connect(eng.reverbNode);
+      eng.delayWet.connect(eng.reverbNode);
       eng.reverbNode.connect(eng.reverbGain);
-      eng.dryGain.connect(eng.masterGain);
+      eng.dryGain.connect(eng.masterGain);   // dryGain now = reverb dry
       eng.reverbGain.connect(eng.masterGain);
       eng.masterGain.connect(eng.limiterNode);
       eng.limiterNode.connect(eng.analyserNode);
       eng.analyserNode.connect(eng.ctx.destination);
+
+      // Wire reverb wet/dry from seqAmpGain (not delayDry — reverb gets full signal)
+      eng.seqAmpGain.connect(eng.dryGain);
 
       eng.spawnVoices();
     } catch(e) { console.error("[E1] init failed", e); }
@@ -737,10 +775,31 @@ function makeEngine2() {
 
       eng.analyserNode = eng.ctx.createAnalyser(); eng.analyserNode.fftSize = 1024;
 
+      eng.delayL    = eng.ctx.createDelay(4.0);
+      eng.delayR    = eng.ctx.createDelay(4.0);
+      eng.delayL.delayTime.value = 0.25;
+      eng.delayR.delayTime.value = 0.25;
+      eng.fbGain    = eng.ctx.createGain(); eng.fbGain.gain.value = 0;
+      eng.delayWetL = eng.ctx.createStereoPanner(); eng.delayWetL.pan.value = -1;
+      eng.delayWetR = eng.ctx.createStereoPanner(); eng.delayWetR.pan.value =  1;
+      eng.delayWet  = eng.ctx.createGain(); eng.delayWet.gain.value = 0;
+      eng.delayDry  = eng.ctx.createGain(); eng.delayDry.gain.value = 1;
+
+      eng.seqAmpGain.connect(eng.delayDry);
+      eng.seqAmpGain.connect(eng.delayL);
+      eng.delayL.connect(eng.delayWetL);
+      eng.delayL.connect(eng.delayR);
+      eng.delayR.connect(eng.delayWetR);
+      eng.delayR.connect(eng.fbGain);
+      eng.fbGain.connect(eng.delayL);
+      eng.delayWetL.connect(eng.delayWet);
+      eng.delayWetR.connect(eng.delayWet);
+
       eng.lowpassNode.connect(eng.preReverbGain);
       eng.preReverbGain.connect(eng.seqAmpGain);
       eng.seqAmpGain.connect(eng.dryGain);
-      eng.seqAmpGain.connect(eng.reverbNode);
+      eng.delayDry.connect(eng.reverbNode);
+      eng.delayWet.connect(eng.reverbNode);
       eng.reverbNode.connect(eng.reverbGain);
       eng.dryGain.connect(eng.masterGain);
       eng.reverbGain.connect(eng.masterGain);
@@ -1627,6 +1686,15 @@ function App() {
   var rsc = useState(true);   var showScope     = rsc[0], setShowScope    = rsc[1];
   var rst = useState(false);  var showSettings  = rst[0], setShowSettings = rst[1];
   var radv= useState(false);  var showAdv       = radv[0],setShowAdv      = radv[1];
+  var rfx = useState(false);  var showFx        = rfx[0], setShowFx       = rfx[1];
+  var rfxs= useState({
+    delaySync: true, delayDiv: "1/8", delayTime: 250,
+    feedback: 0, width: 0, delayMix: 0,
+    reverbMix: 0.3, reverbDecay: 70,
+    divMenuOpen: false,
+  });
+  var fxSettings = rfxs[0], setFxSettings = rfxs[1];
+  function setFx(k,v){ setFxSettings(function(s){var n=Object.assign({},s);n[k]=v;return n;}); }
   var rf  = useState("environment"); var facingMode = rf[0], setFacingMode = rf[1];
   var rx  = useState(0.5);    var ribbonX       = rx[0],  setRibbonX      = rx[1];
   var rlp = useState(0.7);    var lpX           = rlp[0], setLpX          = rlp[1]; // 0=closed 1=open
@@ -1869,7 +1937,6 @@ function App() {
     function draw() {
       if(!alive)return;
       rafRef.current=requestAnimationFrame(draw);
-      if(!showScope)return;
       var canvas=scopeRef.current;
       if(!canvas)return;
       var ctx=canvas.getContext("2d"),W=canvas.width,H=canvas.height;
@@ -1888,7 +1955,7 @@ function App() {
     }
     rafRef.current=requestAnimationFrame(draw);
     return function(){alive=false;cancelAnimationFrame(rafRef.current);};
-  }, [showScope,soundOn]);
+  }, [soundOn]);
 
   var handleSound = useCallback(function() {
     var eng=synthRef.current;
@@ -1969,6 +2036,50 @@ function App() {
     loopFramesRef.current=[];eng.startLoopRecord();setLoopCapturing(true);
   };
 
+  // Division multipliers (as fraction of one beat = 60/BPM seconds)
+  var DIV_MULTS = {"1/16":0.25,"1/8":0.5,"1/4":1,"1/2":2,"1/1":4,
+    "1/16T":0.1667,"1/8T":0.3333,"1/4T":0.6667,"1/8.":0.75,"1/4.":1.5};
+
+  var applyFxToEngine = useCallback(function(fx) {
+    var eng = synthRef.current;
+    if (!eng || !eng.ctx || !eng.delayL) return;
+    var t = eng.ctx.currentTime;
+
+    // Delay time
+    var delayTimeSec;
+    if (fx.delaySync) {
+      var bpm = seqSettings.bpm || 120;
+      var beat = 60 / bpm;
+      delayTimeSec = beat * (DIV_MULTS[fx.delayDiv] || 0.5);
+    } else {
+      delayTimeSec = (fx.delayTime || 250) / 1000;
+    }
+    // Ping-pong: R delay is offset by half the delay time for alternation
+    eng.delayL.delayTime.setTargetAtTime(delayTimeSec, t, 0.05);
+    eng.delayR.delayTime.setTargetAtTime(delayTimeSec, t, 0.05);
+
+    // Feedback (cap at 0.85 to prevent runaway)
+    eng.fbGain.gain.setTargetAtTime(Math.min(0.85, (fx.feedback||0)/100), t, 0.05);
+
+    // Delay wet mix
+    eng.delayWet.gain.setTargetAtTime((fx.delayMix||0)/100, t, 0.05);
+    eng.delayDry.gain.setTargetAtTime(1 - (fx.delayMix||0)/100, t, 0.05);
+
+    // Width: 0% = both center, 100% = hard L/R
+    var w = (fx.width||0) / 100;
+    eng.delayWetL.pan.setTargetAtTime(-w, t, 0.05);
+    eng.delayWetR.pan.setTargetAtTime( w, t, 0.05);
+
+    // Reverb mix
+    eng.reverbGain.gain.setTargetAtTime((fx.reverbMix||0.3), t, 0.1);
+    eng.dryGain.gain.setTargetAtTime(1 - (fx.reverbMix||0.3), t, 0.1);
+  }, [seqSettings.bpm]);
+
+  // Apply FX whenever settings change
+  useEffect(function(){
+    applyFxToEngine(fxSettings);
+  }, [fxSettings, applyFxToEngine]);
+
   var handleCamToggle = useCallback(function(){
     setCamOn(function(on){
       var next=!on;
@@ -2017,7 +2128,7 @@ function App() {
     // Camera
     el("div", { style:{ position:"relative", background:"#050505", overflow:"hidden", borderTop:"1px solid #141414", borderBottom:"1px solid #141414", flexShrink:0, height:"42vh" } },
       el("video", { ref:videoRef, playsInline:true, muted:true, autoPlay:true, controls:false, style:{ width:"100%", height:"100%", objectFit:"cover", display:"block", transform:facingMode==="user"?"scaleX(-1)":"none" } }),
-      showScope && el("canvas", { ref:scopeRef, width:480, height:80, style:{ position:"absolute", bottom:0, left:0, width:"100%", height:60, pointerEvents:"none" } }),
+      el("canvas", { ref:scopeRef, width:480, height:80, style:{ position:"absolute", bottom:0, left:0, width:"100%", height:60, pointerEvents:"none" } }),
       frameData && el("div", { style:{ position:"absolute", top:8, left:8, fontSize:8, color:"rgba(127,255,106,0.35)", letterSpacing:"0.1em", lineHeight:2, pointerEvents:"none" } },
         el("div",null,"LMA "+(frameData.luma*100).toFixed(1)),
         el("div",null,"HUE "+Math.round(frameData.hue*360)+"\xb0"),
@@ -2102,10 +2213,10 @@ function App() {
       el("button", { className:cx("cb",loopCapturing&&"blink",looping&&"on"), onClick:handleLoopPress, style:{ flex:1 } }, loopCapturing?"\u25cf LOOP":looping?"\u21ba LOOP":"\u25cb LOOP"),
       el("button", { className:cx("cb",recording&&"rec"), onClick:handleRecord, style:{ flex:1 } }, recording?"\u25cf REC":"\u25cb REC"),
       el("button", { className:cx("cb",camOn&&"on"), onClick:handleCamToggle, style:{ flex:1 } }, "\u25a3 CAM"),
-      el("button", { className:cx("cb",showScope&&"on"), onClick:function(){setShowScope(function(s){return !s;});}, style:{ flex:1 } }, "\u223f OSC"),
+      el("button", { className:cx("cb",showFx&&"on"), onClick:function(){setShowFx(function(s){return !s;});setShowSettings(false);setShowSeq(false);}, style:{ flex:1, borderColor:showFx?"#ff9944":"", color:showFx?"#ff9944":"" } }, "FX"),
       el("button", { className:cx("cb",showSeq&&"on"), onClick:function(){
         setShowSeq(function(s){return !s;});
-        setShowSettings(false);
+        setShowSettings(false);setShowFx(false);
         // sync seq settings on open
         var sq=seqRef.current;
         if(sq){sq.bpm=seqSettings.bpm;sq.steps=seqSettings.steps;sq.pattern=seqSettings.pattern.slice();}
@@ -2201,6 +2312,130 @@ function App() {
           setSettings2(function(s){var n=Object.assign({},s);n.glide=v;return n;});
           var eng=eng2Ref.current;if(eng)eng.settings.glide=v;
         }})
+      )
+    ),
+
+
+    // ── FX inline drawer ──────────────────────────────────────────────────────
+    showFx && el("div", { style:{ padding:"8px 14px 10px", borderTop:"1px solid #141414", background:"#0c0c0d", flexShrink:0, position:"relative" } },
+
+      // Signal flow hint
+      el("div", { style:{ display:"flex", alignItems:"center", gap:4, marginBottom:8 } },
+        ["synth","delay","reverb","out"].map(function(n,i,arr){
+          return [
+            el("span",{key:n,style:{fontSize:7,color:"#2a2a2a",letterSpacing:"0.1em",textTransform:"uppercase",border:"1px solid #1a1a1a",padding:"1px 4px",borderRadius:2}},n),
+            i<arr.length-1 && el("span",{key:n+"a",style:{fontSize:7,color:"#1a1a1a"}},"→")
+          ];
+        })
+      ),
+
+      // ── DELAY ──────────────────────────────────────────────────────────────
+      el("div", { style:{ marginBottom:8, paddingBottom:8, borderBottom:"1px solid #141414" } },
+        el("div", { style:{ fontSize:7, color:"#333", letterSpacing:"0.2em", textTransform:"uppercase", marginBottom:5 } }, "Delay"),
+
+        // Sync/Free + division picker + time display
+        el("div", { style:{ display:"flex", alignItems:"center", gap:6, marginBottom:6 } },
+          el("div", { style:{ display:"flex", gap:2 } },
+            el("button", { className:cx("sg", fxSettings.delaySync&&"sel"), onClick:function(){ setFx("delaySync",true); } }, "sync"),
+            el("button", { className:cx("sg", !fxSettings.delaySync&&"sel"), onClick:function(){ setFx("delaySync",false); } }, "free")
+          ),
+
+          // Sync: show division button (opens contextual menu)
+          fxSettings.delaySync && el("div", { style:{ position:"relative", flex:1 } },
+            el("button", { className:"sg sel",
+              onClick:function(){ setFx("divMenuOpen", !fxSettings.divMenuOpen); },
+              style:{ width:"100%", textAlign:"center" }
+            }, fxSettings.delayDiv+" ▾"),
+
+            // Contextual menu
+            fxSettings.divMenuOpen && el("div", { style:{
+              position:"absolute", bottom:"100%", left:0, right:0, zIndex:20,
+              background:"#0e0e10", border:"1px solid #2a2a2a", borderRadius:4,
+              padding:4, marginBottom:3
+            } },
+              el("div", { style:{ fontSize:7, color:"#333", letterSpacing:"0.1em", marginBottom:3, paddingLeft:2 } }, "STRAIGHT"),
+              el("div", { style:{ display:"flex", gap:2, marginBottom:4 } },
+                ["1/16","1/8","1/4","1/2","1/1"].map(function(d){
+                  return el("button",{ key:d, className:cx("sg",fxSettings.delayDiv===d&&"sel"),
+                    onClick:function(){ setFx("delayDiv",d); setFx("divMenuOpen",false); },
+                    style:{flex:1,textAlign:"center",fontSize:8,padding:"3px 0"}
+                  }, d);
+                })
+              ),
+              el("div", { style:{ fontSize:7, color:"#333", letterSpacing:"0.1em", marginBottom:3, paddingLeft:2 } }, "DOTTED"),
+              el("div", { style:{ display:"flex", gap:2, marginBottom:4 } },
+                ["1/8.","1/4."].map(function(d){
+                  return el("button",{ key:d, className:cx("sg",fxSettings.delayDiv===d&&"sel"),
+                    onClick:function(){ setFx("delayDiv",d); setFx("divMenuOpen",false); },
+                    style:{flex:1,textAlign:"center",fontSize:8,padding:"3px 0"}
+                  }, d);
+                })
+              ),
+              el("div", { style:{ fontSize:7, color:"#333", letterSpacing:"0.1em", marginBottom:3, paddingLeft:2 } }, "TRIPLET"),
+              el("div", { style:{ display:"flex", gap:2 } },
+                ["1/16T","1/8T","1/4T"].map(function(d){
+                  return el("button",{ key:d, className:cx("sg",fxSettings.delayDiv===d&&"sel"),
+                    onClick:function(){ setFx("delayDiv",d); setFx("divMenuOpen",false); },
+                    style:{flex:1,textAlign:"center",fontSize:8,padding:"3px 0"}
+                  }, d);
+                })
+              )
+            )
+          ),
+
+          // Free: time slider
+          !fxSettings.delaySync && el("input", { type:"range", min:10, max:2000, value:fxSettings.delayTime,
+            style:{ flex:1 },
+            onChange:function(e){ setFx("delayTime",+e.target.value); }
+          }),
+
+          // Time readout
+          el("span", { style:{ fontSize:11, color:"#7fff6a", minWidth:44, textAlign:"right", letterSpacing:"0.04em" } },
+            fxSettings.delaySync
+              ? Math.round((60/seqSettings.bpm)*(DIV_MULTS[fxSettings.delayDiv]||0.5)*1000)+"ms"
+              : fxSettings.delayTime+"ms"
+          )
+        ),
+
+        // Feedback + Width + Mix — 3 sliders
+        el("div", { style:{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:8 } },
+          [
+            { key:"feedback", label:"Feedback", value:fxSettings.feedback, min:0, max:85, fmt:function(v){return v+"%";} },
+            { key:"width",    label:"Width",    value:fxSettings.width,    min:0, max:100, fmt:function(v){return v+"%";}, color:"#6bb5ff" },
+            { key:"delayMix", label:"Mix",      value:fxSettings.delayMix, min:0, max:100, fmt:function(v){return v+"%";} },
+          ].map(function(sl){
+            return el("div",{key:sl.key,style:{display:"flex",flexDirection:"column",gap:2}},
+              el("div",{style:{display:"flex",justifyContent:"space-between"}},
+                el("span",{style:{fontSize:7,color:sl.color||"#444",letterSpacing:"0.1em",textTransform:"uppercase"}},sl.label),
+                el("span",{style:{fontSize:8,color:sl.color||"#7fff6a"}},sl.fmt(sl.value))
+              ),
+              el("input",{type:"range",min:sl.min,max:sl.max,value:sl.value,
+                onChange:function(e){setFx(sl.key,+e.target.value);}
+              })
+            );
+          })
+        )
+      ),
+
+      // ── REVERB ──────────────────────────────────────────────────────────────
+      el("div", {},
+        el("div", { style:{ fontSize:7, color:"#333", letterSpacing:"0.2em", textTransform:"uppercase", marginBottom:5 } }, "Reverb"),
+        el("div", { style:{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 } },
+          [
+            { key:"reverbMix",   label:"Mix",   value:Math.round(fxSettings.reverbMix*100), min:0, max:100, fmt:function(v){return v+"%";},
+              onChange:function(e){ setFx("reverbMix",e.target.value/100); } },
+            { key:"reverbDecay", label:"Decay", value:fxSettings.reverbDecay, min:0, max:100, fmt:function(v){return (0.5+v/100*7).toFixed(1)+"s";},
+              onChange:function(e){ setFx("reverbDecay",+e.target.value); } },
+          ].map(function(sl){
+            return el("div",{key:sl.key,style:{display:"flex",flexDirection:"column",gap:2}},
+              el("div",{style:{display:"flex",justifyContent:"space-between"}},
+                el("span",{style:{fontSize:7,color:"#444",letterSpacing:"0.1em",textTransform:"uppercase"}},sl.label),
+                el("span",{style:{fontSize:8,color:"#7fff6a"}},sl.fmt(sl.value))
+              ),
+              el("input",{type:"range",min:sl.min,max:sl.max,value:sl.value,onChange:sl.onChange})
+            );
+          })
+        )
       )
     ),
 
