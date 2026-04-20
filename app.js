@@ -1,5 +1,5 @@
 // Camera Synth — v3.0.0
-var VERSION = "3.6.1";
+var VERSION = "3.6.2";
 
 var useState    = React.useState;
 var useEffect   = React.useEffect;
@@ -256,7 +256,8 @@ function makeEngine1() {
       // input → delayR → panR → delayWet (offset by one step = ping-pong)
       // delayL output → delayR input (cross-feed for ping-pong)
       // delayR output → fbGain → delayL input (feedback loop)
-      eng.seqAmpGain.connect(eng.delayDry);
+      // seqAmpGain → delayL (for delay processing)
+      // seqAmpGain → delayDry connected in chain below
       eng.seqAmpGain.connect(eng.delayL);
       eng.delayL.connect(eng.delayWetL);
       eng.delayL.connect(eng.delayR);       // ping feeds pong
@@ -266,20 +267,26 @@ function makeEngine1() {
       eng.delayWetL.connect(eng.delayWet);
       eng.delayWetR.connect(eng.delayWet);
 
-      // Signal chain: lowpass → preReverbGain → seqAmpGain → dry+delay → reverb → master
+      // Signal chain:
+      // seqAmpGain → delayDry ─┬→ reverbNode → reverbGain (wet) → master
+      //            → delayWet ─┘           └──→ dryGain   (dry) → master
+      // delayDry: undelayed signal (scaled by 1-delayMix)
+      // delayWet: delayed signal  (scaled by delayMix)
+      // Both feed reverb. Reverb dry = pass-through. Reverb wet = convolution tail.
       eng.lowpassNode.connect(eng.preReverbGain);
       eng.preReverbGain.connect(eng.seqAmpGain);
+      // Delay feeds reverb
+      eng.seqAmpGain.connect(eng.delayDry);
       eng.delayDry.connect(eng.reverbNode);
       eng.delayWet.connect(eng.reverbNode);
-      eng.reverbNode.connect(eng.reverbGain);
-      eng.dryGain.connect(eng.masterGain);   // dryGain now = reverb dry
+      // Reverb splits into dry (pass-through) and wet (convolution)
+      eng.reverbNode.connect(eng.reverbGain);  // wet path
+      eng.reverbNode.connect(eng.dryGain);     // dry pass-through path
       eng.reverbGain.connect(eng.masterGain);
+      eng.dryGain.connect(eng.masterGain);
       eng.masterGain.connect(eng.limiterNode);
       eng.limiterNode.connect(eng.analyserNode);
       eng.analyserNode.connect(eng.ctx.destination);
-
-      // Wire reverb wet/dry from seqAmpGain (not delayDry — reverb gets full signal)
-      eng.seqAmpGain.connect(eng.dryGain);
 
       eng.spawnVoices();
     } catch(e) { console.error("[E1] init failed", e); }
@@ -800,7 +807,8 @@ function makeEngine2() {
       eng.delayWet  = eng.ctx.createGain(); eng.delayWet.gain.value = 0;
       eng.delayDry  = eng.ctx.createGain(); eng.delayDry.gain.value = 1;
 
-      eng.seqAmpGain.connect(eng.delayDry);
+      // seqAmpGain → delayL (for delay processing)
+      // seqAmpGain → delayDry connected in chain below
       eng.seqAmpGain.connect(eng.delayL);
       eng.delayL.connect(eng.delayWetL);
       eng.delayL.connect(eng.delayR);
@@ -812,12 +820,13 @@ function makeEngine2() {
 
       eng.lowpassNode.connect(eng.preReverbGain);
       eng.preReverbGain.connect(eng.seqAmpGain);
-      eng.seqAmpGain.connect(eng.dryGain);
+      eng.seqAmpGain.connect(eng.delayDry);
       eng.delayDry.connect(eng.reverbNode);
       eng.delayWet.connect(eng.reverbNode);
-      eng.reverbNode.connect(eng.reverbGain);
-      eng.dryGain.connect(eng.masterGain);
+      eng.reverbNode.connect(eng.reverbGain);  // wet
+      eng.reverbNode.connect(eng.dryGain);     // dry pass-through
       eng.reverbGain.connect(eng.masterGain);
+      eng.dryGain.connect(eng.masterGain);
       eng.masterGain.connect(eng.limiterNode);
       eng.limiterNode.connect(eng.analyserNode);
       eng.analyserNode.connect(eng.ctx.destination);
@@ -2095,20 +2104,22 @@ function App() {
     // Feedback — cap at 0.8 to prevent runaway
     eng.fbGain.gain.setTargetAtTime(Math.min(0.8, (fx.feedback||0)/100), t, 0.05);
 
-    // Delay wet/dry
-    var mix = (fx.delayMix||0) / 100;
-    eng.delayWet.gain.setTargetAtTime(mix, t, 0.05);
-    eng.delayDry.gain.setTargetAtTime(1, t, 0.05); // dry always passes through
+    // (delay mix set with reverb below)
 
     // Width: 0 = mono (both center), 100 = hard ping-pong (L=-1, R=+1)
     var w = (fx.width||0) / 100;
     eng.delayWetL.pan.setTargetAtTime(-w, t, 0.05);
     eng.delayWetR.pan.setTargetAtTime( w, t, 0.05);
 
-    // Reverb — dry signal always goes to reverb, wet gain controls amount
+    // Reverb — dry = pass-through (1-mix), wet = convolution tail (mix)
     var revMix = fx.reverbMix !== undefined ? fx.reverbMix : 0;
-    eng.reverbGain.gain.setTargetAtTime(revMix, t, 0.1);
-    eng.dryGain.gain.setTargetAtTime(1 - revMix, t, 0.1);
+    eng.reverbGain.gain.setTargetAtTime(revMix, t, 0.1);       // wet tail
+    eng.dryGain.gain.setTargetAtTime(1 - revMix, t, 0.1);     // pass-through
+
+    // Delay mix — scales undelayed vs delayed signal into reverb
+    var mix = (fx.delayMix||0) / 100;
+    eng.delayWet.gain.setTargetAtTime(mix, t, 0.05);
+    eng.delayDry.gain.setTargetAtTime(1 - mix, t, 0.05);
   }, [seqSettings.bpm]);
 
   // Apply FX whenever settings change
@@ -2340,16 +2351,6 @@ function App() {
 
     // ── FX inline drawer ──────────────────────────────────────────────────────
     showFx && el("div", { style:{ padding:"8px 14px 10px", borderTop:"1px solid #141414", background:"#0c0c0d", flexShrink:0, position:"relative" } },
-
-      // Signal flow hint
-      el("div", { style:{ display:"flex", alignItems:"center", gap:4, marginBottom:8 } },
-        ["synth","delay","reverb","out"].map(function(n,i,arr){
-          return [
-            el("span",{key:n,style:{fontSize:7,color:"#2a2a2a",letterSpacing:"0.1em",textTransform:"uppercase",border:"1px solid #1a1a1a",padding:"1px 4px",borderRadius:2}},n),
-            i<arr.length-1 && el("span",{key:n+"a",style:{fontSize:7,color:"#1a1a1a"}},"→")
-          ];
-        })
-      ),
 
       // ── DELAY ──────────────────────────────────────────────────────────────
       el("div", { style:{ marginBottom:8, paddingBottom:8, borderBottom:"1px solid #141414" } },
