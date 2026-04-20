@@ -1,5 +1,5 @@
 // Camera Synth — v3.0.0
-var VERSION = "3.6.3";
+var VERSION = "3.6.4";
 
 var useState    = React.useState;
 var useEffect   = React.useEffect;
@@ -268,20 +268,21 @@ function makeEngine1() {
       eng.delayWetR.connect(eng.delayWet);
 
       // Signal chain:
-      // seqAmpGain → delayDry ─┬→ reverbNode → reverbGain (wet) → master
-      //            → delayWet ─┘           └──→ dryGain   (dry) → master
-      // delayDry: undelayed signal (scaled by 1-delayMix)
-      // delayWet: delayed signal  (scaled by delayMix)
-      // Both feed reverb. Reverb dry = pass-through. Reverb wet = convolution tail.
+      // seqAmpGain → delayDry ─┬→ reverbInput ─→ reverbNode → reverbGain → master (wet)
+      //            → delayWet ─┘            └──→ dryGain              → master (dry bypass)
+      // reverbInput splits: one branch through convolver (wet), one bypasses it (dry)
+      // ConvolverNode only outputs convolved signal — dry must bypass it entirely
+      eng.reverbInput = eng.ctx.createGain();
+      eng.reverbInput.gain.value = 1.0;
+
       eng.lowpassNode.connect(eng.preReverbGain);
       eng.preReverbGain.connect(eng.seqAmpGain);
-      // Delay feeds reverb
       eng.seqAmpGain.connect(eng.delayDry);
-      eng.delayDry.connect(eng.reverbNode);
-      eng.delayWet.connect(eng.reverbNode);
-      // Reverb splits into dry (pass-through) and wet (convolution)
-      eng.reverbNode.connect(eng.reverbGain);  // wet path
-      eng.reverbNode.connect(eng.dryGain);     // dry pass-through path
+      eng.delayDry.connect(eng.reverbInput);
+      eng.delayWet.connect(eng.reverbInput);
+      eng.reverbInput.connect(eng.reverbNode);   // wet: through convolver
+      eng.reverbInput.connect(eng.dryGain);      // dry: bypass convolver
+      eng.reverbNode.connect(eng.reverbGain);
       eng.reverbGain.connect(eng.masterGain);
       eng.dryGain.connect(eng.masterGain);
       eng.masterGain.connect(eng.limiterNode);
@@ -824,11 +825,14 @@ function makeEngine2() {
 
       eng.lowpassNode.connect(eng.preReverbGain);
       eng.preReverbGain.connect(eng.seqAmpGain);
+      eng.reverbInput = eng.ctx.createGain();
+      eng.reverbInput.gain.value = 1.0;
       eng.seqAmpGain.connect(eng.delayDry);
-      eng.delayDry.connect(eng.reverbNode);
-      eng.delayWet.connect(eng.reverbNode);
-      eng.reverbNode.connect(eng.reverbGain);  // wet
-      eng.reverbNode.connect(eng.dryGain);     // dry pass-through
+      eng.delayDry.connect(eng.reverbInput);
+      eng.delayWet.connect(eng.reverbInput);
+      eng.reverbInput.connect(eng.reverbNode);  // wet: through convolver
+      eng.reverbInput.connect(eng.dryGain);     // dry: bypass convolver
+      eng.reverbNode.connect(eng.reverbGain);
       eng.reverbGain.connect(eng.masterGain);
       eng.dryGain.connect(eng.masterGain);
       eng.masterGain.connect(eng.limiterNode);
@@ -2102,13 +2106,13 @@ function App() {
       if (mult === undefined) mult = 0.5;
       delayTimeSec = beat * mult;
     } else {
-      delayTimeSec = Math.max(0.01, (fx.delayTime || 250) / 1000);
+      delayTimeSec = Math.max(0.001, (fx.delayTime || 250) / 1000);
     }
     eng.delayL.delayTime.setTargetAtTime(delayTimeSec, t, 0.02);
     eng.delayR.delayTime.setTargetAtTime(delayTimeSec, t, 0.02);
 
     // Feedback
-    eng.fbGain.gain.setTargetAtTime(Math.min(0.8, (fx.feedback||0)/100), t, 0.05);
+    eng.fbGain.gain.setTargetAtTime(Math.min(0.95, (fx.feedback||0)/100), t, 0.05);
 
     // Width: 0 = mono, 100 = hard ping-pong
     var w = (fx.width||0) / 100;
@@ -2411,7 +2415,7 @@ function App() {
           ),
 
           // Free: time slider
-          !fxSettings.delaySync && el("input", { type:"range", min:10, max:2000, value:fxSettings.delayTime,
+          !fxSettings.delaySync && el("input", { type:"range", min:1, max:3000, value:fxSettings.delayTime,
             style:{ flex:1 },
             onChange:function(e){ setFx("delayTime",+e.target.value); }
           }),
@@ -2427,7 +2431,7 @@ function App() {
         // Feedback + Width + Mix — 3 sliders
         el("div", { style:{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:8 } },
           [
-            { key:"feedback", label:"Feedback", value:fxSettings.feedback, min:0, max:85, fmt:function(v){return v+"%";} },
+            { key:"feedback", label:"Feedback", value:fxSettings.feedback, min:0, max:95, fmt:function(v){return v+"%";} },
             { key:"width",    label:"Width",    value:fxSettings.width,    min:0, max:100, fmt:function(v){return v+"%";}, color:"#6bb5ff" },
             { key:"delayMix", label:"Mix",      value:fxSettings.delayMix, min:0, max:100, fmt:function(v){return v+"%";} },
           ].map(function(sl){
