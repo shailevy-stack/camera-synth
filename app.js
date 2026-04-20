@@ -1,5 +1,5 @@
 // Camera Synth — v3.0.0
-var VERSION = "3.6.8";
+var VERSION = "3.6.9";
 
 var useState    = React.useState;
 var useEffect   = React.useEffect;
@@ -434,13 +434,28 @@ function makeEngine1() {
   };
 
   eng.setLpFreq = function(freq) {
-    var safeFreq = Math.max(20, Math.min(20000, freq));
+    var safeFreq = Math.max(30, Math.min(20000, freq));
     if (eng._lpBase) {
       eng._lpBase.offset.setTargetAtTime(safeFreq, eng.ctx.currentTime, 0.02);
     } else {
       eng.lowpassNode.frequency.setTargetAtTime(safeFreq, eng.ctx.currentTime, 0.02);
     }
     eng._lpBaseValue = safeFreq;
+    // Clamp any active LFO gains targeting filter so they can't push below 30Hz
+    var maxDepth = safeFreq - 30;
+    if (eng._lfoGain && eng._lfoGain.gain.value > maxDepth) {
+      eng._lfoGain.gain.setTargetAtTime(maxDepth, eng.ctx.currentTime, 0.02);
+    }
+    if (eng._lfoOffsets) {
+      Object.keys(eng._lfoOffsets).forEach(function(k) {
+        if (LFO_DESTS[k] === "lp.freq") {
+          var n = eng._lfoOffsets[k];
+          if (n && n.gain && n.gain.value > maxDepth) {
+            n.gain.setTargetAtTime(maxDepth, eng.ctx.currentTime, 0.02);
+          }
+        }
+      });
+    }
   };
 
   eng.updateFromCamera = function(luma, hue, chromaContrast, slices) {
@@ -466,7 +481,8 @@ function makeEngine1() {
     eng._prevHue = hue; eng._prevHueTime = now;
     eng._lfoNode.frequency.setTargetAtTime(0.05 + Math.min(hueDelta * 4, 1) * 1.95, t, 0.5);
     // Floor ensures LFO always audible; luma scales depth with scene brightness
-    eng._lfoGain.gain.setTargetAtTime((100 + chromaContrast * 500) * luma, t, 0.3);
+    var camLfoDepth = Math.min((100 + chromaContrast * 500) * luma, (eng._lpBaseValue||2000) - 30);
+    eng._lfoGain.gain.setTargetAtTime(Math.max(0, camLfoDepth), t, 0.3);
   };
 
   eng.setSoundOn = function(on) {
@@ -1143,13 +1159,27 @@ function makeEngine2() {
   };
 
   eng.setLpFreq = function(freq) {
-    var safeFreq = Math.max(20, Math.min(20000, freq));
+    var safeFreq = Math.max(30, Math.min(20000, freq));
     if (eng._lpBase) {
       eng._lpBase.offset.setTargetAtTime(safeFreq, eng.ctx.currentTime, 0.02);
     } else {
       eng.lowpassNode.frequency.setTargetAtTime(safeFreq, eng.ctx.currentTime, 0.02);
     }
     eng._lpBaseValue = safeFreq;
+    var maxDepth = safeFreq - 30;
+    if (eng._lfoGain && eng._lfoGain.gain.value > maxDepth) {
+      eng._lfoGain.gain.setTargetAtTime(maxDepth, eng.ctx.currentTime, 0.02);
+    }
+    if (eng._lfoOffsets) {
+      Object.keys(eng._lfoOffsets).forEach(function(k) {
+        if (LFO_DESTS[k] === "lp.freq") {
+          var n = eng._lfoOffsets[k];
+          if (n && n.gain && n.gain.value > maxDepth) {
+            n.gain.setTargetAtTime(maxDepth, eng.ctx.currentTime, 0.02);
+          }
+        }
+      });
+    }
   };
 
   eng.updateFromCamera = function(luma, hue, chromaContrast, slices, r, g, b) {
@@ -1729,6 +1759,44 @@ var DIV_MULTS = {"1/16":0.25,"1/8":0.5,"1/4":1,"1/2":2,"1/1":4,
   "1/16T":0.1667,"1/8T":0.3333,"1/4T":0.6667,"1/8.":0.75,"1/4.":1.5};
 
 
+
+// Generate reverb IR with variable decay length
+function makeReverbIR(ctx, decaySec) {
+  var sr  = ctx.sampleRate;
+  var len = Math.floor(sr * Math.max(0.1, decaySec));
+  var buf = ctx.createBuffer(2, len, sr);
+  var L   = buf.getChannelData(0);
+  var R   = buf.getChannelData(1);
+
+  // Early reflections
+  var erTimes = [0.011, 0.017, 0.023, 0.031, 0.041, 0.057, 0.073, 0.089];
+  var erGains  = [0.7,   0.5,   0.6,   0.4,   0.45,  0.35,  0.3,   0.25];
+  for (var e = 0; e < erTimes.length; e++) {
+    var idx = Math.floor(erTimes[e] * sr);
+    if (idx < len) {
+      L[idx] += erGains[e] * (e%2===0 ? 1 : -1);
+      var ridx = Math.min(len-1, idx + Math.floor(sr * 0.0007 * (e+1)));
+      R[ridx] += erGains[e] * (e%2===0 ? -1 : 1);
+    }
+  }
+  // Diffuse tail with variable decay
+  var preDelay = Math.floor(sr * 0.02);
+  var decayK   = 3.0 / decaySec; // steeper = shorter decay
+  for (var i = preDelay; i < len; i++) {
+    var t     = (i - preDelay) / (len - preDelay);
+    var decay = Math.pow(1 - t, 1.2) * Math.exp(-t * decayK);
+    L[i] += (Math.random() * 2 - 1) * decay;
+    R[i] += (Math.random() * 2 - 1) * decay;
+  }
+  // Gentle lowpass
+  var lpL = 0, lpR = 0;
+  for (var i = 0; i < len; i++) {
+    lpL = 0.85 * lpL + 0.15 * L[i]; L[i] = lpL;
+    lpR = 0.85 * lpR + 0.15 * R[i]; R[i] = lpR;
+  }
+  return buf;
+}
+
 // ── App ───────────────────────────────────────────────────────────────────────
 function App() {
   var videoRef        = useRef(null);
@@ -2142,6 +2210,16 @@ function App() {
     var revMix = fx.reverbMix !== undefined ? fx.reverbMix : 0;
     eng.reverbGain.gain.setTargetAtTime(revMix, t, 0.1);
     eng.dryGain.gain.setTargetAtTime(1 - revMix, t, 0.1);
+
+    // Reverb decay — regenerate IR if decay changed
+    var decaySec = 0.5 + ((fx.reverbDecay || 50) / 100) * 7; // 0.5s–7.5s
+    if (eng.reverbNode && Math.abs((eng._lastDecay||0) - decaySec) > 0.05) {
+      eng._lastDecay = decaySec;
+      try {
+        var newBuf = makeReverbIR(eng.ctx, decaySec);
+        eng.reverbNode.buffer = newBuf;
+      } catch(e) { console.warn("IR gen failed", e); }
+    }
   }
 
   // Apply FX whenever settings change
