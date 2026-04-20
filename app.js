@@ -1,5 +1,5 @@
 // Camera Synth — v3.0.0
-var VERSION = "3.6.0";
+var VERSION = "3.6.1";
 
 var useState    = React.useState;
 var useEffect   = React.useEffect;
@@ -215,9 +215,9 @@ function makeEngine1() {
       eng.seqAmpGain.gain.value = 1.0; // sequencer amp env drives this (1.0 = drone mode)
 
       eng.dryGain = eng.ctx.createGain();
-      eng.dryGain.gain.value = 1 - eng.settings.reverbMix;
+      eng.dryGain.gain.value = 1.0;  // FX drawer controls reverb mix
       eng.reverbGain = eng.ctx.createGain();
-      eng.reverbGain.gain.value = eng.settings.reverbMix;
+      eng.reverbGain.gain.value = 0;
       eng.masterGain = eng.ctx.createGain();
       eng.masterGain.gain.value = 0;
 
@@ -399,14 +399,29 @@ function makeEngine1() {
 
   eng.initLFO = function() {
     if (!eng.ctx || eng._lfoNode) return;
+    // Base frequency source — ribbon sets this, LFO offsets from it
+    if (!eng._lpBase) {
+      eng._lpBase = eng.ctx.createConstantSource();
+      eng._lpBase.offset.value = 2000; // default
+      eng._lpBase.connect(eng.lowpassNode.frequency);
+      eng._lpBase.start();
+    }
     eng._lfoNode = eng.ctx.createOscillator();
-    eng._lfoNode.setPeriodicWave(eng.makeLFOWave(0)); // sine
+    eng._lfoNode.setPeriodicWave(eng.makeLFOWave(0));
     eng._lfoNode.frequency.value = 0.2;
     eng._lfoGain = eng.ctx.createGain();
     eng._lfoGain.gain.value = 0;
     eng._lfoNode.connect(eng._lfoGain);
-    eng._lfoGain.connect(eng.lowpassNode.frequency);
+    eng._lfoGain.connect(eng.lowpassNode.frequency); // offset summed with base
     eng._lfoNode.start();
+  };
+
+  eng.setLpFreq = function(freq) {
+    if (eng._lpBase) {
+      eng._lpBase.offset.setTargetAtTime(freq, eng.ctx.currentTime, 0.05);
+    } else {
+      eng.lowpassNode.frequency.setTargetAtTime(freq, eng.ctx.currentTime, 0.05);
+    }
   };
 
   eng.updateFromCamera = function(luma, hue, chromaContrast, slices) {
@@ -765,8 +780,8 @@ function makeEngine2() {
       eng.seqAmpGain = eng.ctx.createGain();
       eng.seqAmpGain.gain.value = 1.0;
 
-      eng.dryGain = eng.ctx.createGain(); eng.dryGain.gain.value = 1 - eng.settings.reverbMix;
-      eng.reverbGain = eng.ctx.createGain(); eng.reverbGain.gain.value = eng.settings.reverbMix;
+      eng.dryGain = eng.ctx.createGain(); eng.dryGain.gain.value = 1.0;
+      eng.reverbGain = eng.ctx.createGain(); eng.reverbGain.gain.value = 0;
       eng.masterGain = eng.ctx.createGain(); eng.masterGain.gain.value = 0;
 
       eng.limiterNode = eng.ctx.createDynamicsCompressor();
@@ -1076,14 +1091,28 @@ function makeEngine2() {
 
   eng.initLFO = function() {
     if (!eng.ctx || eng._lfoNode) return;
+    if (!eng._lpBase) {
+      eng._lpBase = eng.ctx.createConstantSource();
+      eng._lpBase.offset.value = 2000;
+      eng._lpBase.connect(eng.lowpassNode.frequency);
+      eng._lpBase.start();
+    }
     eng._lfoNode = eng.ctx.createOscillator();
-    eng._lfoNode.setPeriodicWave(eng.makeLFOWave(0)); // sine
+    eng._lfoNode.setPeriodicWave(eng.makeLFOWave(0));
     eng._lfoNode.frequency.value = 0.2;
     eng._lfoGain = eng.ctx.createGain();
     eng._lfoGain.gain.value = 0;
     eng._lfoNode.connect(eng._lfoGain);
     eng._lfoGain.connect(eng.lowpassNode.frequency);
     eng._lfoNode.start();
+  };
+
+  eng.setLpFreq = function(freq) {
+    if (eng._lpBase) {
+      eng._lpBase.offset.setTargetAtTime(freq, eng.ctx.currentTime, 0.05);
+    } else {
+      eng.lowpassNode.frequency.setTargetAtTime(freq, eng.ctx.currentTime, 0.05);
+    }
   };
 
   eng.updateFromCamera = function(luma, hue, chromaContrast, slices, r, g, b) {
@@ -1532,7 +1561,8 @@ function makeSequencer(getEngine) {
         var r = Math.max(0.01, Math.min(1.0, seq.envAmp.r / 1000));
 
         g.cancelScheduledValues(time);
-        g.setValueAtTime(0, time);
+        // Soft start — tiny exponential ramp prevents click
+        g.setTargetAtTime(0, time, 0.001);
         g.linearRampToValueAtTime(1.0, time + a);       // attack to full
 
         if (!nextOn) {
@@ -1545,13 +1575,10 @@ function makeSequencer(getEngine) {
         // or simply hold through (no release scheduled)
 
       } else {
-        // Gate OFF — if previous step was ON, release is already scheduled
-        // Just ensure gain goes to 0 at this step time if somehow still open
-        // Use a very short ramp to avoid click (don't hard-cut)
+        // Gate OFF — release with exponential tail (no hard cut)
         var r = Math.max(0.01, Math.min(1.0, seq.envAmp.r / 1000));
         g.cancelScheduledValues(time);
-        g.setValueAtTime(g.value, time);
-        g.linearRampToValueAtTime(0, time + r);
+        g.setTargetAtTime(0, time, r / 3); // exponential — sounds natural
       }
     }
   };
@@ -1652,7 +1679,7 @@ function ADSRSlider(props) {
     el("div", {
       ref: sliderRef,
       onPointerDown: onPD, onPointerMove: onPM, onPointerUp: onPU, onPointerCancel: onPU,
-      style: { width: "100%", height: 75, position: "relative", borderRadius: 4, cursor: "ns-resize",
+      style: { width: "100%", height: 55, position: "relative", borderRadius: 4, cursor: "ns-resize",
         background: "linear-gradient(180deg,rgba(127,255,106,0.12) 0%,rgba(127,255,106,0.02) 100%)",
         border: "1px solid #1a2a1a", userSelect: "none", WebkitUserSelect: "none", touchAction: "none" }
     },
@@ -1992,7 +2019,12 @@ function App() {
     var node = eng.lowpassNode;
     if (!node) return;
     var t = eng.ctx.currentTime;
-    node.frequency.setTargetAtTime(freq, t, 0.05);
+    // Use setLpFreq so LFO offset is preserved (ConstantSourceNode base)
+    if (eng.setLpFreq) {
+      eng.setLpFreq(freq);
+    } else {
+      node.frequency.setTargetAtTime(freq, t, 0.05);
+    }
     // Q: 0.7 (flat/12dB-ish) when open, 2.0 (resonant/steeper) when closed
     node.Q.setTargetAtTime(0.7 + (1 - x) * 1.3, t, 0.05);
   }, []);
@@ -2045,34 +2077,38 @@ function App() {
     if (!eng || !eng.ctx || !eng.delayL) return;
     var t = eng.ctx.currentTime;
 
-    // Delay time
+    // Delay time — both L and R nodes use the same time
+    // Ping-pong alternation comes from the cross-feed routing, not different times
     var delayTimeSec;
     if (fx.delaySync) {
       var bpm = seqSettings.bpm || 120;
       var beat = 60 / bpm;
-      delayTimeSec = beat * (DIV_MULTS[fx.delayDiv] || 0.5);
+      var mult = DIV_MULTS[fx.delayDiv];
+      if (mult === undefined) mult = 0.5;
+      delayTimeSec = beat * mult;
     } else {
-      delayTimeSec = (fx.delayTime || 250) / 1000;
+      delayTimeSec = Math.max(0.01, (fx.delayTime || 250) / 1000);
     }
-    // Ping-pong: R delay is offset by half the delay time for alternation
-    eng.delayL.delayTime.setTargetAtTime(delayTimeSec, t, 0.05);
-    eng.delayR.delayTime.setTargetAtTime(delayTimeSec, t, 0.05);
+    eng.delayL.delayTime.setTargetAtTime(delayTimeSec, t, 0.02);
+    eng.delayR.delayTime.setTargetAtTime(delayTimeSec, t, 0.02);
 
-    // Feedback (cap at 0.85 to prevent runaway)
-    eng.fbGain.gain.setTargetAtTime(Math.min(0.85, (fx.feedback||0)/100), t, 0.05);
+    // Feedback — cap at 0.8 to prevent runaway
+    eng.fbGain.gain.setTargetAtTime(Math.min(0.8, (fx.feedback||0)/100), t, 0.05);
 
-    // Delay wet mix
-    eng.delayWet.gain.setTargetAtTime((fx.delayMix||0)/100, t, 0.05);
-    eng.delayDry.gain.setTargetAtTime(1 - (fx.delayMix||0)/100, t, 0.05);
+    // Delay wet/dry
+    var mix = (fx.delayMix||0) / 100;
+    eng.delayWet.gain.setTargetAtTime(mix, t, 0.05);
+    eng.delayDry.gain.setTargetAtTime(1, t, 0.05); // dry always passes through
 
-    // Width: 0% = both center, 100% = hard L/R
+    // Width: 0 = mono (both center), 100 = hard ping-pong (L=-1, R=+1)
     var w = (fx.width||0) / 100;
     eng.delayWetL.pan.setTargetAtTime(-w, t, 0.05);
     eng.delayWetR.pan.setTargetAtTime( w, t, 0.05);
 
-    // Reverb mix
-    eng.reverbGain.gain.setTargetAtTime((fx.reverbMix||0.3), t, 0.1);
-    eng.dryGain.gain.setTargetAtTime(1 - (fx.reverbMix||0.3), t, 0.1);
+    // Reverb — dry signal always goes to reverb, wet gain controls amount
+    var revMix = fx.reverbMix !== undefined ? fx.reverbMix : 0;
+    eng.reverbGain.gain.setTargetAtTime(revMix, t, 0.1);
+    eng.dryGain.gain.setTargetAtTime(1 - revMix, t, 0.1);
   }, [seqSettings.bpm]);
 
   // Apply FX whenever settings change
@@ -2260,16 +2296,8 @@ function App() {
           el("input",{type:"range",min:24,max:60,value:settings1.pitchMin,onChange:function(e){setSettings1(function(s){var n=Object.assign({},s);n.pitchMin=Math.min(+e.target.value,s.pitchMax-4);return n;});}}),
           el("input",{type:"range",min:48,max:84,value:settings1.pitchMax,onChange:function(e){setSettings1(function(s){var n=Object.assign({},s);n.pitchMax=Math.max(+e.target.value,s.pitchMin+4);return n;})}})
         )
-      ),
-      el("div",{className:"sr",style:{flexDirection:"column",alignItems:"flex-start",gap:3}},
-        el("div",{style:{display:"flex",width:"100%",justifyContent:"space-between"}},
-          el("label",null,"Reverb mix"),
-          el("span",{style:{fontSize:9,color:"#7fff6a"}},Math.round(settings1.reverbMix*100)+"%")
-        ),
-        el("input",{type:"range",min:0,max:100,value:Math.round(settings1.reverbMix*100),onChange:function(e){setSettings1(function(s){var n=Object.assign({},s);n.reverbMix=e.target.value/100;return n;})}})
       )
     ),
-
     // Settings drawer — engine 2
     showSettings && activeEngine==="2" && el("div", { style:{ padding:"8px 14px 14px", borderTop:"1px solid #141414", background:"#0c0c0d", overflowY:"auto", flexShrink:0, maxHeight:"42vh" } },
       el("div",{className:"sr",style:{paddingTop:3,paddingBottom:3}},
@@ -2295,13 +2323,7 @@ function App() {
           el("input",{type:"range",min:48,max:84,value:settings2.pitchMax,onChange:function(e){setSettings2(function(s){var n=Object.assign({},s);n.pitchMax=Math.max(+e.target.value,s.pitchMin+4);return n;})}})
         )
       ),
-      el("div",{className:"sr",style:{flexDirection:"column",alignItems:"flex-start",gap:3}},
-        el("div",{style:{display:"flex",width:"100%",justifyContent:"space-between"}},
-          el("label",null,"Reverb mix"),
-          el("span",{style:{fontSize:9,color:"#7fff6a"}},Math.round(settings2.reverbMix*100)+"%")
-        ),
-        el("input",{type:"range",min:0,max:100,value:Math.round(settings2.reverbMix*100),onChange:function(e){setSettings2(function(s){var n=Object.assign({},s);n.reverbMix=e.target.value/100;return n;})}})
-      ),
+
       el("div",{className:"sr",style:{flexDirection:"column",alignItems:"flex-start",gap:3}},
         el("div",{style:{display:"flex",width:"100%",justifyContent:"space-between"}},
           el("label",null,"Glide"),
@@ -2504,7 +2526,7 @@ function App() {
 
       // AHR — 3 vertical ribbon sliders, half width, left-aligned
       el("div", { style:{ display:"flex", gap:6, width:"50%" } },
-        el(ADSRSlider, { key:"A", label:"A", value:seqSettings.envAmp.a, min:1,   max:500,  onChange:function(v){ setSeqSettings(function(s){ var n=Object.assign({},s); n.envAmp=Object.assign({},s.envAmp); n.envAmp.a=v; if(seqRef.current)seqRef.current.envAmp=n.envAmp; return n; }); } }),
+        el(ADSRSlider, { key:"A", label:"A", value:seqSettings.envAmp.a, min:1,   max:200,  onChange:function(v){ setSeqSettings(function(s){ var n=Object.assign({},s); n.envAmp=Object.assign({},s.envAmp); n.envAmp.a=v; if(seqRef.current)seqRef.current.envAmp=n.envAmp; return n; }); } }),
         el(ADSRSlider, { key:"H", label:"H", value:seqSettings.envAmp.h, min:0,   max:100,  onChange:function(v){ setSeqSettings(function(s){ var n=Object.assign({},s); n.envAmp=Object.assign({},s.envAmp); n.envAmp.h=v; if(seqRef.current)seqRef.current.envAmp=n.envAmp; return n; }); } }),
         el(ADSRSlider, { key:"R", label:"R", value:seqSettings.envAmp.r, min:10,  max:1000, onChange:function(v){ setSeqSettings(function(s){ var n=Object.assign({},s); n.envAmp=Object.assign({},s.envAmp); n.envAmp.r=v; if(seqRef.current)seqRef.current.envAmp=n.envAmp; return n; }); } })
       )
