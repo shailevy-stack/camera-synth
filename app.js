@@ -1,5 +1,5 @@
 // Camera Synth — v3.0.0
-var VERSION = "3.6.4";
+var VERSION = "3.6.5";
 
 var useState    = React.useState;
 var useEffect   = React.useEffect;
@@ -258,9 +258,13 @@ function makeEngine1() {
       // delayR output → fbGain → delayL input (feedback loop)
       // seqAmpGain → delayL (for delay processing)
       // seqAmpGain → delayDry connected in chain below
+      // crossGain controls L→R feed (same as feedback, so at 0% = single echo only)
+      eng.crossGain = eng.ctx.createGain();
+      eng.crossGain.gain.value = 0;
       eng.seqAmpGain.connect(eng.delayL);
       eng.delayL.connect(eng.delayWetL);
-      eng.delayL.connect(eng.delayR);       // ping feeds pong
+      eng.delayL.connect(eng.crossGain);    // L→crossGain→R (scalable)
+      eng.crossGain.connect(eng.delayR);
       eng.delayR.connect(eng.delayWetR);
       eng.delayR.connect(eng.fbGain);
       eng.fbGain.connect(eng.delayL);       // feedback loop
@@ -425,11 +429,14 @@ function makeEngine1() {
   };
 
   eng.setLpFreq = function(freq) {
+    // Clamp to safe range — prevents negative frequency when LFO pushes below 0
+    var safeFreq = Math.max(20, Math.min(20000, freq));
     if (eng._lpBase) {
-      eng._lpBase.offset.setTargetAtTime(freq, eng.ctx.currentTime, 0.05);
+      eng._lpBase.offset.setTargetAtTime(safeFreq, eng.ctx.currentTime, 0.02);
     } else {
-      eng.lowpassNode.frequency.setTargetAtTime(freq, eng.ctx.currentTime, 0.05);
+      eng.lowpassNode.frequency.setTargetAtTime(safeFreq, eng.ctx.currentTime, 0.02);
     }
+    eng._lpBaseValue = safeFreq; // track for LFO depth clamping
   };
 
   eng.updateFromCamera = function(luma, hue, chromaContrast, slices) {
@@ -579,7 +586,7 @@ function makeEngine1() {
     var d = LFO_DESTS[dest];
     if (!d) return null;
     var param = null;
-    if (d === "lp.freq")     param = eng.lowpassNode ? eng.lowpassNode.frequency : null;
+    if (d === "lp.freq")     param = eng._lpBase ? eng._lpBase.offset : (eng.lowpassNode ? eng.lowpassNode.frequency : null);
     if (d === "lp.q")        param = eng.lowpassNode ? eng.lowpassNode.Q : null;
     if (d === "reverb.gain") param = eng.reverbGain  ? eng.reverbGain.gain : null;
     if (d === "master.gain") param = eng.preReverbGain ? eng.preReverbGain.gain : null;
@@ -814,9 +821,12 @@ function makeEngine2() {
 
       // seqAmpGain → delayL (for delay processing)
       // seqAmpGain → delayDry connected in chain below
+      eng.crossGain = eng.ctx.createGain();
+      eng.crossGain.gain.value = 0;
       eng.seqAmpGain.connect(eng.delayL);
       eng.delayL.connect(eng.delayWetL);
-      eng.delayL.connect(eng.delayR);
+      eng.delayL.connect(eng.crossGain);
+      eng.crossGain.connect(eng.delayR);
       eng.delayR.connect(eng.delayWetR);
       eng.delayR.connect(eng.fbGain);
       eng.fbGain.connect(eng.delayL);
@@ -1125,11 +1135,13 @@ function makeEngine2() {
   };
 
   eng.setLpFreq = function(freq) {
+    var safeFreq = Math.max(20, Math.min(20000, freq));
     if (eng._lpBase) {
-      eng._lpBase.offset.setTargetAtTime(freq, eng.ctx.currentTime, 0.05);
+      eng._lpBase.offset.setTargetAtTime(safeFreq, eng.ctx.currentTime, 0.02);
     } else {
-      eng.lowpassNode.frequency.setTargetAtTime(freq, eng.ctx.currentTime, 0.05);
+      eng.lowpassNode.frequency.setTargetAtTime(safeFreq, eng.ctx.currentTime, 0.02);
     }
+    eng._lpBaseValue = safeFreq;
   };
 
   eng.updateFromCamera = function(luma, hue, chromaContrast, slices, r, g, b) {
@@ -1281,7 +1293,7 @@ function makeEngine2() {
     var d = LFO_DESTS[dest];
     if (!d) return null;
     var param = null;
-    if (d === "lp.freq")     param = eng.lowpassNode ? eng.lowpassNode.frequency : null;
+    if (d === "lp.freq")     param = eng._lpBase ? eng._lpBase.offset : (eng.lowpassNode ? eng.lowpassNode.frequency : null);
     if (d === "lp.q")        param = eng.lowpassNode ? eng.lowpassNode.Q : null;
     if (d === "reverb.gain") param = eng.reverbGain  ? eng.reverbGain.gain : null;
     if (d === "master.gain") param = eng.preReverbGain ? eng.preReverbGain.gain : null;
@@ -2111,8 +2123,10 @@ function App() {
     eng.delayL.delayTime.setTargetAtTime(delayTimeSec, t, 0.02);
     eng.delayR.delayTime.setTargetAtTime(delayTimeSec, t, 0.02);
 
-    // Feedback
-    eng.fbGain.gain.setTargetAtTime(Math.min(0.95, (fx.feedback||0)/100), t, 0.05);
+    // Feedback — both feedback loop and cross-feed scale together
+    var fb = Math.min(0.95, (fx.feedback||0)/100);
+    eng.fbGain.gain.setTargetAtTime(fb, t, 0.05);
+    if (eng.crossGain) eng.crossGain.gain.setTargetAtTime(fb, t, 0.05);
 
     // Width: 0 = mono, 100 = hard ping-pong
     var w = (fx.width||0) / 100;
@@ -2276,7 +2290,7 @@ function App() {
         var sq=seqRef.current;
         if(sq){sq.bpm=seqSettings.bpm;sq.steps=seqSettings.steps;sq.pattern=seqSettings.pattern.slice();}
       }, style:{ flex:1 } }, "SEQ"),
-      el("button", { className:cx("cb",showSettings&&"on"), onClick:function(){setShowSettings(function(s){return !s;});setShowSeq(false);}, style:{ flex:1 } }, "\u2699")
+      el("button", { className:cx("cb",showSettings&&"on"), onClick:function(){setShowSettings(function(s){return !s;});setShowSeq(false);setShowFx(false);}, style:{ flex:1 } }, "\u266a")
     ),
 
     // Settings drawer — engine 1
