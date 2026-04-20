@@ -415,14 +415,7 @@ function makeEngine1() {
     if (!eng._lpBase) {
       eng._lpBase = eng.ctx.createConstantSource();
       eng._lpBase.offset.value = 2000; // default
-      eng._lpFloor = eng.ctx.createWaveShaper();
-      eng._lpFloor.curve = makeFilterFloorCurve();
-      eng._lpFloor.oversample = "2x";
-      eng._lpFloorGain = eng.ctx.createGain();
-      eng._lpFloorGain.gain.value = 24000;
-      eng._lpBase.connect(eng._lpFloor);
-      eng._lpFloor.connect(eng._lpFloorGain);
-      eng._lpFloorGain.connect(eng.lowpassNode.frequency);
+      eng._lpBase.connect(eng.lowpassNode.frequency);
       eng._lpBase.start();
     }
     eng._lfoNode = eng.ctx.createOscillator();
@@ -1132,14 +1125,7 @@ function makeEngine2() {
     if (!eng._lpBase) {
       eng._lpBase = eng.ctx.createConstantSource();
       eng._lpBase.offset.value = 2000;
-      eng._lpFloor = eng.ctx.createWaveShaper();
-      eng._lpFloor.curve = makeFilterFloorCurve();
-      eng._lpFloor.oversample = "2x";
-      eng._lpFloorGain = eng.ctx.createGain();
-      eng._lpFloorGain.gain.value = 24000;
-      eng._lpBase.connect(eng._lpFloor);
-      eng._lpFloor.connect(eng._lpFloorGain);
-      eng._lpFloorGain.connect(eng.lowpassNode.frequency);
+      eng._lpBase.connect(eng.lowpassNode.frequency);
       eng._lpBase.start();
     }
     eng._lfoNode = eng.ctx.createOscillator();
@@ -1742,32 +1728,6 @@ function ADSRSlider(props) {
 var DIV_MULTS = {"1/16":0.25,"1/8":0.5,"1/4":1,"1/2":2,"1/1":4,
   "1/16T":0.1667,"1/8T":0.3333,"1/4T":0.6667,"1/8.":0.75,"1/4.":1.5};
 
-
-// Build soft-floor WaveShaper curve for filter frequency
-// Smoothly prevents negative/zero frequency — approaches 20Hz asymptotically
-function makeFilterFloorCurve() {
-  var n = 4096;
-  var curve = new Float32Array(n);
-  var minHz = 20, maxHz = 18000;
-  for (var i = 0; i < n; i++) {
-    // Input maps -24000..+24000 (Web Audio AudioParam range)
-    var x = (i / (n - 1)) * 48000 - 24000;
-    // Soft-clamp: use exponential approach near floor
-    var clamped;
-    if (x <= minHz) {
-      // Below floor: asymptotic approach — never reaches 0
-      // e^(x/200) * 20 gives smooth curve that approaches 20 from below
-      clamped = minHz * Math.exp(Math.max(-10, (x - minHz) / 200));
-    } else if (x >= maxHz) {
-      clamped = maxHz;
-    } else {
-      clamped = x;
-    }
-    // Normalize to -1..+1 for WaveShaper
-    curve[i] = (clamped / 24000);
-  }
-  return curve;
-}
 
 // ── App ───────────────────────────────────────────────────────────────────────
 function App() {
