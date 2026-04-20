@@ -1,5 +1,5 @@
 // Camera Synth — v3.0.0
-var VERSION = "3.6.2";
+var VERSION = "3.6.3";
 
 var useState    = React.useState;
 var useEffect   = React.useEffect;
@@ -462,6 +462,10 @@ function makeEngine1() {
     eng.ctx.resume();
     eng.masterGain.gain.cancelScheduledValues(0);
     eng.masterGain.gain.value = on ? 0.7 : 0;
+    if (on) {
+      // Apply FX settings now that engine is active
+      setTimeout(function(){ applyFxToEngine(fxSettings, seqSettings.bpm); }, 100);
+    }
     eng.active = on;
     if (on) eng.initUserLFOs();
   };
@@ -1160,6 +1164,10 @@ function makeEngine2() {
     eng.ctx.resume();
     eng.masterGain.gain.cancelScheduledValues(0);
     eng.masterGain.gain.value = on ? 0.7 : 0;
+    if (on) {
+      // Apply FX settings now that engine is active
+      setTimeout(function(){ applyFxToEngine(fxSettings, seqSettings.bpm); }, 100);
+    }
     eng.active = on;
     if (on) eng.initUserLFOs();
   };
@@ -1701,6 +1709,10 @@ function ADSRSlider(props) {
   );
 }
 
+// Division time multipliers (fraction of one beat)
+var DIV_MULTS = {"1/16":0.25,"1/8":0.5,"1/4":1,"1/2":2,"1/1":4,
+  "1/16T":0.1667,"1/8T":0.3333,"1/4T":0.6667,"1/8.":0.75,"1/4.":1.5};
+
 // ── App ───────────────────────────────────────────────────────────────────────
 function App() {
   var videoRef        = useRef(null);
@@ -2077,21 +2089,15 @@ function App() {
     loopFramesRef.current=[];eng.startLoopRecord();setLoopCapturing(true);
   };
 
-  // Division multipliers (as fraction of one beat = 60/BPM seconds)
-  var DIV_MULTS = {"1/16":0.25,"1/8":0.5,"1/4":1,"1/2":2,"1/1":4,
-    "1/16T":0.1667,"1/8T":0.3333,"1/4T":0.6667,"1/8.":0.75,"1/4.":1.5};
-
-  var applyFxToEngine = useCallback(function(fx) {
+  function applyFxToEngine(fx, bpm) {
     var eng = synthRef.current;
     if (!eng || !eng.ctx || !eng.delayL) return;
     var t = eng.ctx.currentTime;
 
-    // Delay time — both L and R nodes use the same time
-    // Ping-pong alternation comes from the cross-feed routing, not different times
+    // Delay time
     var delayTimeSec;
     if (fx.delaySync) {
-      var bpm = seqSettings.bpm || 120;
-      var beat = 60 / bpm;
+      var beat = 60 / (bpm || 120);
       var mult = DIV_MULTS[fx.delayDiv];
       if (mult === undefined) mult = 0.5;
       delayTimeSec = beat * mult;
@@ -2101,31 +2107,29 @@ function App() {
     eng.delayL.delayTime.setTargetAtTime(delayTimeSec, t, 0.02);
     eng.delayR.delayTime.setTargetAtTime(delayTimeSec, t, 0.02);
 
-    // Feedback — cap at 0.8 to prevent runaway
+    // Feedback
     eng.fbGain.gain.setTargetAtTime(Math.min(0.8, (fx.feedback||0)/100), t, 0.05);
 
-    // (delay mix set with reverb below)
-
-    // Width: 0 = mono (both center), 100 = hard ping-pong (L=-1, R=+1)
+    // Width: 0 = mono, 100 = hard ping-pong
     var w = (fx.width||0) / 100;
     eng.delayWetL.pan.setTargetAtTime(-w, t, 0.05);
     eng.delayWetR.pan.setTargetAtTime( w, t, 0.05);
 
-    // Reverb — dry = pass-through (1-mix), wet = convolution tail (mix)
-    var revMix = fx.reverbMix !== undefined ? fx.reverbMix : 0;
-    eng.reverbGain.gain.setTargetAtTime(revMix, t, 0.1);       // wet tail
-    eng.dryGain.gain.setTargetAtTime(1 - revMix, t, 0.1);     // pass-through
-
-    // Delay mix — scales undelayed vs delayed signal into reverb
+    // Delay mix
     var mix = (fx.delayMix||0) / 100;
     eng.delayWet.gain.setTargetAtTime(mix, t, 0.05);
     eng.delayDry.gain.setTargetAtTime(1 - mix, t, 0.05);
-  }, [seqSettings.bpm]);
+
+    // Reverb dry/wet
+    var revMix = fx.reverbMix !== undefined ? fx.reverbMix : 0;
+    eng.reverbGain.gain.setTargetAtTime(revMix, t, 0.1);
+    eng.dryGain.gain.setTargetAtTime(1 - revMix, t, 0.1);
+  }
 
   // Apply FX whenever settings change
   useEffect(function(){
-    applyFxToEngine(fxSettings);
-  }, [fxSettings, applyFxToEngine]);
+    applyFxToEngine(fxSettings, seqSettings.bpm);
+  }, [fxSettings, seqSettings.bpm]);
 
   var handleCamToggle = useCallback(function(){
     setCamOn(function(on){
