@@ -1,5 +1,5 @@
 // Camera Synth — v3.0.0
-var VERSION = "3.6.5";
+var VERSION = "3.6.8";
 
 var useState    = React.useState;
 var useEffect   = React.useEffect;
