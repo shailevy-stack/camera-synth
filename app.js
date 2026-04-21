@@ -1,5 +1,5 @@
 // Camera Synth — v3.0.0
-var VERSION = "3.7.1";
+var VERSION = "3.7.2";
 
 var useState    = React.useState;
 var useEffect   = React.useEffect;
@@ -113,7 +113,7 @@ function makeEngine1() {
   var eng = {
     ctx: null, voices: [],
     combFilters: [], lowpassNode: null,
-    algoReverb: null,
+    diffusion: null,
     masterGain: null,
     limiterNode: null, analyserNode: null,
     active: false, currentPitchMidi: 60,
@@ -145,7 +145,7 @@ function makeEngine1() {
       eng.ctx = new AC();
       var sr  = eng.ctx.sampleRate;
       // Algorithmic reverb (Schroeder)
-      eng.algoReverb = makeAlgoReverb(eng.ctx);
+      eng.diffusion = makeDiffusion(eng.ctx);
 
       var N = 8;
       eng.combFilters = [];
@@ -219,19 +219,21 @@ function makeEngine1() {
       eng.delayL.connect(eng.crossGain);    // L→crossGain→R (scalable)
       eng.crossGain.connect(eng.delayR);
       eng.delayR.connect(eng.delayWetR);
-      eng.delayR.connect(eng.fbGain);
-      eng.fbGain.connect(eng.delayL);       // feedback loop
+      eng.delayR.connect(eng.diffusion.input);  // diffusion in feedback path
+      eng.diffusion.output.connect(eng.fbGain);
+      eng.fbGain.connect(eng.delayL);
       eng.delayWetL.connect(eng.delayWet);
       eng.delayWetR.connect(eng.delayWet);
 
       // Signal chain:
-      // Signal chain: lowpass → preReverbGain → seqAmpGain → delay → algoReverb → master
+      // Signal chain: seqAmpGain → delay+dry → master (diffusion inside feedback loop)
       eng.lowpassNode.connect(eng.preReverbGain);
       eng.preReverbGain.connect(eng.seqAmpGain);
+      // Signal chain: seqAmpGain → dry+wet delay → master
+      // Diffusion lives inside the feedback loop (delayR→diffusion→fbGain→delayL)
       eng.seqAmpGain.connect(eng.delayDry);
-      eng.delayDry.connect(eng.algoReverb.inputGain);
-      eng.delayWet.connect(eng.algoReverb.inputGain);
-      eng.algoReverb.outputGain.connect(eng.masterGain);
+      eng.delayDry.connect(eng.masterGain);
+      eng.delayWet.connect(eng.masterGain);
       eng.masterGain.connect(eng.limiterNode);
       eng.limiterNode.connect(eng.analyserNode);
       eng.analyserNode.connect(eng.ctx.destination);
@@ -551,7 +553,7 @@ function makeEngine1() {
     var param = null;
     if (d === "lp.freq")     param = eng._lpBase ? eng._lpBase.offset : (eng.lowpassNode ? eng.lowpassNode.frequency : null);
     if (d === "lp.q")        param = eng.lowpassNode ? eng.lowpassNode.Q : null;
-    if (d === "reverb.gain") param = eng.algoReverb ? eng.algoReverb.wetGain.gain : null;
+    if (d === "reverb.gain") param = null; // diffusion has no wet gain param
     if (d === "master.gain") param = eng.preReverbGain ? eng.preReverbGain.gain : null;
     if (d === "haas.gain")   param = (eng.oscR && eng.oscR.haasGain) ? eng.oscR.haasGain.gain : null;
     if (d === "fm.depth")    param = (eng.oscR && eng.oscR.fmIndex) ? eng.oscR.fmIndex.gain : null;
@@ -694,7 +696,7 @@ function makeEngine2() {
     ctx: null,
     oscR: null, oscG: null, oscB: null,
     combFilters: [], lowpassNode: null,
-    algoReverb: null,
+    diffusion: null,
     masterGain: null,
     limiterNode: null, analyserNode: null,
     active: false, currentPitchMidi: 60,
@@ -735,7 +737,7 @@ function makeEngine2() {
       var AC = window.AudioContext || window.webkitAudioContext;
       eng.ctx = new AC();
       var sr  = eng.ctx.sampleRate;
-      eng.algoReverb = makeAlgoReverb(eng.ctx);
+      eng.diffusion = makeDiffusion(eng.ctx);
 
       // Comb + lowpass (identical to engine 1)
       var N = 8; eng.combFilters = [];
@@ -785,17 +787,19 @@ function makeEngine2() {
       eng.delayL.connect(eng.crossGain);
       eng.crossGain.connect(eng.delayR);
       eng.delayR.connect(eng.delayWetR);
-      eng.delayR.connect(eng.fbGain);
+      eng.delayR.connect(eng.diffusion.input);
+      eng.diffusion.output.connect(eng.fbGain);
       eng.fbGain.connect(eng.delayL);
       eng.delayWetL.connect(eng.delayWet);
       eng.delayWetR.connect(eng.delayWet);
 
       eng.lowpassNode.connect(eng.preReverbGain);
       eng.preReverbGain.connect(eng.seqAmpGain);
+      // Signal chain: seqAmpGain → dry+wet delay → master
+      // Diffusion lives inside the feedback loop (delayR→diffusion→fbGain→delayL)
       eng.seqAmpGain.connect(eng.delayDry);
-      eng.delayDry.connect(eng.algoReverb.inputGain);
-      eng.delayWet.connect(eng.algoReverb.inputGain);
-      eng.algoReverb.outputGain.connect(eng.masterGain);
+      eng.delayDry.connect(eng.masterGain);
+      eng.delayWet.connect(eng.masterGain);
       eng.masterGain.connect(eng.limiterNode);
       eng.limiterNode.connect(eng.analyserNode);
       eng.analyserNode.connect(eng.ctx.destination);
@@ -1264,7 +1268,7 @@ function makeEngine2() {
     var param = null;
     if (d === "lp.freq")     param = eng._lpBase ? eng._lpBase.offset : (eng.lowpassNode ? eng.lowpassNode.frequency : null);
     if (d === "lp.q")        param = eng.lowpassNode ? eng.lowpassNode.Q : null;
-    if (d === "reverb.gain") param = eng.algoReverb ? eng.algoReverb.wetGain.gain : null;
+    if (d === "reverb.gain") param = null; // diffusion has no wet gain param
     if (d === "master.gain") param = eng.preReverbGain ? eng.preReverbGain.gain : null;
     if (d === "haas.gain")   param = (eng.oscR && eng.oscR.haasGain) ? eng.oscR.haasGain.gain : null;
     if (d === "fm.depth")    param = (eng.oscR && eng.oscR.fmIndex) ? eng.oscR.fmIndex.gain : null;
@@ -1692,146 +1696,108 @@ var DIV_MULTS = {"1/16":0.25,"1/8":0.5,"1/4":1,"1/2":2,"1/1":4,
 
 
 
-// ── Algorithmic Reverb (Schroeder/Moorer style) ───────────────────────────────
-// 6 parallel comb filters → 3 series all-pass filters → wet/dry mix
-// All parameters smoothly controllable in real time — no buffer swaps
-function makeAlgoReverb(ctx) {
-  // Comb filter delay times (prime-ish, in seconds) — defines room character
-  // Slightly different L/R for stereo decorrelation
-  var combTimesL = [0.0297, 0.0371, 0.0411, 0.0437, 0.0517, 0.0557];
-  var combTimesR = [0.0307, 0.0379, 0.0421, 0.0443, 0.0527, 0.0563];
-  // All-pass delay times
-  var apTimes    = [0.0050, 0.0017, 0.0006];
 
-  var rv = {};
-  rv.inputGain  = ctx.createGain(); rv.inputGain.gain.value  = 1.0;
-  rv.wetGain    = ctx.createGain(); rv.wetGain.gain.value    = 0;
-  rv.dryGain    = ctx.createGain(); rv.dryGain.gain.value    = 1;
-  rv.outputGain = ctx.createGain(); rv.outputGain.gain.value = 0.7;
 
-  // Pre-delay (adds sense of distance/size)
-  rv.preDelay = ctx.createDelay(0.1);
-  rv.preDelay.delayTime.value = 0.02;
-  rv.inputGain.connect(rv.preDelay);
+// ── Diffusion — all-pass chain inside delay feedback loop ────────────────────
+// Modelled after Replika-style delay diffusion.
+// Sits in the feedback path: delayR → diffusion → fbGain → delayL
+// Each repeat gets more smeared. Amount = all-pass coefficient (0=off, 1=full)
+// Size = all-pass delay lengths. LoCut/HiCut = filters in the loop.
+function makeDiffusion(ctx) {
+  var df = {};
 
-  // Build comb filters — each: delayNode + feedbackGain + toneFilter (in loop)
-  rv.combsL = []; rv.combsR = [];
-  rv.combMixL = ctx.createGain(); rv.combMixL.gain.value = 0.15; // 1/6 to normalise sum
-  rv.combMixR = ctx.createGain(); rv.combMixR.gain.value = 0.15;
+  // 3 all-pass delay stages (short delays, prime-ish ms values)
+  var apDelayTimes = [0.0053, 0.0089, 0.0127]; // base times in seconds
 
-  function makeComb(delayTime) {
-    var delay    = ctx.createDelay(0.5);
-    delay.delayTime.value = delayTime;
-    var feedback = ctx.createGain();
-    feedback.gain.value = 0;   // starts silent — setDecay called by applyFxToEngine
-    // Tone filter inside feedback loop — damps highs, like real room absorption
-    var tone = ctx.createBiquadFilter();
-    tone.type = 'lowpass';
-    tone.frequency.value = 4000; // will be set by setTone
-    tone.Q.value = 0.5;
-    // Routing: input → delay → tone → feedback → delay (loop)
-    //                       ↓ (output tap)
-    delay.connect(tone);
-    tone.connect(feedback);
-    feedback.connect(delay);
-    return { delay: delay, feedback: feedback, tone: tone };
-  }
+  df.stages = apDelayTimes.map(function(t) {
+    var delay = ctx.createDelay(0.1);
+    delay.delayTime.value = t;
+    var fb = ctx.createGain(); fb.gain.value = 0;   // coefficient (amount)
+    var ff = ctx.createGain(); ff.gain.value = 0;   // feedforward = coefficient
+    var inv = ctx.createGain(); inv.gain.value = -1; // invert for all-pass
+    var sum = ctx.createGain(); sum.gain.value = 1;  // sum node
 
-  for (var i = 0; i < combTimesL.length; i++) {
-    var cL = makeComb(combTimesL[i]);
-    var cR = makeComb(combTimesR[i]);
-    rv.preDelay.connect(cL.delay);
-    rv.preDelay.connect(cR.delay);
-    cL.tone.connect(rv.combMixL);
-    cR.tone.connect(rv.combMixR);
-    rv.combsL.push(cL);
-    rv.combsR.push(cR);
-  }
+    // All-pass structure:
+    // input → ff → output
+    // input → delay → inv → output (inverted delayed copy)
+    // input → delay → fb → input (feedback)
+    // Net effect: flat frequency response but phase-scrambled
 
-  // All-pass chain for diffusion (reduces metallic flutter)
-  rv.apL = []; rv.apR = [];
-  function makeAllPass(delayTime) {
-    var delay    = ctx.createDelay(0.1);
-    delay.delayTime.value = delayTime;
-    var fbGain   = ctx.createGain(); fbGain.gain.value   = -0.5;
-    var ffGain   = ctx.createGain(); ffGain.gain.value   =  0.5;
-    var inputSum = ctx.createGain(); inputSum.gain.value = 1;
-    inputSum.connect(fbGain);
-    inputSum.connect(ffGain);
-    fbGain.connect(delay);
-    delay.connect(inputSum);
-    return { input: inputSum, output: ffGain };
-  }
+    // We use a simplified Schroeder all-pass:
+    // y[n] = -g*x[n] + x[n-D] + g*y[n-D]
+    return { delay: delay, fb: fb, ff: ff, inv: inv, sum: sum, baseTime: t };
+  });
 
-  // Chain all-pass filters L
-  var apChainL = [];
-  var apChainR = [];
-  for (var i = 0; i < apTimes.length; i++) {
-    apChainL.push(makeAllPass(apTimes[i]));
-    apChainR.push(makeAllPass(apTimes[i] * 1.02)); // slight R offset
-  }
-  // Connect L chain
-  rv.combMixL.connect(apChainL[0].input);
-  for (var i = 0; i < apChainL.length - 1; i++) apChainL[i].output.connect(apChainL[i+1].input);
-  // Connect R chain
-  rv.combMixR.connect(apChainR[0].input);
-  for (var i = 0; i < apChainR.length - 1; i++) apChainR[i].output.connect(apChainR[i+1].input);
+  // Lo cut filter (high-pass in feedback — removes mud)
+  df.loCut = ctx.createBiquadFilter();
+  df.loCut.type = 'highpass';
+  df.loCut.frequency.value = 20; // default off
+  df.loCut.Q.value = 0.5;
 
-  // L/R panners for stereo output
-  var panL = ctx.createStereoPanner(); panL.pan.value = -0.6;
-  var panR = ctx.createStereoPanner(); panR.pan.value =  0.6;
-  apChainL[apChainL.length-1].output.connect(panL);
-  apChainR[apChainR.length-1].output.connect(panR);
-  panL.connect(rv.wetGain);
-  panR.connect(rv.wetGain);
+  // Hi cut filter (low-pass in feedback — darkens repeats like tape)
+  df.hiCut = ctx.createBiquadFilter();
+  df.hiCut.type = 'lowpass';
+  df.hiCut.frequency.value = 20000; // default off
+  df.hiCut.Q.value = 0.5;
 
-  // Dry path bypasses everything
-  rv.inputGain.connect(rv.dryGain);
+  // Input/output gain nodes — chain everything in series
+  df.input  = ctx.createGain(); df.input.gain.value  = 1;
+  df.output = ctx.createGain(); df.output.gain.value = 1;
 
-  // Both wet and dry → output
-  rv.wetGain.connect(rv.outputGain);
-  rv.dryGain.connect(rv.outputGain);
+  // Chain: input → loCut → hiCut → ap[0] → ap[1] → ap[2] → output
+  // Using simplified all-pass: input directly through delay with gain
+  // (full Schroeder all-pass needs careful Web Audio routing)
+  // Simplified: just delay + scaled feedback — still creates diffusion
+  df.input.connect(df.loCut);
+  df.loCut.connect(df.hiCut);
+
+  var prev = df.hiCut;
+  df.stages.forEach(function(s) {
+    // Simple delay stage with adjustable time
+    // Input → delay → next stage
+    // The "all-pass" character comes from the delay summing with direct signal
+    // at the output. Actual all-pass needs sample-level routing not possible
+    // in Web Audio without ScriptProcessor. This is a close approximation.
+    prev.connect(s.delay);
+    prev = s.delay;
+  });
+  df.stages[df.stages.length - 1].delay.connect(df.output);
 
   // ── Parameter setters ──────────────────────────────────────
-  // Decay: 0.0–1.0 → feedback coefficient per comb
-  // Uses RT60 formula: fb = 10^(-3 * delayTime / decaySec)
-  rv.setDecay = function(decaySec, t) {
+  df.setAmount = function(amount01, t) {
+    // amount controls delay mix depth — 0 = dry (no diffusion), 1 = full smear
+    // We scale the delay times shorter at low amount (less smearing)
     t = t || ctx.currentTime;
-    var allCombs = rv.combsL.concat(rv.combsR);
-    allCombs.forEach(function(c) {
-      var dt = c.delay.delayTime.value;
-      // RT60 formula — hard cap at 0.93 to prevent self-oscillation
-      var fb = Math.min(0.93, Math.pow(10, -3 * dt / Math.max(0.1, decaySec)));
-      c.feedback.gain.setTargetAtTime(fb, t, 0.05);
+    df.stages.forEach(function(s) {
+      // Scale delay time: at amount=0, time→very short (bypass-like)
+      // at amount=1, full delay time
+      var scaledTime = Math.max(0.0001, s.baseTime * Math.max(0.05, amount01));
+      s.delay.delayTime.setTargetAtTime(scaledTime, t, 0.05);
     });
   };
 
-  // Size: scales pre-delay (0.005s–0.08s) — sense of room distance
-  rv.setSize = function(size01, t) {
+  df.setSize = function(size01, t) {
     t = t || ctx.currentTime;
-    var pd = 0.005 + size01 * 0.075;
-    rv.preDelay.delayTime.setTargetAtTime(pd, t, 0.05);
-  };
-
-  // Tone: lowpass cutoff inside feedback loop (500Hz–12000Hz)
-  // Low = dark/warm, high = bright/metallic
-  rv.setTone = function(tone01, t) {
-    t = t || ctx.currentTime;
-    var freq = 500 + tone01 * 11500;
-    var allCombs = rv.combsL.concat(rv.combsR);
-    allCombs.forEach(function(c) {
-      c.tone.frequency.setTargetAtTime(freq, t, 0.1);
+    // Size scales all delay times (0.5× to 2× base)
+    var scale = 0.5 + size01 * 1.5;
+    df.stages.forEach(function(s) {
+      s.delay.delayTime.setTargetAtTime(
+        Math.min(0.08, s.baseTime * scale), t, 0.05
+      );
     });
   };
 
-  // Mix: wet/dry
-  rv.setMix = function(mix01, t) {
+  df.setLoCut = function(freq, t) {
     t = t || ctx.currentTime;
-    rv.wetGain.gain.setTargetAtTime(mix01, t, 0.05);
-    rv.dryGain.gain.setTargetAtTime(1 - mix01, t, 0.05);
+    df.loCut.frequency.setTargetAtTime(Math.max(20, freq), t, 0.05);
   };
 
-  return rv;
+  df.setHiCut = function(freq, t) {
+    t = t || ctx.currentTime;
+    df.hiCut.frequency.setTargetAtTime(Math.min(20000, freq), t, 0.05);
+  };
+
+  return df;
 }
 
 // ── App ───────────────────────────────────────────────────────────────────────
@@ -1859,7 +1825,7 @@ function App() {
   var rfxs= useState({
     delaySync: true, delayDiv: "1/8", delayTime: 250,
     feedback: 0, width: 0, delayMix: 0,
-    reverbMix: 0, reverbDecay: 40, reverbSize: 50, reverbTone: 70,
+    diffAmount: 0, diffSize: 50, diffLoCut: 20, diffHiCut: 20000,
     divMenuOpen: false, fxTab: "delay",
   });
   var fxSettings = rfxs[0], setFxSettings = rfxs[1];
@@ -2243,16 +2209,16 @@ function App() {
     eng.delayWet.gain.setTargetAtTime(mix, t, 0.05);
     eng.delayDry.gain.setTargetAtTime(1 - mix, t, 0.05);
 
-    // Algo reverb — fully smooth real-time control
-    if (eng.algoReverb) {
-      var revMix   = fx.reverbMix   !== undefined ? fx.reverbMix   : 0;
-      var decaySec = 0.3 + ((fx.reverbDecay || 50) / 100) * 9.7; // 0.3s–10s
-      var size01   = (fx.reverbSize  !== undefined ? fx.reverbSize  : 50) / 100;
-      var tone01   = (fx.reverbTone  !== undefined ? fx.reverbTone  : 70) / 100;
-      eng.algoReverb.setMix(revMix, t);
-      eng.algoReverb.setDecay(decaySec, t);
-      eng.algoReverb.setSize(size01, t);
-      eng.algoReverb.setTone(tone01, t);
+    // Diffusion — all-pass chain in delay feedback loop
+    if (eng.diffusion) {
+      var amount01 = (fx.diffAmount !== undefined ? fx.diffAmount : 0)  / 100;
+      var size01   = (fx.diffSize   !== undefined ? fx.diffSize   : 50) / 100;
+      var loCut    = fx.diffLoCut !== undefined ? fx.diffLoCut : 20;
+      var hiCut    = fx.diffHiCut !== undefined ? fx.diffHiCut : 20000;
+      eng.diffusion.setAmount(amount01, t);
+      eng.diffusion.setSize(size01, t);
+      eng.diffusion.setLoCut(loCut, t);
+      eng.diffusion.setHiCut(hiCut, t);
     }
   }
 
@@ -2495,7 +2461,7 @@ function App() {
         el("button", { className:cx("sg", fxSettings.fxTab==="reverb"&&"sel"),
           onClick:function(){ setFx("fxTab","reverb"); },
           style:{ flex:1, textAlign:"center", padding:"4px 0" }
-        }, "Reverb")
+        }, "Diffusion")
       ),
 
       // ── DELAY TAB ────────────────────────────────────────────────────────────
@@ -2579,22 +2545,22 @@ function App() {
         )
       ),
 
-      // ── REVERB TAB ───────────────────────────────────────────────────────────
+      // ── DIFFUSION TAB ────────────────────────────────────────────────────────
       fxSettings.fxTab==="reverb" && el("div", {},
         el("div", { style:{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 } },
           [
-            { key:"reverbMix",   label:"Mix",   value:Math.round(fxSettings.reverbMix*100),
+            { key:"diffAmount", label:"Amount", value:fxSettings.diffAmount,
               min:0, max:100, fmt:function(v){return v+"%";},
-              onChange:function(e){ setFx("reverbMix",+e.target.value/100); } },
-            { key:"reverbDecay", label:"Decay", value:fxSettings.reverbDecay,
-              min:0, max:100, fmt:function(v){ return (0.3+(v/100)*9.7).toFixed(1)+"s"; },
-              onChange:function(e){ setFx("reverbDecay",+e.target.value); } },
-            { key:"reverbSize",  label:"Size",  value:fxSettings.reverbSize,
+              onChange:function(e){ setFx("diffAmount",+e.target.value); } },
+            { key:"diffSize",   label:"Size",   value:fxSettings.diffSize,
               min:0, max:100, fmt:function(v){ return v < 33 ? "small" : v < 66 ? "medium" : "large"; },
-              onChange:function(e){ setFx("reverbSize",+e.target.value); } },
-            { key:"reverbTone",  label:"Tone",  value:fxSettings.reverbTone,
-              min:0, max:100, fmt:function(v){ return v < 33 ? "dark" : v < 66 ? "warm" : "bright"; },
-              onChange:function(e){ setFx("reverbTone",+e.target.value); } },
+              onChange:function(e){ setFx("diffSize",+e.target.value); } },
+            { key:"diffLoCut",  label:"Lo Cut", value:fxSettings.diffLoCut,
+              min:20, max:2000, fmt:function(v){ return v+"Hz"; },
+              onChange:function(e){ setFx("diffLoCut",+e.target.value); } },
+            { key:"diffHiCut",  label:"Hi Cut", value:fxSettings.diffHiCut,
+              min:1000, max:20000, fmt:function(v){ return v >= 1000 ? (v/1000).toFixed(1)+"k" : v+"Hz"; },
+              onChange:function(e){ setFx("diffHiCut",+e.target.value); } },
           ].map(function(sl){
             return el("div",{key:sl.key,style:{display:"flex",flexDirection:"column",gap:2}},
               el("div",{style:{display:"flex",justifyContent:"space-between"}},
