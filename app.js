@@ -1,5 +1,5 @@
 // Camera Synth — v3.0.0
-var VERSION = "3.8.3";
+var VERSION = "3.8.4";
 
 var useState    = React.useState;
 var useEffect   = React.useEffect;
@@ -2608,23 +2608,33 @@ function App() {
       el("div", { style:{ fontSize:7, color:"#333", letterSpacing:"0.15em", textTransform:"uppercase", marginBottom:6 } }, "FM Matrix"),
       el("div", { style:{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr 1fr", gap:5, marginBottom:14 } },
         [
-          { id:"A", label:"Indep", desc:"Self only" },
-          { id:"B", label:"Series", desc:"R→G→B" },
-          { id:"C", label:"Star",   desc:"R→G,B" },
-          { id:"D", label:"Ring",   desc:"R→G→B→R" },
+          { id:"A", svg:"<svg viewBox=\"0 0 72 64\" xmlns=\"http://www.w3.org/2000/svg\" style=\"width:100%;height:100%;display:block\"><rect x=\"7\" y=\"11\" width=\"13\" height=\"10\" rx=\"2\" fill=\"#ff6b6b22\" stroke=\"#ff6b6b\" stroke-width=\"1\"/><text x=\"13\" y=\"19.5\" text-anchor=\"middle\" fill=\"#ff6b6b\" font-size=\"6\" font-family=\"monospace\">R</text><rect x=\"7\" y=\"29\" width=\"13\" height=\"10\" rx=\"2\" fill=\"#ff6b6b22\" stroke=\"#ff6b6b\" stroke-width=\"1\"/><text x=\"13\" y=\"37.5\" text-anchor=\"middle\" fill=\"#ff6b6b\" font-size=\"6\" font-family=\"monospace\">r</text><line x1=\"13\" y1=\"29\" x2=\"13.0\" y2=\"25.0\" stroke=\"#555\" stroke-width=\"1\"/><polygon points=\"13,21 15.5,25.0 10.5,25.0\" fill=\"#555\"/><line x1=\"13\" y1=\"39\" x2=\"13\" y2=\"47\" stroke=\"#444\" stroke-width=\"1\" stroke-dasharray=\"2,1\"/><line x1=\"9\" y1=\"47\" x2=\"17\" y2=\"47\" stroke=\"#444\" stroke-width=\"1\"/><rect x=\"30\" y=\"11\" width=\"13\" height=\"10\" rx=\"2\" fill=\"#7fff6a22\" stroke=\"#7fff6a\" stroke-width=\"1\"/><text x=\"36\" y=\"19.5\" text-anchor=\"middle\" fill=\"#7fff6a\" font-size=\"6\" font-family=\"monospace\">G</text><rect x=\"30\" y=\"29\" width=\"13\" height=\"10\" rx=\"2\" fill=\"#7fff6a22\" stroke=\"#7fff6a\" stroke-width=\"1\"/><text x=\"36\" y=\"37.5\" text-anchor=\"middle\" fill=\"#7fff6a\" font-size=\"6\" font-family=\"monospace\">g</text><line x1=\"36\" y1=\"29\" x2=\"36.0\" y2=\"25.0\" stroke=\"#555\" stroke-width=\"1\"/><polygon points=\"36,21 38.5,25.0 33.5,25.0\" fill=\"#555\"/><line x1=\"36\" y1=\"39\" x2=\"36\" y2=\"47\" stroke=\"#444\" stroke-width=\"1\" stroke-dasharray=\"2,1\"/><line x1=\"32\" y1=\"47\" x2=\"40\" y2=\"47\" stroke=\"#444\" stroke-width=\"1\"/><rect x=\"53\" y=\"11\" width=\"13\" height=\"10\" rx=\"2\" fill=\"#6bb5ff22\" stroke=\"#6bb5ff\" stroke-width=\"1\"/><text x=\"59\" y=\"19.5\" text-anchor=\"middle\" fill=\"#6bb5ff\" font-size=\"6\" font-family=\"monospace\">B</text><rect x=\"53\" y=\"29\" width=\"13\" height=\"10\" rx=\"2\" fill=\"#6bb5ff22\" stroke=\"#6bb5ff\" stroke-width=\"1\"/><text x=\"59\" y=\"37.5\" text-anchor=\"middle\" fill=\"#6bb5ff\" font-size=\"6\" font-family=\"monospace\">b</text><line x1=\"59\" y1=\"29\" x2=\"59.0\" y2=\"25.0\" stroke=\"#555\" stroke-width=\"1\"/><polygon points=\"59,21 61.5,25.0 56.5,25.0\" fill=\"#555\"/><line x1=\"59\" y1=\"39\" x2=\"59\" y2=\"47\" stroke=\"#444\" stroke-width=\"1\" stroke-dasharray=\"2,1\"/><line x1=\"55\" y1=\"47\" x2=\"63\" y2=\"47\" stroke=\"#444\" stroke-width=\"1\"/><line x1=\"9\" y1=\"47\" x2=\"63\" y2=\"47\" stroke=\"#444\" stroke-width=\"1\"/></svg>" },
+          { id:"B", svg:"<svg viewBox=\"0 0 72 64\" xmlns=\"http://www.w3.org/2000/svg\" style=\"width:100%;height:100%;display:block\"><rect x=\"12\" y=\"5\" width=\"13\" height=\"10\" rx=\"2\" fill=\"#ff6b6b22\" stroke=\"#ff6b6b\" stroke-width=\"1\"/><text x=\"18\" y=\"13.5\" text-anchor=\"middle\" fill=\"#ff6b6b\" font-size=\"6\" font-family=\"monospace\">R</text><rect x=\"30\" y=\"21\" width=\"13\" height=\"10\" rx=\"2\" fill=\"#7fff6a22\" stroke=\"#7fff6a\" stroke-width=\"1\"/><text x=\"36\" y=\"29.5\" text-anchor=\"middle\" fill=\"#7fff6a\" font-size=\"6\" font-family=\"monospace\">G</text><rect x=\"48\" y=\"37\" width=\"13\" height=\"10\" rx=\"2\" fill=\"#6bb5ff22\" stroke=\"#6bb5ff\" stroke-width=\"1\"/><text x=\"54\" y=\"45.5\" text-anchor=\"middle\" fill=\"#6bb5ff\" font-size=\"6\" font-family=\"monospace\">B</text><line x1=\"24\" y1=\"14\" x2=\"27.6\" y2=\"18.8\" stroke=\"#555\" stroke-width=\"1\"/><polygon points=\"30,22 25.6,20.3 29.6,17.3\" fill=\"#555\"/><line x1=\"42\" y1=\"30\" x2=\"45.6\" y2=\"34.8\" stroke=\"#555\" stroke-width=\"1\"/><polygon points=\"48,38 43.6,36.3 47.6,33.3\" fill=\"#555\"/><line x1=\"54\" y1=\"47\" x2=\"54\" y2=\"55\" stroke=\"#444\" stroke-width=\"1\" stroke-dasharray=\"2,1\"/><line x1=\"50\" y1=\"55\" x2=\"58\" y2=\"55\" stroke=\"#444\" stroke-width=\"1\"/><line x1=\"38\" y1=\"55\" x2=\"70\" y2=\"55\" stroke=\"#444\" stroke-width=\"1\"/></svg>" },
+          { id:"C", svg:"<svg viewBox=\"0 0 72 64\" xmlns=\"http://www.w3.org/2000/svg\" style=\"width:100%;height:100%;display:block\"><rect x=\"30\" y=\"5\" width=\"13\" height=\"10\" rx=\"2\" fill=\"#ff6b6b22\" stroke=\"#ff6b6b\" stroke-width=\"1\"/><text x=\"36\" y=\"13.5\" text-anchor=\"middle\" fill=\"#ff6b6b\" font-size=\"6\" font-family=\"monospace\">R</text><rect x=\"12\" y=\"31\" width=\"13\" height=\"10\" rx=\"2\" fill=\"#7fff6a22\" stroke=\"#7fff6a\" stroke-width=\"1\"/><text x=\"18\" y=\"39.5\" text-anchor=\"middle\" fill=\"#7fff6a\" font-size=\"6\" font-family=\"monospace\">G</text><rect x=\"48\" y=\"31\" width=\"13\" height=\"10\" rx=\"2\" fill=\"#6bb5ff22\" stroke=\"#6bb5ff\" stroke-width=\"1\"/><text x=\"54\" y=\"39.5\" text-anchor=\"middle\" fill=\"#6bb5ff\" font-size=\"6\" font-family=\"monospace\">B</text><line x1=\"30\" y1=\"14\" x2=\"24.52299922101718\" y2=\"27.301287606101134\" stroke=\"#555\" stroke-width=\"1\"/><polygon points=\"23,31 22.21130397483039,26.349413092965396 26.83469446720397,28.253162119236872\" fill=\"#555\"/><line x1=\"42\" y1=\"14\" x2=\"47.47700077898282\" y2=\"27.301287606101134\" stroke=\"#555\" stroke-width=\"1\"/><polygon points=\"49,31 45.165305532796026,28.253162119236872 49.788696025169614,26.349413092965396\" fill=\"#555\"/><line x1=\"18\" y1=\"41\" x2=\"18\" y2=\"49\" stroke=\"#444\" stroke-width=\"1\" stroke-dasharray=\"2,1\"/><line x1=\"14\" y1=\"49\" x2=\"22\" y2=\"49\" stroke=\"#444\" stroke-width=\"1\"/><line x1=\"54\" y1=\"41\" x2=\"54\" y2=\"49\" stroke=\"#444\" stroke-width=\"1\" stroke-dasharray=\"2,1\"/><line x1=\"50\" y1=\"49\" x2=\"58\" y2=\"49\" stroke=\"#444\" stroke-width=\"1\"/><line x1=\"9\" y1=\"49\" x2=\"63\" y2=\"49\" stroke=\"#444\" stroke-width=\"1\"/></svg>" },
+          { id:"D", svg:"<svg viewBox=\"0 0 72 64\" xmlns=\"http://www.w3.org/2000/svg\" style=\"width:100%;height:100%;display:block\"><rect x=\"30\" y=\"3\" width=\"13\" height=\"10\" rx=\"2\" fill=\"#ff6b6b22\" stroke=\"#ff6b6b\" stroke-width=\"1\"/><text x=\"36\" y=\"11.5\" text-anchor=\"middle\" fill=\"#ff6b6b\" font-size=\"6\" font-family=\"monospace\">R</text><rect x=\"10\" y=\"33\" width=\"13\" height=\"10\" rx=\"2\" fill=\"#7fff6a22\" stroke=\"#7fff6a\" stroke-width=\"1\"/><text x=\"16\" y=\"41.5\" text-anchor=\"middle\" fill=\"#7fff6a\" font-size=\"6\" font-family=\"monospace\">G</text><rect x=\"50\" y=\"33\" width=\"13\" height=\"10\" rx=\"2\" fill=\"#6bb5ff22\" stroke=\"#6bb5ff\" stroke-width=\"1\"/><text x=\"56\" y=\"41.5\" text-anchor=\"middle\" fill=\"#6bb5ff\" font-size=\"6\" font-family=\"monospace\">B</text><line x1=\"29\" y1=\"12\" x2=\"21.575677194316672\" y2=\"29.32341987992777\" stroke=\"#555\" stroke-width=\"1\"/><polygon points=\"20,33 19.277814619271528,28.33862163347985 23.873539769361816,30.30821812637569\" fill=\"#555\"/><line x1=\"22\" y1=\"38\" x2=\"46.0\" y2=\"38.0\" stroke=\"#555\" stroke-width=\"1\"/><polygon points=\"50,38 46.0,40.5 46.0,35.5\" fill=\"#555\"/><line x1=\"58\" y1=\"33\" x2=\"44.424172861051424\" y2=\"15.181726880129995\" stroke=\"#555\" stroke-width=\"1\"/><polygon points=\"42,12 46.41275216113267,13.666618841972854 42.435593560970176,16.696834918287134\" fill=\"#555\"/><line x1=\"36\" y1=\"13\" x2=\"36\" y2=\"54\" stroke=\"#444\" stroke-width=\"0.5\" stroke-dasharray=\"2,2\"/><line x1=\"16\" y1=\"43\" x2=\"36\" y2=\"54\" stroke=\"#444\" stroke-width=\"0.5\" stroke-dasharray=\"2,2\"/><line x1=\"56\" y1=\"43\" x2=\"36\" y2=\"54\" stroke=\"#444\" stroke-width=\"0.5\" stroke-dasharray=\"2,2\"/><line x1=\"20\" y1=\"54\" x2=\"52\" y2=\"54\" stroke=\"#444\" stroke-width=\"1\"/></svg>" },
         ].map(function(m) {
           var active = (settings2.fmMatrix||"A") === m.id;
           return el("div", { key:m.id,
             style:{
               border:"1px solid " + (active?"#7fff6a":"#1e1e1e"),
-              borderRadius:3, padding:"6px 4px",
-              background: active?"rgba(127,255,106,0.05)":"transparent",
-              cursor:"pointer", textAlign:"center"
+              borderRadius:3,
+              background: active?"rgba(127,255,106,0.04)":"transparent",
+              cursor:"pointer",
+              aspectRatio:"1",
+              overflow:"hidden",
+              position:"relative"
             },
             onClick:function(){ setSettings2(function(s){var n=Object.assign({},s);n.fmMatrix=m.id;return n;}); }
           },
-            el("div",{style:{fontSize:9,color:active?"#7fff6a":"#444",letterSpacing:"0.08em"}},m.id),
-            el("div",{style:{fontSize:7,color:active?"#5a8a52":"#2a2a2a",letterSpacing:"0.06em",marginTop:2}},m.label)
+            el("div", {
+              dangerouslySetInnerHTML:{__html: m.svg},
+              style:{width:"100%",height:"100%"}
+            }),
+            el("div",{style:{
+              position:"absolute",bottom:2,right:3,
+              fontSize:7,color:active?"#7fff6a":"#2a2a2a",
+              letterSpacing:"0.08em"
+            }},m.id)
           );
         })
       ),
