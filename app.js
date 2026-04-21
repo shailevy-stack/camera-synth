@@ -1,5 +1,5 @@
 // Camera Synth — v3.0.0
-var VERSION = "3.7.0";
+var VERSION = "3.7.1";
 
 var useState    = React.useState;
 var useEffect   = React.useEffect;
@@ -1707,7 +1707,7 @@ function makeAlgoReverb(ctx) {
   rv.inputGain  = ctx.createGain(); rv.inputGain.gain.value  = 1.0;
   rv.wetGain    = ctx.createGain(); rv.wetGain.gain.value    = 0;
   rv.dryGain    = ctx.createGain(); rv.dryGain.gain.value    = 1;
-  rv.outputGain = ctx.createGain(); rv.outputGain.gain.value = 1;
+  rv.outputGain = ctx.createGain(); rv.outputGain.gain.value = 0.7;
 
   // Pre-delay (adds sense of distance/size)
   rv.preDelay = ctx.createDelay(0.1);
@@ -1716,14 +1716,14 @@ function makeAlgoReverb(ctx) {
 
   // Build comb filters — each: delayNode + feedbackGain + toneFilter (in loop)
   rv.combsL = []; rv.combsR = [];
-  rv.combMixL = ctx.createGain(); rv.combMixL.gain.value = 1;
-  rv.combMixR = ctx.createGain(); rv.combMixR.gain.value = 1;
+  rv.combMixL = ctx.createGain(); rv.combMixL.gain.value = 0.15; // 1/6 to normalise sum
+  rv.combMixR = ctx.createGain(); rv.combMixR.gain.value = 0.15;
 
   function makeComb(delayTime) {
     var delay    = ctx.createDelay(0.5);
     delay.delayTime.value = delayTime;
     var feedback = ctx.createGain();
-    feedback.gain.value = 0.7; // will be set by setDecay
+    feedback.gain.value = 0;   // starts silent — setDecay called by applyFxToEngine
     // Tone filter inside feedback loop — damps highs, like real room absorption
     var tone = ctx.createBiquadFilter();
     tone.type = 'lowpass';
@@ -1753,8 +1753,8 @@ function makeAlgoReverb(ctx) {
   function makeAllPass(delayTime) {
     var delay    = ctx.createDelay(0.1);
     delay.delayTime.value = delayTime;
-    var fbGain   = ctx.createGain(); fbGain.gain.value   = -0.7;
-    var ffGain   = ctx.createGain(); ffGain.gain.value   =  0.7;
+    var fbGain   = ctx.createGain(); fbGain.gain.value   = -0.5;
+    var ffGain   = ctx.createGain(); ffGain.gain.value   =  0.5;
     var inputSum = ctx.createGain(); inputSum.gain.value = 1;
     inputSum.connect(fbGain);
     inputSum.connect(ffGain);
@@ -1800,8 +1800,9 @@ function makeAlgoReverb(ctx) {
     var allCombs = rv.combsL.concat(rv.combsR);
     allCombs.forEach(function(c) {
       var dt = c.delay.delayTime.value;
-      var fb = Math.min(0.97, Math.pow(10, -3 * dt / Math.max(0.1, decaySec)));
-      c.feedback.gain.setTargetAtTime(fb, t, 0.1);
+      // RT60 formula — hard cap at 0.93 to prevent self-oscillation
+      var fb = Math.min(0.93, Math.pow(10, -3 * dt / Math.max(0.1, decaySec)));
+      c.feedback.gain.setTargetAtTime(fb, t, 0.05);
     });
   };
 
