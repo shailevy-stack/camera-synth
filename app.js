@@ -1,5 +1,5 @@
 // Camera Synth — v3.0.0
-var VERSION = "3.7.6";
+var VERSION = "3.7.8";
 
 var useState    = React.useState;
 var useEffect   = React.useEffect;
@@ -113,7 +113,7 @@ function makeEngine1() {
   var eng = {
     ctx: null, voices: [],
     combFilters: [], lowpassNode: null,
-    reverbNode: null, reverbGain: null,
+    reverbNode: null, reverbGain: null, fxLoCut: null, fxHiCut: null,
     masterGain: null,
     limiterNode: null, analyserNode: null,
     active: false, currentPitchMidi: 60,
@@ -241,8 +241,15 @@ function makeEngine1() {
       eng.seqAmpGain.connect(eng.delayDry);
       eng.delayDry.connect(eng.masterGain);
       eng.delayWet.connect(eng.masterGain);
-      eng.delayDry.connect(eng.reverbNode);
-      eng.delayWet.connect(eng.reverbNode);
+      // Lo/Hi cut on reverb send — shapes reverb character
+      eng.fxLoCut = eng.ctx.createBiquadFilter();
+      eng.fxLoCut.type = 'highpass'; eng.fxLoCut.frequency.value = 20; eng.fxLoCut.Q.value = 0.5;
+      eng.fxHiCut = eng.ctx.createBiquadFilter();
+      eng.fxHiCut.type = 'lowpass'; eng.fxHiCut.frequency.value = 20000; eng.fxHiCut.Q.value = 0.5;
+      eng.delayDry.connect(eng.fxLoCut);
+      eng.delayWet.connect(eng.fxLoCut);
+      eng.fxLoCut.connect(eng.fxHiCut);
+      eng.fxHiCut.connect(eng.reverbNode);
       eng.reverbNode.connect(eng.reverbGain);
       eng.reverbGain.connect(eng.masterGain);
       eng.masterGain.connect(eng.limiterNode);
@@ -707,7 +714,7 @@ function makeEngine2() {
     ctx: null,
     oscR: null, oscG: null, oscB: null,
     combFilters: [], lowpassNode: null,
-    reverbNode: null, reverbGain: null,
+    reverbNode: null, reverbGain: null, fxLoCut: null, fxHiCut: null,
     masterGain: null,
     limiterNode: null, analyserNode: null,
     active: false, currentPitchMidi: 60,
@@ -818,8 +825,14 @@ function makeEngine2() {
       eng.seqAmpGain.connect(eng.delayDry);
       eng.delayDry.connect(eng.masterGain);
       eng.delayWet.connect(eng.masterGain);
-      eng.delayDry.connect(eng.reverbNode);
-      eng.delayWet.connect(eng.reverbNode);
+      eng.fxLoCut = eng.ctx.createBiquadFilter();
+      eng.fxLoCut.type = 'highpass'; eng.fxLoCut.frequency.value = 20; eng.fxLoCut.Q.value = 0.5;
+      eng.fxHiCut = eng.ctx.createBiquadFilter();
+      eng.fxHiCut.type = 'lowpass'; eng.fxHiCut.frequency.value = 20000; eng.fxHiCut.Q.value = 0.5;
+      eng.delayDry.connect(eng.fxLoCut);
+      eng.delayWet.connect(eng.fxLoCut);
+      eng.fxLoCut.connect(eng.fxHiCut);
+      eng.fxHiCut.connect(eng.reverbNode);
       eng.reverbNode.connect(eng.reverbGain);
       eng.reverbGain.connect(eng.masterGain);
       eng.masterGain.connect(eng.limiterNode);
@@ -1781,7 +1794,7 @@ function App() {
   var rfxs= useState({
     delaySync: true, delayDiv: "1/8", delayTime: 250,
     feedback: 0, width: 0, delayMix: 0,
-    reverbMix: 0,
+    reverbMix: 0, fxLoCut: 20, fxHiCut: 20000,
     divMenuOpen: false,
   });
   var fxSettings = rfxs[0], setFxSettings = rfxs[1];
@@ -2166,9 +2179,13 @@ function App() {
     eng.delayDry.gain.setTargetAtTime(Math.cos(mixAngle), t, 0.05);
 
 
-    // Reverb — send (dry always full, reverb adds on top)
+    // Lo/Hi cut on reverb send
+    if (eng.fxLoCut) eng.fxLoCut.frequency.setTargetAtTime(Math.max(20, fx.fxLoCut||20), t, 0.05);
+    if (eng.fxHiCut) eng.fxHiCut.frequency.setTargetAtTime(Math.min(20000, fx.fxHiCut||20000), t, 0.05);
+    // Reverb — send with quadratic curve (stays low, rises sharply at top)
     if (eng.reverbGain) {
-      var revSend = (fx.reverbMix !== undefined ? fx.reverbMix : 0);
+      var revLin = (fx.reverbMix !== undefined ? fx.reverbMix : 0);
+      var revSend = revLin * revLin; // quadratic: fine control at low, dramatic at top
       eng.reverbGain.gain.setTargetAtTime(revSend, t, 0.1);
     }
   }
@@ -2426,14 +2443,24 @@ function App() {
         )
       ),
 
-      // Row 2: Delay Mix · Feedback · Width
-      el("div", { style:{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:8, marginBottom:8 } },
+      // 2-column × 3-row grid
+      // Left: Delay · Feedback · Width  |  Right: Lo Cut · Hi Cut · Reverb
+      el("div", { style:{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 } },
+        // Left col
         el("div",{style:{display:"flex",flexDirection:"column",gap:2}},
           el("div",{style:{display:"flex",justifyContent:"space-between"}},
             el("span",{style:{fontSize:7,color:"#555",letterSpacing:"0.1em",textTransform:"uppercase"}},"Delay"),
             el("span",{style:{fontSize:8,color:"#7fff6a"}},fxSettings.delayMix+"%")
           ),
           el("input",{type:"range",min:0,max:100,value:fxSettings.delayMix,onChange:function(e){setFx("delayMix",+e.target.value);}})
+        ),
+        // Right col
+        el("div",{style:{display:"flex",flexDirection:"column",gap:2}},
+          el("div",{style:{display:"flex",justifyContent:"space-between"}},
+            el("span",{style:{fontSize:7,color:"#555",letterSpacing:"0.1em",textTransform:"uppercase"}},"Lo Cut"),
+            el("span",{style:{fontSize:8,color:"#7fff6a"}},fxSettings.fxLoCut<=20?"off":fxSettings.fxLoCut+"Hz")
+          ),
+          el("input",{type:"range",min:20,max:2000,value:fxSettings.fxLoCut,onChange:function(e){setFx("fxLoCut",+e.target.value);}})
         ),
         el("div",{style:{display:"flex",flexDirection:"column",gap:2}},
           el("div",{style:{display:"flex",justifyContent:"space-between"}},
@@ -2444,38 +2471,25 @@ function App() {
         ),
         el("div",{style:{display:"flex",flexDirection:"column",gap:2}},
           el("div",{style:{display:"flex",justifyContent:"space-between"}},
-            el("span",{style:{fontSize:7,color:"#6bb5ff",letterSpacing:"0.1em",textTransform:"uppercase"}},"Width"),
-            el("span",{style:{fontSize:8,color:"#6bb5ff"}},fxSettings.width+"%")
-          ),
-          el("input",{type:"range",min:0,max:100,value:fxSettings.width,onChange:function(e){setFx("width",+e.target.value);}})
-        )
-      ),
-
-      // Row 3: Lo Cut · Hi Cut
-      el("div", { style:{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:8 } },
-        el("div",{style:{display:"flex",flexDirection:"column",gap:2}},
-          el("div",{style:{display:"flex",justifyContent:"space-between"}},
-            el("span",{style:{fontSize:7,color:"#555",letterSpacing:"0.1em",textTransform:"uppercase"}},"Lo Cut"),
-            el("span",{style:{fontSize:8,color:"#7fff6a"}},fxSettings.fxLoCut<=20?"off":fxSettings.fxLoCut+"Hz")
-          ),
-          el("input",{type:"range",min:20,max:2000,value:fxSettings.fxLoCut,onChange:function(e){setFx("fxLoCut",+e.target.value);}})
-        ),
-        el("div",{style:{display:"flex",flexDirection:"column",gap:2}},
-          el("div",{style:{display:"flex",justifyContent:"space-between"}},
             el("span",{style:{fontSize:7,color:"#555",letterSpacing:"0.1em",textTransform:"uppercase"}},"Hi Cut"),
             el("span",{style:{fontSize:8,color:"#7fff6a"}},fxSettings.fxHiCut>=20000?"off":(fxSettings.fxHiCut>=1000?(fxSettings.fxHiCut/1000).toFixed(1)+"k":fxSettings.fxHiCut+"Hz"))
           ),
           el("input",{type:"range",min:1000,max:20000,value:fxSettings.fxHiCut,onChange:function(e){setFx("fxHiCut",+e.target.value);}})
-        )
-      ),
-
-      // Row 4: Reverb
-      el("div",{style:{display:"flex",flexDirection:"column",gap:2}},
-        el("div",{style:{display:"flex",justifyContent:"space-between"}},
-          el("span",{style:{fontSize:7,color:"#ffb347",letterSpacing:"0.1em",textTransform:"uppercase"}},"Reverb"),
-          el("span",{style:{fontSize:8,color:"#ffb347"}},Math.round((fxSettings.reverbMix||0)*100)+"%")
         ),
-        el("input",{type:"range",min:0,max:100,value:Math.round((fxSettings.reverbMix||0)*100),onChange:function(e){setFx("reverbMix",+e.target.value/100);}})
+        el("div",{style:{display:"flex",flexDirection:"column",gap:2}},
+          el("div",{style:{display:"flex",justifyContent:"space-between"}},
+            el("span",{style:{fontSize:7,color:"#6bb5ff",letterSpacing:"0.1em",textTransform:"uppercase"}},"Width"),
+            el("span",{style:{fontSize:8,color:"#6bb5ff"}},fxSettings.width+"%")
+          ),
+          el("input",{type:"range",min:0,max:100,value:fxSettings.width,onChange:function(e){setFx("width",+e.target.value);}})
+        ),
+        el("div",{style:{display:"flex",flexDirection:"column",gap:2}},
+          el("div",{style:{display:"flex",justifyContent:"space-between"}},
+            el("span",{style:{fontSize:7,color:"#ffb347",letterSpacing:"0.1em",textTransform:"uppercase"}},"Reverb"),
+            el("span",{style:{fontSize:8,color:"#ffb347"}},Math.round((fxSettings.reverbMix||0)*100)+"%")
+          ),
+          el("input",{type:"range",min:0,max:100,value:Math.round((fxSettings.reverbMix||0)*100),onChange:function(e){setFx("reverbMix",+e.target.value/100);}})
+        )
       )
     ),
 
