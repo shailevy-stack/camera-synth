@@ -1,5 +1,5 @@
 // Camera Synth — v3.0.0
-var VERSION = "3.7.5";
+var VERSION = "3.7.6";
 
 var useState    = React.useState;
 var useEffect   = React.useEffect;
@@ -113,7 +113,7 @@ function makeEngine1() {
   var eng = {
     ctx: null, voices: [],
     combFilters: [], lowpassNode: null,
-    reverbNode: null, reverbGain: null, dryGain: null,
+    reverbNode: null, reverbGain: null, dryGain: null, fxLoCut: null, fxHiCut: null,
     masterGain: null,
     limiterNode: null, analyserNode: null,
     active: false, currentPitchMidi: 60,
@@ -238,11 +238,19 @@ function makeEngine1() {
       // Signal chain: seqAmpGain → dry+wet delay → master
       // Diffusion on wet output: each repeat gets all-pass smeared
       eng.seqAmpGain.connect(eng.delayDry);
+      // Lo/Hi cut filters between delay and reverb
+      eng.fxLoCut = eng.ctx.createBiquadFilter();
+      eng.fxLoCut.type = 'highpass'; eng.fxLoCut.frequency.value = 20; eng.fxLoCut.Q.value = 0.5;
+      eng.fxHiCut = eng.ctx.createBiquadFilter();
+      eng.fxHiCut.type = 'lowpass'; eng.fxHiCut.frequency.value = 20000; eng.fxHiCut.Q.value = 0.5;
+      // dry path bypasses filters (always clean)
       eng.delayDry.connect(eng.dryGain);
-      eng.delayDry.connect(eng.reverbNode);
-      eng.delayWet.connect(eng.dryGain);
-      eng.delayWet.connect(eng.reverbNode);
       eng.dryGain.connect(eng.masterGain);
+      // wet path goes through filters → reverb + also dry mix
+      eng.delayWet.connect(eng.fxLoCut);
+      eng.fxLoCut.connect(eng.fxHiCut);
+      eng.fxHiCut.connect(eng.dryGain);
+      eng.fxHiCut.connect(eng.reverbNode);
       eng.reverbNode.connect(eng.reverbGain);
       eng.reverbGain.connect(eng.masterGain);
       eng.masterGain.connect(eng.limiterNode);
@@ -707,7 +715,7 @@ function makeEngine2() {
     ctx: null,
     oscR: null, oscG: null, oscB: null,
     combFilters: [], lowpassNode: null,
-    reverbNode: null, reverbGain: null, dryGain: null,
+    reverbNode: null, reverbGain: null, dryGain: null, fxLoCut: null, fxHiCut: null,
     masterGain: null,
     limiterNode: null, analyserNode: null,
     active: false, currentPitchMidi: 60,
@@ -815,11 +823,19 @@ function makeEngine2() {
       // Signal chain: seqAmpGain → dry+wet delay → master
       // Diffusion on wet output: each repeat gets all-pass smeared
       eng.seqAmpGain.connect(eng.delayDry);
+      // Lo/Hi cut filters between delay and reverb
+      eng.fxLoCut = eng.ctx.createBiquadFilter();
+      eng.fxLoCut.type = 'highpass'; eng.fxLoCut.frequency.value = 20; eng.fxLoCut.Q.value = 0.5;
+      eng.fxHiCut = eng.ctx.createBiquadFilter();
+      eng.fxHiCut.type = 'lowpass'; eng.fxHiCut.frequency.value = 20000; eng.fxHiCut.Q.value = 0.5;
+      // dry path bypasses filters (always clean)
       eng.delayDry.connect(eng.dryGain);
-      eng.delayDry.connect(eng.reverbNode);
-      eng.delayWet.connect(eng.dryGain);
-      eng.delayWet.connect(eng.reverbNode);
       eng.dryGain.connect(eng.masterGain);
+      // wet path goes through filters → reverb + also dry mix
+      eng.delayWet.connect(eng.fxLoCut);
+      eng.fxLoCut.connect(eng.fxHiCut);
+      eng.fxHiCut.connect(eng.dryGain);
+      eng.fxHiCut.connect(eng.reverbNode);
       eng.reverbNode.connect(eng.reverbGain);
       eng.reverbGain.connect(eng.masterGain);
       eng.masterGain.connect(eng.limiterNode);
@@ -1781,7 +1797,7 @@ function App() {
   var rfxs= useState({
     delaySync: true, delayDiv: "1/8", delayTime: 250,
     feedback: 0, width: 0, delayMix: 0,
-    reverbMix: 0,
+    reverbMix: 0, fxLoCut: 20, fxHiCut: 20000,
     divMenuOpen: false,
   });
   var fxSettings = rfxs[0], setFxSettings = rfxs[1];
@@ -2165,6 +2181,10 @@ function App() {
     eng.delayWet.gain.setTargetAtTime(Math.sin(mixAngle), t, 0.05);
     eng.delayDry.gain.setTargetAtTime(Math.cos(mixAngle), t, 0.05);
 
+    // Lo/Hi cut on delay wet signal
+    if (eng.fxLoCut) eng.fxLoCut.frequency.setTargetAtTime(Math.max(20, fx.fxLoCut||20), t, 0.05);
+    if (eng.fxHiCut) eng.fxHiCut.frequency.setTargetAtTime(Math.min(20000, fx.fxHiCut||20000), t, 0.05);
+
     // Reverb — equal-power crossfade
     if (eng.reverbGain && eng.dryGain) {
       var revMix = (fx.reverbMix !== undefined ? fx.reverbMix : 0);
@@ -2404,7 +2424,7 @@ function App() {
     // ── FX inline drawer ──────────────────────────────────────────────────────
     showFx && el("div", { style:{ padding:"8px 14px 10px", borderTop:"1px solid #141414", background:"#0c0c0d", flexShrink:0, position:"relative" } },
 
-      // Sync/Free + division picker + time display
+      // Row 1: Sync/Free + division + time
       el("div", { style:{ display:"flex", alignItems:"center", gap:6, marginBottom:8 } },
         el("div", { style:{ display:"flex", gap:2 } },
           el("button", { className:cx("sg", fxSettings.delaySync&&"sel"), onClick:function(){ setFx("delaySync",true); } }, "sync"),
@@ -2414,17 +2434,11 @@ function App() {
           el("button", { className:"sg sel", onClick:function(){ setFx("divMenuOpen",!fxSettings.divMenuOpen); }, style:{ width:"100%", textAlign:"center" } }, fxSettings.delayDiv+" ▾"),
           fxSettings.divMenuOpen && el("div", { style:{ position:"absolute", bottom:"100%", left:0, right:0, zIndex:20, background:"#0e0e10", border:"1px solid #2a2a2a", borderRadius:4, padding:4, marginBottom:3 } },
             el("div", { style:{ fontSize:7, color:"#555", letterSpacing:"0.1em", marginBottom:3, paddingLeft:2 } }, "STRAIGHT"),
-            el("div", { style:{ display:"flex", gap:2, marginBottom:4 } },
-              ["1/16","1/8","1/4","1/2","1/1"].map(function(d){ return el("button",{ key:d, className:cx("sg",fxSettings.delayDiv===d&&"sel"), onClick:function(){ setFx("delayDiv",d); setFx("divMenuOpen",false); }, style:{flex:1,textAlign:"center",fontSize:8,padding:"3px 0"} }, d); })
-            ),
+            el("div", { style:{ display:"flex", gap:2, marginBottom:4 } }, ["1/16","1/8","1/4","1/2","1/1"].map(function(d){ return el("button",{ key:d, className:cx("sg",fxSettings.delayDiv===d&&"sel"), onClick:function(){ setFx("delayDiv",d); setFx("divMenuOpen",false); }, style:{flex:1,textAlign:"center",fontSize:8,padding:"3px 0"} }, d); })),
             el("div", { style:{ fontSize:7, color:"#555", letterSpacing:"0.1em", marginBottom:3, paddingLeft:2 } }, "DOTTED"),
-            el("div", { style:{ display:"flex", gap:2, marginBottom:4 } },
-              ["1/8.","1/4."].map(function(d){ return el("button",{ key:d, className:cx("sg",fxSettings.delayDiv===d&&"sel"), onClick:function(){ setFx("delayDiv",d); setFx("divMenuOpen",false); }, style:{flex:1,textAlign:"center",fontSize:8,padding:"3px 0"} }, d); })
-            ),
+            el("div", { style:{ display:"flex", gap:2, marginBottom:4 } }, ["1/8.","1/4."].map(function(d){ return el("button",{ key:d, className:cx("sg",fxSettings.delayDiv===d&&"sel"), onClick:function(){ setFx("delayDiv",d); setFx("divMenuOpen",false); }, style:{flex:1,textAlign:"center",fontSize:8,padding:"3px 0"} }, d); })),
             el("div", { style:{ fontSize:7, color:"#555", letterSpacing:"0.1em", marginBottom:3, paddingLeft:2 } }, "TRIPLET"),
-            el("div", { style:{ display:"flex", gap:2 } },
-              ["1/16T","1/8T","1/4T"].map(function(d){ return el("button",{ key:d, className:cx("sg",fxSettings.delayDiv===d&&"sel"), onClick:function(){ setFx("delayDiv",d); setFx("divMenuOpen",false); }, style:{flex:1,textAlign:"center",fontSize:8,padding:"3px 0"} }, d); })
-            )
+            el("div", { style:{ display:"flex", gap:2 } }, ["1/16T","1/8T","1/4T"].map(function(d){ return el("button",{ key:d, className:cx("sg",fxSettings.delayDiv===d&&"sel"), onClick:function(){ setFx("delayDiv",d); setFx("divMenuOpen",false); }, style:{flex:1,textAlign:"center",fontSize:8,padding:"3px 0"} }, d); }))
           )
         ),
         !fxSettings.delaySync && el("input", { type:"range", min:1, max:3000, value:fxSettings.delayTime, style:{ flex:1 }, onChange:function(e){ setFx("delayTime",+e.target.value); } }),
@@ -2433,27 +2447,56 @@ function App() {
         )
       ),
 
-      // Delay sliders: Feedback + Width + Mix + Reverb — 4 in a row
-      el("div", { style:{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr 1fr", gap:8 } },
-        [
-          { key:"feedback",  label:"Feedbk",  value:fxSettings.feedback,  min:0, max:95,  fmt:function(v){return v+"%";} },
-          { key:"width",     label:"Width",   value:fxSettings.width,     min:0, max:100, fmt:function(v){return v+"%";}, color:"#6bb5ff" },
-          { key:"delayMix",  label:"Delay",   value:fxSettings.delayMix,  min:0, max:100, fmt:function(v){return v+"%";} },
-          { key:"reverbMix", label:"Reverb",  value:Math.round((fxSettings.reverbMix||0)*100), min:0, max:100,
-            fmt:function(v){return v+"%";}, color:"#ffb347",
-            onChange:function(e){ setFx("reverbMix",+e.target.value/100); } },
-        ].map(function(sl){
-          return el("div",{key:sl.key,style:{display:"flex",flexDirection:"column",gap:2}},
-            el("div",{style:{display:"flex",justifyContent:"space-between"}},
-              el("span",{style:{fontSize:7,color:sl.color||"#555",letterSpacing:"0.1em",textTransform:"uppercase"}},sl.label),
-              el("span",{style:{fontSize:8,color:sl.color||"#7fff6a"}},sl.fmt(sl.value))
-            ),
-            el("input",{type:"range",min:sl.min,max:sl.max,
-              value:sl.key==="reverbMix"?Math.round((fxSettings.reverbMix||0)*100):sl.value,
-              onChange:sl.onChange||function(e){setFx(sl.key,+e.target.value);}
-            })
-          );
-        })
+      // Row 2: Delay Mix · Feedback · Width
+      el("div", { style:{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:8, marginBottom:8 } },
+        el("div",{style:{display:"flex",flexDirection:"column",gap:2}},
+          el("div",{style:{display:"flex",justifyContent:"space-between"}},
+            el("span",{style:{fontSize:7,color:"#555",letterSpacing:"0.1em",textTransform:"uppercase"}},"Delay"),
+            el("span",{style:{fontSize:8,color:"#7fff6a"}},fxSettings.delayMix+"%")
+          ),
+          el("input",{type:"range",min:0,max:100,value:fxSettings.delayMix,onChange:function(e){setFx("delayMix",+e.target.value);}})
+        ),
+        el("div",{style:{display:"flex",flexDirection:"column",gap:2}},
+          el("div",{style:{display:"flex",justifyContent:"space-between"}},
+            el("span",{style:{fontSize:7,color:"#555",letterSpacing:"0.1em",textTransform:"uppercase"}},"Feedback"),
+            el("span",{style:{fontSize:8,color:"#7fff6a"}},fxSettings.feedback+"%")
+          ),
+          el("input",{type:"range",min:0,max:95,value:fxSettings.feedback,onChange:function(e){setFx("feedback",+e.target.value);}})
+        ),
+        el("div",{style:{display:"flex",flexDirection:"column",gap:2}},
+          el("div",{style:{display:"flex",justifyContent:"space-between"}},
+            el("span",{style:{fontSize:7,color:"#6bb5ff",letterSpacing:"0.1em",textTransform:"uppercase"}},"Width"),
+            el("span",{style:{fontSize:8,color:"#6bb5ff"}},fxSettings.width+"%")
+          ),
+          el("input",{type:"range",min:0,max:100,value:fxSettings.width,onChange:function(e){setFx("width",+e.target.value);}})
+        )
+      ),
+
+      // Row 3: Lo Cut · Hi Cut
+      el("div", { style:{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:8 } },
+        el("div",{style:{display:"flex",flexDirection:"column",gap:2}},
+          el("div",{style:{display:"flex",justifyContent:"space-between"}},
+            el("span",{style:{fontSize:7,color:"#555",letterSpacing:"0.1em",textTransform:"uppercase"}},"Lo Cut"),
+            el("span",{style:{fontSize:8,color:"#7fff6a"}},fxSettings.fxLoCut<=20?"off":fxSettings.fxLoCut+"Hz")
+          ),
+          el("input",{type:"range",min:20,max:2000,value:fxSettings.fxLoCut,onChange:function(e){setFx("fxLoCut",+e.target.value);}})
+        ),
+        el("div",{style:{display:"flex",flexDirection:"column",gap:2}},
+          el("div",{style:{display:"flex",justifyContent:"space-between"}},
+            el("span",{style:{fontSize:7,color:"#555",letterSpacing:"0.1em",textTransform:"uppercase"}},"Hi Cut"),
+            el("span",{style:{fontSize:8,color:"#7fff6a"}},fxSettings.fxHiCut>=20000?"off":(fxSettings.fxHiCut>=1000?(fxSettings.fxHiCut/1000).toFixed(1)+"k":fxSettings.fxHiCut+"Hz"))
+          ),
+          el("input",{type:"range",min:1000,max:20000,value:fxSettings.fxHiCut,onChange:function(e){setFx("fxHiCut",+e.target.value);}})
+        )
+      ),
+
+      // Row 4: Reverb
+      el("div",{style:{display:"flex",flexDirection:"column",gap:2}},
+        el("div",{style:{display:"flex",justifyContent:"space-between"}},
+          el("span",{style:{fontSize:7,color:"#ffb347",letterSpacing:"0.1em",textTransform:"uppercase"}},"Reverb"),
+          el("span",{style:{fontSize:8,color:"#ffb347"}},Math.round((fxSettings.reverbMix||0)*100)+"%")
+        ),
+        el("input",{type:"range",min:0,max:100,value:Math.round((fxSettings.reverbMix||0)*100),onChange:function(e){setFx("reverbMix",+e.target.value/100);}})
       )
     ),
 
