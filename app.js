@@ -1,5 +1,5 @@
 // Camera Synth — v3.0.0
-var VERSION = "3.8.1";
+var VERSION = "3.8.2";
 
 var useState    = React.useState;
 var useEffect   = React.useEffect;
@@ -2238,6 +2238,7 @@ function App() {
       el("div", { style:{ display:"flex", alignItems:"baseline", gap:7 } },
         el("span", { style:{ fontSize:10, letterSpacing:"0.2em", textTransform:"uppercase" } },
           el("span", { style:{ color:"#ff9944" } }, "SYN"),
+          el("span", { style:{ color:"#7fff6a" } }, "E"),
           el("span", { style:{ color:"#ff9944" } }, "TH"),
           el("span", { style:{ color:"#7fff6a" } }, "ESIA")
         ),
@@ -2621,15 +2622,21 @@ function App() {
             el("label", { style:{ color:color, minWidth:16, fontSize:9, letterSpacing:"0.1em" } }, ch),
             el("div", { style:{ display:"flex", gap:2, flexWrap:"wrap" } },
               INTERVAL_NAMES.map(function(n) {
+                var isSel = settings2[iKey]===n;
                 return el("button", {
                   key:n,
-                  className:cx("sg", settings2[iKey]===n&&"sel"),
+                  className:"sg",
                   onClick:function(){
                     setSettings2(function(s){var ns=Object.assign({},s);ns[iKey]=n;return ns;});
                     var eng=eng2Ref.current;
                     if(eng){eng.settings[iKey]=n;eng.updateIntervals&&eng.updateIntervals();}
                   },
-                  title: INTERVAL_LABELS[n]
+                  title: INTERVAL_LABELS[n],
+                  style:{
+                    borderColor: isSel ? color : color+"44",
+                    color: isSel ? color : color+"88",
+                    background: isSel ? color+"11" : "transparent"
+                  }
                 }, n);
               })
             )
@@ -2638,15 +2645,21 @@ function App() {
             el("span", { style:{ fontSize:8, color:"#333", letterSpacing:"0.08em", minWidth:24 } }, "C:M"),
             el("div", { style:{ display:"flex", gap:2, flexWrap:"wrap" } },
               CM_NAMES.map(function(n) {
+                var isSel = settings2[cmKey]===n;
                 return el("button", {
                   key:n,
-                  className:cx("sg", settings2[cmKey]===n&&"sel"),
+                  className:"sg",
                   onClick:function(){
                     setSettings2(function(s){var ns=Object.assign({},s);ns[cmKey]=n;return ns;});
                     var eng=eng2Ref.current;
                     if(eng){eng.settings[cmKey]=n;eng.spawnOscillators&&eng.spawnOscillators();}
                   },
-                  title: CM_LABELS[n]
+                  title: CM_LABELS[n],
+                  style:{
+                    borderColor: isSel ? color : color+"44",
+                    color: isSel ? color : color+"88",
+                    background: isSel ? color+"11" : "transparent"
+                  }
                 }, n);
               })
             )
