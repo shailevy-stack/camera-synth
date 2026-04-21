@@ -1,5 +1,5 @@
 // Camera Synth — v3.0.0
-var VERSION = "3.8.0";
+var VERSION = "3.8.1";
 
 var useState    = React.useState;
 var useEffect   = React.useEffect;
@@ -1887,7 +1887,7 @@ function App() {
 
     // Load last state from localStorage
     try {
-      var saved = localStorage.getItem("camsynth_state");
+      var saved = localStorage.getItem("synesthesia_state");
       if (saved) {
         var state = JSON.parse(saved);
         if (state.engine) {
@@ -1922,7 +1922,7 @@ function App() {
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     saveTimerRef.current = setTimeout(function() {
       try {
-        localStorage.setItem("camsynth_state", JSON.stringify({
+        localStorage.setItem("synesthesia_state", JSON.stringify({
           engine: activeEngine, settings1: settings1, settings2: settings2,
           lfoState: lfoState, lpX: lpX, ribbonX: ribbonX
         }));
@@ -2213,7 +2213,7 @@ function App() {
     var eng=synthRef.current;
     if(recording){
       var wavBuf=eng?eng.stopRecording():null;
-      if(wavBuf){var blob=new Blob([wavBuf],{type:"audio/wav"}),url=URL.createObjectURL(blob),a=document.createElement("a");a.href=url;a.download="camsynth-"+Date.now()+".wav";a.click();}
+      if(wavBuf){var blob=new Blob([wavBuf],{type:"audio/wav"}),url=URL.createObjectURL(blob),a=document.createElement("a");a.href=url;a.download="synesthesia-"+Date.now()+".wav";a.click();}
       setRecording(false);
     } else {
       if(!eng||!eng.ctx)return;
@@ -2236,13 +2236,17 @@ function App() {
     // Header
     el("div", { style:{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"10px 14px 6px", paddingTop:"max(env(safe-area-inset-top,10px),10px)", flexShrink:0 } },
       el("div", { style:{ display:"flex", alignItems:"baseline", gap:7 } },
-        el("span", { style:{ fontSize:10, letterSpacing:"0.2em", color:"#7fff6a", textTransform:"uppercase" } }, "CamSynth"),
+        el("span", { style:{ fontSize:10, letterSpacing:"0.2em", textTransform:"uppercase" } },
+          el("span", { style:{ color:"#ff9944" } }, "SYN"),
+          el("span", { style:{ color:"#ff9944" } }, "TH"),
+          el("span", { style:{ color:"#7fff6a" } }, "ESIA")
+        ),
         el("span", { style:{ fontSize:8, color:"#888", letterSpacing:"0.1em" } }, "v"+VERSION)
       ),
       el("div", { style:{ display:"flex", gap:4, alignItems:"center" } },
         el("button", { className:cx("cb", showAdv&&"on"), onClick:function(){setShowAdv(function(s){return !s;});setShowSeq(false);}, style:{ letterSpacing:"0.12em", padding:"5px 10px" } }, "ADV"),
-        camOn && el("button", { className:"cb", onClick:handleFlip }, "\u21c4"),
-        el("button", { className:"cb", onClick:handleReload }, "\u21ba")
+        camOn && el("button", { className:"cb", onClick:handleFlip, style:{fontSize:18,padding:"3px 8px",lineHeight:1} }, "\u21c4"),
+        el("button", { className:"cb", onClick:handleReload, style:{fontSize:18,padding:"3px 8px",lineHeight:1} }, "\u21ba")
       )
     ),
 
@@ -2444,7 +2448,7 @@ function App() {
           )
         ),
         !fxSettings.delaySync && el("input", { type:"range", min:1, max:3000, value:fxSettings.delayTime, style:{ flex:1 }, onChange:function(e){ setFx("delayTime",+e.target.value); } }),
-        el("span", { style:{ fontSize:11, color:"#7fff6a", minWidth:44, textAlign:"right", letterSpacing:"0.04em" } },
+        el("span", { style:{ fontSize:11, color:"#6bb5ff", minWidth:44, textAlign:"right", letterSpacing:"0.04em" } },
           fxSettings.delaySync ? Math.round((60/seqSettings.bpm)*(DIV_MULTS[fxSettings.delayDiv]||0.5)*1000)+"ms" : fxSettings.delayTime+"ms"
         )
       ),
@@ -2455,30 +2459,30 @@ function App() {
         // Left col
         el("div",{style:{display:"flex",flexDirection:"column",gap:2}},
           el("div",{style:{display:"flex",justifyContent:"space-between"}},
-            el("span",{style:{fontSize:7,color:"#555",letterSpacing:"0.1em",textTransform:"uppercase"}},"Delay"),
-            el("span",{style:{fontSize:8,color:"#7fff6a"}},fxSettings.delayMix+"%")
+            el("span",{style:{fontSize:7,color:"#6bb5ff",letterSpacing:"0.1em",textTransform:"uppercase"}},"Delay"),
+            el("span",{style:{fontSize:8,color:"#6bb5ff"}},fxSettings.delayMix+"%")
           ),
           el("input",{type:"range",min:0,max:100,value:fxSettings.delayMix,onChange:function(e){setFx("delayMix",+e.target.value);}})
         ),
         // Right col
         el("div",{style:{display:"flex",flexDirection:"column",gap:2}},
           el("div",{style:{display:"flex",justifyContent:"space-between"}},
-            el("span",{style:{fontSize:7,color:"#555",letterSpacing:"0.1em",textTransform:"uppercase"}},"Lo Cut"),
-            el("span",{style:{fontSize:8,color:"#7fff6a"}},fxSettings.fxLoCut<=20?"off":fxSettings.fxLoCut+"Hz")
+            el("span",{style:{fontSize:7,color:"#ff9944",letterSpacing:"0.1em",textTransform:"uppercase"}},"Lo Cut"),
+            el("span",{style:{fontSize:8,color:"#ff9944"}},fxSettings.fxLoCut<=20?"off":fxSettings.fxLoCut+"Hz")
           ),
           el("input",{type:"range",min:20,max:2000,value:fxSettings.fxLoCut,onChange:function(e){setFx("fxLoCut",+e.target.value);}})
         ),
         el("div",{style:{display:"flex",flexDirection:"column",gap:2}},
           el("div",{style:{display:"flex",justifyContent:"space-between"}},
-            el("span",{style:{fontSize:7,color:"#555",letterSpacing:"0.1em",textTransform:"uppercase"}},"Feedback"),
-            el("span",{style:{fontSize:8,color:"#7fff6a"}},fxSettings.feedback+"%")
+            el("span",{style:{fontSize:7,color:"#6bb5ff",letterSpacing:"0.1em",textTransform:"uppercase"}},"Feedback"),
+            el("span",{style:{fontSize:8,color:"#6bb5ff"}},fxSettings.feedback+"%")
           ),
           el("input",{type:"range",min:0,max:95,value:fxSettings.feedback,onChange:function(e){setFx("feedback",+e.target.value);}})
         ),
         el("div",{style:{display:"flex",flexDirection:"column",gap:2}},
           el("div",{style:{display:"flex",justifyContent:"space-between"}},
-            el("span",{style:{fontSize:7,color:"#555",letterSpacing:"0.1em",textTransform:"uppercase"}},"Hi Cut"),
-            el("span",{style:{fontSize:8,color:"#7fff6a"}},fxSettings.fxHiCut>=20000?"off":(fxSettings.fxHiCut>=1000?(fxSettings.fxHiCut/1000).toFixed(1)+"k":fxSettings.fxHiCut+"Hz"))
+            el("span",{style:{fontSize:7,color:"#ff9944",letterSpacing:"0.1em",textTransform:"uppercase"}},"Hi Cut"),
+            el("span",{style:{fontSize:8,color:"#ff9944"}},fxSettings.fxHiCut>=20000?"off":(fxSettings.fxHiCut>=1000?(fxSettings.fxHiCut/1000).toFixed(1)+"k":fxSettings.fxHiCut+"Hz"))
           ),
           el("input",{type:"range",min:1000,max:20000,value:fxSettings.fxHiCut,onChange:function(e){setFx("fxHiCut",+e.target.value);}})
         ),
@@ -2491,8 +2495,8 @@ function App() {
         ),
         el("div",{style:{display:"flex",flexDirection:"column",gap:2}},
           el("div",{style:{display:"flex",justifyContent:"space-between"}},
-            el("span",{style:{fontSize:7,color:"#ffb347",letterSpacing:"0.1em",textTransform:"uppercase"}},"Reverb"),
-            el("span",{style:{fontSize:8,color:"#ffb347"}},Math.round((fxSettings.reverbMix||0)*100)+"%")
+            el("span",{style:{fontSize:7,color:"#ff9944",letterSpacing:"0.1em",textTransform:"uppercase"}},"Reverb"),
+            el("span",{style:{fontSize:8,color:"#ff9944"}},Math.round((fxSettings.reverbMix||0)*100)+"%")
           ),
           el("input",{type:"range",min:0,max:100,value:Math.round((fxSettings.reverbMix||0)*100),onChange:function(e){setFx("reverbMix",+e.target.value/100);}})
         )
@@ -2519,7 +2523,7 @@ function App() {
         }, style:{ padding:"6px 14px", fontSize:10, flexShrink:0 } }, seqPlaying?"◼ STOP":"▶ PLAY"),
 
         el("div", { style:{ display:"flex", alignItems:"center", gap:4 } },
-          el("span", { style:{ fontSize:8, color:"#444", letterSpacing:"0.1em", marginRight:2 } }, "BPM"),
+          el("span", { style:{ fontSize:8, color:"#6bb5ff", letterSpacing:"0.1em", marginRight:2 } }, "BPM"),
           el("button", { className:"sg", style:{padding:"2px 7px"}, onClick:function(){ setSeqSettings(function(s){ var n=Object.assign({},s); n.bpm=Math.max(40,s.bpm-5); if(seqRef.current)seqRef.current.bpm=n.bpm; return n; }); } }, "-"),
           el("input", { type:"text", inputMode:"numeric",
             defaultValue:seqSettings.bpm, key:"bpm-"+seqSettings.bpm,
@@ -2533,7 +2537,7 @@ function App() {
         ),
 
         el("div", { style:{ display:"flex", alignItems:"center", gap:4 } },
-          el("span", { style:{ fontSize:8, color:"#444", letterSpacing:"0.1em", marginRight:2 } }, "STEPS"),
+          el("span", { style:{ fontSize:8, color:"#6bb5ff", letterSpacing:"0.1em", marginRight:2 } }, "STEPS"),
           el("button", { className:"sg", style:{padding:"2px 7px"}, onClick:function(){ setSeqSettings(function(s){ var n=Object.assign({},s); n.steps=Math.max(1,s.steps-1); if(seqRef.current)seqRef.current.steps=n.steps; return n; }); } }, "-"),
           el("span", { style:{ fontSize:13, color:"#7fff6a", minWidth:20, textAlign:"center" } }, seqSettings.steps),
           el("button", { className:"sg", style:{padding:"2px 7px"}, onClick:function(){ setSeqSettings(function(s){ var n=Object.assign({},s); n.steps=Math.min(16,s.steps+1); if(seqRef.current)seqRef.current.steps=n.steps; return n; }); } }, "+")

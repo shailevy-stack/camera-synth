@@ -1,6 +1,6 @@
 {
-  "name": "Camera Synth",
-  "short_name": "CamSynth",
+  "name": "SYNESTHESIA",
+  "short_name": "SYNESTHESIA",
   "description": "Live camera to drone synthesizer",
   "start_url": "./",
   "display": "standalone",
