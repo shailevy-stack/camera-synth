@@ -1,5 +1,5 @@
 // Camera Synth — v3.0.0
-var VERSION = "3.7.9";
+var VERSION = "3.8.0";
 
 var useState    = React.useState;
 var useEffect   = React.useEffect;
@@ -242,6 +242,10 @@ function makeEngine1() {
       // delayDry + delayWet → fxLoCut → fxHiCut → masterGain
       //                                           → reverbNode → reverbGain → master
       eng.seqAmpGain.connect(eng.delayDry);
+      // dry → master (clean, unfiltered)
+      eng.delayDry.connect(eng.masterGain);
+      eng.delayWet.connect(eng.masterGain);
+      // reverb send: delay → filters → reverb
       eng.fxLoCut = eng.ctx.createBiquadFilter();
       eng.fxLoCut.type = 'highpass'; eng.fxLoCut.frequency.value = 20; eng.fxLoCut.Q.value = 0.5;
       eng.fxHiCut = eng.ctx.createBiquadFilter();
@@ -249,7 +253,6 @@ function makeEngine1() {
       eng.delayDry.connect(eng.fxLoCut);
       eng.delayWet.connect(eng.fxLoCut);
       eng.fxLoCut.connect(eng.fxHiCut);
-      eng.fxHiCut.connect(eng.masterGain);
       eng.fxHiCut.connect(eng.reverbNode);
       eng.reverbNode.connect(eng.reverbGain);
       eng.reverbGain.connect(eng.masterGain);
@@ -824,6 +827,10 @@ function makeEngine2() {
       // Diffusion on wet output: each repeat gets all-pass smeared
       // Send routing: dry always full, reverb adds on top
       eng.seqAmpGain.connect(eng.delayDry);
+      // dry → master (clean, unfiltered)
+      eng.delayDry.connect(eng.masterGain);
+      eng.delayWet.connect(eng.masterGain);
+      // reverb send: delay → filters → reverb
       eng.fxLoCut = eng.ctx.createBiquadFilter();
       eng.fxLoCut.type = 'highpass'; eng.fxLoCut.frequency.value = 20; eng.fxLoCut.Q.value = 0.5;
       eng.fxHiCut = eng.ctx.createBiquadFilter();
@@ -831,7 +838,6 @@ function makeEngine2() {
       eng.delayDry.connect(eng.fxLoCut);
       eng.delayWet.connect(eng.fxLoCut);
       eng.fxLoCut.connect(eng.fxHiCut);
-      eng.fxHiCut.connect(eng.masterGain);
       eng.fxHiCut.connect(eng.reverbNode);
       eng.reverbNode.connect(eng.reverbGain);
       eng.reverbGain.connect(eng.masterGain);
