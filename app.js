@@ -1,5 +1,5 @@
 // Camera Synth — v3.0.0
-var VERSION = "3.7.4";
+var VERSION = "3.7.5";
 
 var useState    = React.useState;
 var useEffect   = React.useEffect;
@@ -113,7 +113,7 @@ function makeEngine1() {
   var eng = {
     ctx: null, voices: [],
     combFilters: [], lowpassNode: null,
-    diffusion: null,
+    reverbNode: null, reverbGain: null, dryGain: null,
     masterGain: null,
     limiterNode: null, analyserNode: null,
     active: false, currentPitchMidi: 60,
@@ -145,7 +145,14 @@ function makeEngine1() {
       eng.ctx = new AC();
       var sr  = eng.ctx.sampleRate;
       // Algorithmic reverb (Schroeder)
-      eng.diffusion = makeDiffusion(eng.ctx);
+      // Convolution reverb
+      var buf = eng.ctx.createBuffer(2, REVERB_IR.len, eng.ctx.sampleRate);
+      buf.getChannelData(0).set(REVERB_IR.L);
+      buf.getChannelData(1).set(REVERB_IR.R);
+      eng.reverbNode = eng.ctx.createConvolver();
+      eng.reverbNode.buffer = buf;
+      eng.reverbGain = eng.ctx.createGain(); eng.reverbGain.gain.value = 0;
+      eng.dryGain    = eng.ctx.createGain(); eng.dryGain.gain.value = 1;
 
       var N = 8;
       eng.combFilters = [];
@@ -231,9 +238,13 @@ function makeEngine1() {
       // Signal chain: seqAmpGain → dry+wet delay → master
       // Diffusion on wet output: each repeat gets all-pass smeared
       eng.seqAmpGain.connect(eng.delayDry);
-      eng.delayDry.connect(eng.masterGain);
-      eng.delayWet.connect(eng.diffusion.input);
-      eng.diffusion.output.connect(eng.masterGain);
+      eng.delayDry.connect(eng.dryGain);
+      eng.delayDry.connect(eng.reverbNode);
+      eng.delayWet.connect(eng.dryGain);
+      eng.delayWet.connect(eng.reverbNode);
+      eng.dryGain.connect(eng.masterGain);
+      eng.reverbNode.connect(eng.reverbGain);
+      eng.reverbGain.connect(eng.masterGain);
       eng.masterGain.connect(eng.limiterNode);
       eng.limiterNode.connect(eng.analyserNode);
       eng.analyserNode.connect(eng.ctx.destination);
@@ -553,7 +564,7 @@ function makeEngine1() {
     var param = null;
     if (d === "lp.freq")     param = eng._lpBase ? eng._lpBase.offset : (eng.lowpassNode ? eng.lowpassNode.frequency : null);
     if (d === "lp.q")        param = eng.lowpassNode ? eng.lowpassNode.Q : null;
-    if (d === "reverb.gain") param = null; // diffusion has no wet gain param
+    if (d === "reverb.gain") param = eng.reverbGain ? eng.reverbGain.gain : null;
     if (d === "master.gain") param = eng.preReverbGain ? eng.preReverbGain.gain : null;
     if (d === "haas.gain")   param = (eng.oscR && eng.oscR.haasGain) ? eng.oscR.haasGain.gain : null;
     if (d === "fm.depth")    param = (eng.oscR && eng.oscR.fmIndex) ? eng.oscR.fmIndex.gain : null;
@@ -696,7 +707,7 @@ function makeEngine2() {
     ctx: null,
     oscR: null, oscG: null, oscB: null,
     combFilters: [], lowpassNode: null,
-    diffusion: null,
+    reverbNode: null, reverbGain: null, dryGain: null,
     masterGain: null,
     limiterNode: null, analyserNode: null,
     active: false, currentPitchMidi: 60,
@@ -737,7 +748,14 @@ function makeEngine2() {
       var AC = window.AudioContext || window.webkitAudioContext;
       eng.ctx = new AC();
       var sr  = eng.ctx.sampleRate;
-      eng.diffusion = makeDiffusion(eng.ctx);
+      // Convolution reverb
+      var buf = eng.ctx.createBuffer(2, REVERB_IR.len, eng.ctx.sampleRate);
+      buf.getChannelData(0).set(REVERB_IR.L);
+      buf.getChannelData(1).set(REVERB_IR.R);
+      eng.reverbNode = eng.ctx.createConvolver();
+      eng.reverbNode.buffer = buf;
+      eng.reverbGain = eng.ctx.createGain(); eng.reverbGain.gain.value = 0;
+      eng.dryGain    = eng.ctx.createGain(); eng.dryGain.gain.value = 1;
 
       // Comb + lowpass (identical to engine 1)
       var N = 8; eng.combFilters = [];
@@ -797,9 +815,13 @@ function makeEngine2() {
       // Signal chain: seqAmpGain → dry+wet delay → master
       // Diffusion on wet output: each repeat gets all-pass smeared
       eng.seqAmpGain.connect(eng.delayDry);
-      eng.delayDry.connect(eng.masterGain);
-      eng.delayWet.connect(eng.diffusion.input);
-      eng.diffusion.output.connect(eng.masterGain);
+      eng.delayDry.connect(eng.dryGain);
+      eng.delayDry.connect(eng.reverbNode);
+      eng.delayWet.connect(eng.dryGain);
+      eng.delayWet.connect(eng.reverbNode);
+      eng.dryGain.connect(eng.masterGain);
+      eng.reverbNode.connect(eng.reverbGain);
+      eng.reverbGain.connect(eng.masterGain);
       eng.masterGain.connect(eng.limiterNode);
       eng.limiterNode.connect(eng.analyserNode);
       eng.analyserNode.connect(eng.ctx.destination);
@@ -1268,7 +1290,7 @@ function makeEngine2() {
     var param = null;
     if (d === "lp.freq")     param = eng._lpBase ? eng._lpBase.offset : (eng.lowpassNode ? eng.lowpassNode.frequency : null);
     if (d === "lp.q")        param = eng.lowpassNode ? eng.lowpassNode.Q : null;
-    if (d === "reverb.gain") param = null; // diffusion has no wet gain param
+    if (d === "reverb.gain") param = eng.reverbGain ? eng.reverbGain.gain : null;
     if (d === "master.gain") param = eng.preReverbGain ? eng.preReverbGain.gain : null;
     if (d === "haas.gain")   param = (eng.oscR && eng.oscR.haasGain) ? eng.oscR.haasGain.gain : null;
     if (d === "fm.depth")    param = (eng.oscR && eng.oscR.fmIndex) ? eng.oscR.fmIndex.gain : null;
@@ -1699,109 +1721,40 @@ var DIV_MULTS = {"1/16":0.25,"1/8":0.5,"1/4":1,"1/2":2,"1/1":4,
 
 
 // ── Diffusion — all-pass chain inside delay feedback loop ────────────────────
-// ── Diffusion — cascaded Schroeder all-pass delays ──────────────────────────
-// Applied to delay wet output. Each stage: short delay with all-pass structure.
-// Amount = all-pass coefficient g (0=off, ~0.6=max useful)
-// Size = scales delay lengths. Lo/Hi cut on the cascade input.
-function makeDiffusion(ctx) {
-  var df = {};
 
-  // 4 cascaded all-pass stages, prime-ish delay times (ms)
-  var apTimes = [0.0053, 0.0089, 0.0137, 0.0211];
-
-  df.input  = ctx.createGain(); df.input.gain.value  = 1;
-  df.output = ctx.createGain(); df.output.gain.value = 1;
-
-  // Lo/Hi cut on input — shape frequency content before diffusion
-  df.loCut = ctx.createBiquadFilter();
-  df.loCut.type = 'highpass';
-  df.loCut.frequency.value = 20;
-  df.loCut.Q.value = 0.5;
-
-  df.hiCut = ctx.createBiquadFilter();
-  df.hiCut.type = 'lowpass';
-  df.hiCut.frequency.value = 20000;
-  df.hiCut.Q.value = 0.5;
-
-  df.input.connect(df.loCut);
-  df.loCut.connect(df.hiCut);
-
-  // Build cascade of Schroeder all-pass stages
-  // Structure per stage:
-  //   stageIn ──→ negGain(−g) ──────────────────→ stageOut
-  //   stageIn ──→ delay ──→ posGain(+1) ─→ stageOut
-  //                ↑                ↓
-  //                └── fbGain(g) ←──┘
-  df.stages = apTimes.map(function(t) {
-    var delay   = ctx.createDelay(0.2);
-    delay.delayTime.value = t;
-
-    var negGain = ctx.createGain(); negGain.gain.value = 0;   // −g (amount)
-    var fbGain  = ctx.createGain(); fbGain.gain.value  = 0;   // +g (feedback)
-    var stageIn = ctx.createGain(); stageIn.gain.value = 1;
-    var stageOut= ctx.createGain(); stageOut.gain.value= 1;
-
-    // Wire: stageIn → negGain → stageOut (direct, negated)
-    stageIn.connect(negGain);
-    negGain.connect(stageOut);
-
-    // Wire: stageIn → delay
-    stageIn.connect(delay);
-
-    // Wire: delay → stageOut (delayed copy)
-    delay.connect(stageOut);
-
-    // Wire: delay → fbGain → delay input (feedback loop)
-    delay.connect(fbGain);
-    fbGain.connect(delay);
-
-    return { delay: delay, negGain: negGain, fbGain: fbGain,
-             stageIn: stageIn, stageOut: stageOut, baseTime: t };
-  });
-
-  // Chain stages in series: hiCut → stage[0] → stage[1] → ... → output
-  var prev = df.hiCut;
-  df.stages.forEach(function(s) {
-    prev.connect(s.stageIn);
-    prev = s.stageOut;
-  });
-  df.stages[df.stages.length - 1].stageOut.connect(df.output);
-
-  // ── Parameter setters ──────────────────────────────────────
-  df.setAmount = function(amount01, t) {
-    t = t || ctx.currentTime;
-    // g coefficient: 0=bypass, 0.6=max (above 0.7 gets metallic)
-    var g = amount01 * 0.6;
-    df.stages.forEach(function(s) {
-      s.negGain.gain.setTargetAtTime(-g, t, 0.05);
-      s.fbGain.gain.setTargetAtTime(g, t, 0.05);
-    });
-  };
-
-  df.setSize = function(size01, t) {
-    t = t || ctx.currentTime;
-    // Scale delay times 0.3× to 3× base
-    var scale = 0.3 + size01 * 2.7;
-    df.stages.forEach(function(s) {
-      s.delay.delayTime.setTargetAtTime(
-        Math.min(0.15, s.baseTime * scale), t, 0.05
-      );
-    });
-  };
-
-  df.setLoCut = function(freq, t) {
-    t = t || ctx.currentTime;
-    df.loCut.frequency.setTargetAtTime(Math.max(20, freq), t, 0.05);
-  };
-
-  df.setHiCut = function(freq, t) {
-    t = t || ctx.currentTime;
-    df.hiCut.frequency.setTargetAtTime(Math.min(20000, freq), t, 0.05);
-  };
-
-  return df;
-}
-
+// Pre-baked reverb IR — generated once at startup, fixed 3s hall character
+var REVERB_IR = (function() {
+  var sr  = 44100;
+  var len = Math.floor(sr * 3.0);
+  var L   = new Float32Array(len);
+  var R   = new Float32Array(len);
+  // Early reflections
+  var erT = [0.011,0.017,0.023,0.031,0.041,0.057,0.073,0.089];
+  var erG = [0.7,  0.5,  0.6,  0.4,  0.45, 0.35, 0.3,  0.25];
+  for (var e=0;e<erT.length;e++) {
+    var idx=Math.floor(erT[e]*sr);
+    if(idx<len){
+      L[idx]+=erG[e]*(e%2===0?1:-1);
+      var ridx=Math.min(len-1,idx+Math.floor(sr*0.0007*(e+1)));
+      R[ridx]+=erG[e]*(e%2===0?-1:1);
+    }
+  }
+  // Diffuse tail
+  var pre=Math.floor(sr*0.02);
+  for(var i=pre;i<len;i++){
+    var t=(i-pre)/(len-pre);
+    var d=Math.pow(1-t,1.8)*Math.exp(-t*2.5);
+    L[i]+=(Math.random()*2-1)*d;
+    R[i]+=(Math.random()*2-1)*d;
+  }
+  // Gentle lowpass
+  var lpL=0,lpR=0;
+  for(var i=0;i<len;i++){
+    lpL=0.85*lpL+0.15*L[i]; L[i]=lpL;
+    lpR=0.85*lpR+0.15*R[i]; R[i]=lpR;
+  }
+  return {L:L,R:R,len:len};
+}());
 
 // ── App ───────────────────────────────────────────────────────────────────────
 function App() {
@@ -1828,8 +1781,8 @@ function App() {
   var rfxs= useState({
     delaySync: true, delayDiv: "1/8", delayTime: 250,
     feedback: 0, width: 0, delayMix: 0,
-    diffAmount: 0, diffSize: 50, diffLoCut: 20, diffHiCut: 20000,
-    divMenuOpen: false, fxTab: "delay",
+    reverbMix: 0,
+    divMenuOpen: false,
   });
   var fxSettings = rfxs[0], setFxSettings = rfxs[1];
   function setFx(k,v){ setFxSettings(function(s){var n=Object.assign({},s);n[k]=v;return n;}); }
@@ -2207,21 +2160,17 @@ function App() {
     eng.delayWetL.pan.setTargetAtTime(-w, t, 0.05);
     eng.delayWetR.pan.setTargetAtTime( w, t, 0.05);
 
-    // Delay mix
-    var mix = (fx.delayMix||0) / 100;
-    eng.delayWet.gain.setTargetAtTime(mix, t, 0.05);
-    eng.delayDry.gain.setTargetAtTime(1 - mix, t, 0.05);
+    // Delay mix — equal-power crossfade
+    var mixAngle = ((fx.delayMix||0)/100) * Math.PI / 2;
+    eng.delayWet.gain.setTargetAtTime(Math.sin(mixAngle), t, 0.05);
+    eng.delayDry.gain.setTargetAtTime(Math.cos(mixAngle), t, 0.05);
 
-    // Diffusion — all-pass chain in delay feedback loop
-    if (eng.diffusion) {
-      var amount01 = (fx.diffAmount !== undefined ? fx.diffAmount : 0)  / 100;
-      var size01   = (fx.diffSize   !== undefined ? fx.diffSize   : 50) / 100;
-      var loCut    = fx.diffLoCut !== undefined ? fx.diffLoCut : 20;
-      var hiCut    = fx.diffHiCut !== undefined ? fx.diffHiCut : 20000;
-      eng.diffusion.setAmount(amount01, t);
-      eng.diffusion.setSize(size01, t);
-      eng.diffusion.setLoCut(loCut, t);
-      eng.diffusion.setHiCut(hiCut, t);
+    // Reverb — equal-power crossfade
+    if (eng.reverbGain && eng.dryGain) {
+      var revMix = (fx.reverbMix !== undefined ? fx.reverbMix : 0);
+      var angle  = revMix * Math.PI / 2;
+      eng.reverbGain.gain.setTargetAtTime(Math.sin(angle), t, 0.1);
+      eng.dryGain.gain.setTargetAtTime(Math.cos(angle), t, 0.1);
     }
   }
 
@@ -2455,125 +2404,56 @@ function App() {
     // ── FX inline drawer ──────────────────────────────────────────────────────
     showFx && el("div", { style:{ padding:"8px 14px 10px", borderTop:"1px solid #141414", background:"#0c0c0d", flexShrink:0, position:"relative" } },
 
-      // Tab strip
-      el("div", { style:{ display:"flex", gap:4, marginBottom:8 } },
-        el("button", { className:cx("sg", fxSettings.fxTab==="delay"&&"sel"),
-          onClick:function(){ setFx("fxTab","delay"); },
-          style:{ flex:1, textAlign:"center", padding:"4px 0" }
-        }, "Delay"),
-        el("button", { className:cx("sg", fxSettings.fxTab==="reverb"&&"sel"),
-          onClick:function(){ setFx("fxTab","reverb"); },
-          style:{ flex:1, textAlign:"center", padding:"4px 0" }
-        }, "Diffusion")
-      ),
-
-      // ── DELAY TAB ────────────────────────────────────────────────────────────
-      fxSettings.fxTab==="delay" && el("div", {},
-
-        // Sync/Free + division picker + time display
-        el("div", { style:{ display:"flex", alignItems:"center", gap:6, marginBottom:8 } },
-          el("div", { style:{ display:"flex", gap:2 } },
-            el("button", { className:cx("sg", fxSettings.delaySync&&"sel"), onClick:function(){ setFx("delaySync",true); } }, "sync"),
-            el("button", { className:cx("sg", !fxSettings.delaySync&&"sel"), onClick:function(){ setFx("delaySync",false); } }, "free")
-          ),
-
-          fxSettings.delaySync && el("div", { style:{ position:"relative", flex:1 } },
-            el("button", { className:"sg sel",
-              onClick:function(){ setFx("divMenuOpen", !fxSettings.divMenuOpen); },
-              style:{ width:"100%", textAlign:"center" }
-            }, fxSettings.delayDiv+" ▾"),
-            fxSettings.divMenuOpen && el("div", { style:{
-              position:"absolute", bottom:"100%", left:0, right:0, zIndex:20,
-              background:"#0e0e10", border:"1px solid #2a2a2a", borderRadius:4,
-              padding:4, marginBottom:3
-            } },
-              el("div", { style:{ fontSize:7, color:"#555", letterSpacing:"0.1em", marginBottom:3, paddingLeft:2 } }, "STRAIGHT"),
-              el("div", { style:{ display:"flex", gap:2, marginBottom:4 } },
-                ["1/16","1/8","1/4","1/2","1/1"].map(function(d){
-                  return el("button",{ key:d, className:cx("sg",fxSettings.delayDiv===d&&"sel"),
-                    onClick:function(){ setFx("delayDiv",d); setFx("divMenuOpen",false); },
-                    style:{flex:1,textAlign:"center",fontSize:8,padding:"3px 0"}
-                  }, d);
-                })
-              ),
-              el("div", { style:{ fontSize:7, color:"#555", letterSpacing:"0.1em", marginBottom:3, paddingLeft:2 } }, "DOTTED"),
-              el("div", { style:{ display:"flex", gap:2, marginBottom:4 } },
-                ["1/8.","1/4."].map(function(d){
-                  return el("button",{ key:d, className:cx("sg",fxSettings.delayDiv===d&&"sel"),
-                    onClick:function(){ setFx("delayDiv",d); setFx("divMenuOpen",false); },
-                    style:{flex:1,textAlign:"center",fontSize:8,padding:"3px 0"}
-                  }, d);
-                })
-              ),
-              el("div", { style:{ fontSize:7, color:"#555", letterSpacing:"0.1em", marginBottom:3, paddingLeft:2 } }, "TRIPLET"),
-              el("div", { style:{ display:"flex", gap:2 } },
-                ["1/16T","1/8T","1/4T"].map(function(d){
-                  return el("button",{ key:d, className:cx("sg",fxSettings.delayDiv===d&&"sel"),
-                    onClick:function(){ setFx("delayDiv",d); setFx("divMenuOpen",false); },
-                    style:{flex:1,textAlign:"center",fontSize:8,padding:"3px 0"}
-                  }, d);
-                })
-              )
+      // Sync/Free + division picker + time display
+      el("div", { style:{ display:"flex", alignItems:"center", gap:6, marginBottom:8 } },
+        el("div", { style:{ display:"flex", gap:2 } },
+          el("button", { className:cx("sg", fxSettings.delaySync&&"sel"), onClick:function(){ setFx("delaySync",true); } }, "sync"),
+          el("button", { className:cx("sg", !fxSettings.delaySync&&"sel"), onClick:function(){ setFx("delaySync",false); } }, "free")
+        ),
+        fxSettings.delaySync && el("div", { style:{ position:"relative", flex:1 } },
+          el("button", { className:"sg sel", onClick:function(){ setFx("divMenuOpen",!fxSettings.divMenuOpen); }, style:{ width:"100%", textAlign:"center" } }, fxSettings.delayDiv+" ▾"),
+          fxSettings.divMenuOpen && el("div", { style:{ position:"absolute", bottom:"100%", left:0, right:0, zIndex:20, background:"#0e0e10", border:"1px solid #2a2a2a", borderRadius:4, padding:4, marginBottom:3 } },
+            el("div", { style:{ fontSize:7, color:"#555", letterSpacing:"0.1em", marginBottom:3, paddingLeft:2 } }, "STRAIGHT"),
+            el("div", { style:{ display:"flex", gap:2, marginBottom:4 } },
+              ["1/16","1/8","1/4","1/2","1/1"].map(function(d){ return el("button",{ key:d, className:cx("sg",fxSettings.delayDiv===d&&"sel"), onClick:function(){ setFx("delayDiv",d); setFx("divMenuOpen",false); }, style:{flex:1,textAlign:"center",fontSize:8,padding:"3px 0"} }, d); })
+            ),
+            el("div", { style:{ fontSize:7, color:"#555", letterSpacing:"0.1em", marginBottom:3, paddingLeft:2 } }, "DOTTED"),
+            el("div", { style:{ display:"flex", gap:2, marginBottom:4 } },
+              ["1/8.","1/4."].map(function(d){ return el("button",{ key:d, className:cx("sg",fxSettings.delayDiv===d&&"sel"), onClick:function(){ setFx("delayDiv",d); setFx("divMenuOpen",false); }, style:{flex:1,textAlign:"center",fontSize:8,padding:"3px 0"} }, d); })
+            ),
+            el("div", { style:{ fontSize:7, color:"#555", letterSpacing:"0.1em", marginBottom:3, paddingLeft:2 } }, "TRIPLET"),
+            el("div", { style:{ display:"flex", gap:2 } },
+              ["1/16T","1/8T","1/4T"].map(function(d){ return el("button",{ key:d, className:cx("sg",fxSettings.delayDiv===d&&"sel"), onClick:function(){ setFx("delayDiv",d); setFx("divMenuOpen",false); }, style:{flex:1,textAlign:"center",fontSize:8,padding:"3px 0"} }, d); })
             )
-          ),
-
-          !fxSettings.delaySync && el("input", { type:"range", min:1, max:3000, value:fxSettings.delayTime,
-            style:{ flex:1 },
-            onChange:function(e){ setFx("delayTime",+e.target.value); }
-          }),
-
-          el("span", { style:{ fontSize:11, color:"#7fff6a", minWidth:44, textAlign:"right", letterSpacing:"0.04em" } },
-            fxSettings.delaySync
-              ? Math.round((60/seqSettings.bpm)*(DIV_MULTS[fxSettings.delayDiv]||0.5)*1000)+"ms"
-              : fxSettings.delayTime+"ms"
           )
         ),
-
-        el("div", { style:{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:8 } },
-          [
-            { key:"feedback", label:"Feedback", value:fxSettings.feedback, min:0, max:95, fmt:function(v){return v+"%";} },
-            { key:"width",    label:"Width",    value:fxSettings.width,    min:0, max:100, fmt:function(v){return v+"%";}, color:"#6bb5ff" },
-            { key:"delayMix", label:"Mix",      value:fxSettings.delayMix, min:0, max:100, fmt:function(v){return v+"%";} },
-          ].map(function(sl){
-            return el("div",{key:sl.key,style:{display:"flex",flexDirection:"column",gap:2}},
-              el("div",{style:{display:"flex",justifyContent:"space-between"}},
-                el("span",{style:{fontSize:7,color:sl.color||"#555",letterSpacing:"0.1em",textTransform:"uppercase"}},sl.label),
-                el("span",{style:{fontSize:8,color:sl.color||"#7fff6a"}},sl.fmt(sl.value))
-              ),
-              el("input",{type:"range",min:sl.min,max:sl.max,value:sl.value,
-                onChange:function(e){setFx(sl.key,+e.target.value);}
-              })
-            );
-          })
+        !fxSettings.delaySync && el("input", { type:"range", min:1, max:3000, value:fxSettings.delayTime, style:{ flex:1 }, onChange:function(e){ setFx("delayTime",+e.target.value); } }),
+        el("span", { style:{ fontSize:11, color:"#7fff6a", minWidth:44, textAlign:"right", letterSpacing:"0.04em" } },
+          fxSettings.delaySync ? Math.round((60/seqSettings.bpm)*(DIV_MULTS[fxSettings.delayDiv]||0.5)*1000)+"ms" : fxSettings.delayTime+"ms"
         )
       ),
 
-      // ── DIFFUSION TAB ────────────────────────────────────────────────────────
-      fxSettings.fxTab==="reverb" && el("div", {},
-        el("div", { style:{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 } },
-          [
-            { key:"diffAmount", label:"Amount", value:fxSettings.diffAmount,
-              min:0, max:100, fmt:function(v){return v+"%";},
-              onChange:function(e){ setFx("diffAmount",+e.target.value); } },
-            { key:"diffSize",   label:"Size",   value:fxSettings.diffSize,
-              min:0, max:100, fmt:function(v){ return v < 33 ? "small" : v < 66 ? "medium" : "large"; },
-              onChange:function(e){ setFx("diffSize",+e.target.value); } },
-            { key:"diffLoCut",  label:"Lo Cut", value:fxSettings.diffLoCut,
-              min:20, max:2000, fmt:function(v){ return v+"Hz"; },
-              onChange:function(e){ setFx("diffLoCut",+e.target.value); } },
-            { key:"diffHiCut",  label:"Hi Cut", value:fxSettings.diffHiCut,
-              min:1000, max:20000, fmt:function(v){ return v >= 1000 ? (v/1000).toFixed(1)+"k" : v+"Hz"; },
-              onChange:function(e){ setFx("diffHiCut",+e.target.value); } },
-          ].map(function(sl){
-            return el("div",{key:sl.key,style:{display:"flex",flexDirection:"column",gap:2}},
-              el("div",{style:{display:"flex",justifyContent:"space-between"}},
-                el("span",{style:{fontSize:7,color:"#555",letterSpacing:"0.1em",textTransform:"uppercase"}},sl.label),
-                el("span",{style:{fontSize:8,color:"#7fff6a"}},sl.fmt(sl.value))
-              ),
-              el("input",{type:"range",min:sl.min,max:sl.max,value:sl.value,onChange:sl.onChange})
-            );
-          })
-        )
+      // Delay sliders: Feedback + Width + Mix + Reverb — 4 in a row
+      el("div", { style:{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr 1fr", gap:8 } },
+        [
+          { key:"feedback",  label:"Feedbk",  value:fxSettings.feedback,  min:0, max:95,  fmt:function(v){return v+"%";} },
+          { key:"width",     label:"Width",   value:fxSettings.width,     min:0, max:100, fmt:function(v){return v+"%";}, color:"#6bb5ff" },
+          { key:"delayMix",  label:"Delay",   value:fxSettings.delayMix,  min:0, max:100, fmt:function(v){return v+"%";} },
+          { key:"reverbMix", label:"Reverb",  value:Math.round((fxSettings.reverbMix||0)*100), min:0, max:100,
+            fmt:function(v){return v+"%";}, color:"#ffb347",
+            onChange:function(e){ setFx("reverbMix",+e.target.value/100); } },
+        ].map(function(sl){
+          return el("div",{key:sl.key,style:{display:"flex",flexDirection:"column",gap:2}},
+            el("div",{style:{display:"flex",justifyContent:"space-between"}},
+              el("span",{style:{fontSize:7,color:sl.color||"#555",letterSpacing:"0.1em",textTransform:"uppercase"}},sl.label),
+              el("span",{style:{fontSize:8,color:sl.color||"#7fff6a"}},sl.fmt(sl.value))
+            ),
+            el("input",{type:"range",min:sl.min,max:sl.max,
+              value:sl.key==="reverbMix"?Math.round((fxSettings.reverbMix||0)*100):sl.value,
+              onChange:sl.onChange||function(e){setFx(sl.key,+e.target.value);}
+            })
+          );
+        })
       )
     ),
 
