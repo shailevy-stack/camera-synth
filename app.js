@@ -113,7 +113,7 @@ function makeEngine1() {
   var eng = {
     ctx: null, voices: [],
     combFilters: [], lowpassNode: null,
-    reverbNode: null, reverbGain: null, dryGain: null, fxLoCut: null, fxHiCut: null,
+    reverbNode: null, reverbGain: null,
     masterGain: null,
     limiterNode: null, analyserNode: null,
     active: false, currentPitchMidi: 60,
@@ -237,20 +237,12 @@ function makeEngine1() {
       eng.preReverbGain.connect(eng.seqAmpGain);
       // Signal chain: seqAmpGain → dry+wet delay → master
       // Diffusion on wet output: each repeat gets all-pass smeared
+      // Send routing: dry always full, reverb adds on top
       eng.seqAmpGain.connect(eng.delayDry);
-      // Lo/Hi cut filters between delay and reverb
-      eng.fxLoCut = eng.ctx.createBiquadFilter();
-      eng.fxLoCut.type = 'highpass'; eng.fxLoCut.frequency.value = 20; eng.fxLoCut.Q.value = 0.5;
-      eng.fxHiCut = eng.ctx.createBiquadFilter();
-      eng.fxHiCut.type = 'lowpass'; eng.fxHiCut.frequency.value = 20000; eng.fxHiCut.Q.value = 0.5;
-      // dry path bypasses filters (always clean)
-      eng.delayDry.connect(eng.dryGain);
-      eng.dryGain.connect(eng.masterGain);
-      // wet path goes through filters → reverb + also dry mix
-      eng.delayWet.connect(eng.fxLoCut);
-      eng.fxLoCut.connect(eng.fxHiCut);
-      eng.fxHiCut.connect(eng.dryGain);
-      eng.fxHiCut.connect(eng.reverbNode);
+      eng.delayDry.connect(eng.masterGain);
+      eng.delayWet.connect(eng.masterGain);
+      eng.delayDry.connect(eng.reverbNode);
+      eng.delayWet.connect(eng.reverbNode);
       eng.reverbNode.connect(eng.reverbGain);
       eng.reverbGain.connect(eng.masterGain);
       eng.masterGain.connect(eng.limiterNode);
@@ -715,7 +707,7 @@ function makeEngine2() {
     ctx: null,
     oscR: null, oscG: null, oscB: null,
     combFilters: [], lowpassNode: null,
-    reverbNode: null, reverbGain: null, dryGain: null, fxLoCut: null, fxHiCut: null,
+    reverbNode: null, reverbGain: null,
     masterGain: null,
     limiterNode: null, analyserNode: null,
     active: false, currentPitchMidi: 60,
@@ -822,20 +814,12 @@ function makeEngine2() {
       eng.preReverbGain.connect(eng.seqAmpGain);
       // Signal chain: seqAmpGain → dry+wet delay → master
       // Diffusion on wet output: each repeat gets all-pass smeared
+      // Send routing: dry always full, reverb adds on top
       eng.seqAmpGain.connect(eng.delayDry);
-      // Lo/Hi cut filters between delay and reverb
-      eng.fxLoCut = eng.ctx.createBiquadFilter();
-      eng.fxLoCut.type = 'highpass'; eng.fxLoCut.frequency.value = 20; eng.fxLoCut.Q.value = 0.5;
-      eng.fxHiCut = eng.ctx.createBiquadFilter();
-      eng.fxHiCut.type = 'lowpass'; eng.fxHiCut.frequency.value = 20000; eng.fxHiCut.Q.value = 0.5;
-      // dry path bypasses filters (always clean)
-      eng.delayDry.connect(eng.dryGain);
-      eng.dryGain.connect(eng.masterGain);
-      // wet path goes through filters → reverb + also dry mix
-      eng.delayWet.connect(eng.fxLoCut);
-      eng.fxLoCut.connect(eng.fxHiCut);
-      eng.fxHiCut.connect(eng.dryGain);
-      eng.fxHiCut.connect(eng.reverbNode);
+      eng.delayDry.connect(eng.masterGain);
+      eng.delayWet.connect(eng.masterGain);
+      eng.delayDry.connect(eng.reverbNode);
+      eng.delayWet.connect(eng.reverbNode);
       eng.reverbNode.connect(eng.reverbGain);
       eng.reverbGain.connect(eng.masterGain);
       eng.masterGain.connect(eng.limiterNode);
@@ -1797,7 +1781,7 @@ function App() {
   var rfxs= useState({
     delaySync: true, delayDiv: "1/8", delayTime: 250,
     feedback: 0, width: 0, delayMix: 0,
-    reverbMix: 0, fxLoCut: 20, fxHiCut: 20000,
+    reverbMix: 0,
     divMenuOpen: false,
   });
   var fxSettings = rfxs[0], setFxSettings = rfxs[1];
@@ -2181,16 +2165,11 @@ function App() {
     eng.delayWet.gain.setTargetAtTime(Math.sin(mixAngle), t, 0.05);
     eng.delayDry.gain.setTargetAtTime(Math.cos(mixAngle), t, 0.05);
 
-    // Lo/Hi cut on delay wet signal
-    if (eng.fxLoCut) eng.fxLoCut.frequency.setTargetAtTime(Math.max(20, fx.fxLoCut||20), t, 0.05);
-    if (eng.fxHiCut) eng.fxHiCut.frequency.setTargetAtTime(Math.min(20000, fx.fxHiCut||20000), t, 0.05);
 
-    // Reverb — equal-power crossfade
-    if (eng.reverbGain && eng.dryGain) {
-      var revMix = (fx.reverbMix !== undefined ? fx.reverbMix : 0);
-      var angle  = revMix * Math.PI / 2;
-      eng.reverbGain.gain.setTargetAtTime(Math.sin(angle), t, 0.1);
-      eng.dryGain.gain.setTargetAtTime(Math.cos(angle), t, 0.1);
+    // Reverb — send (dry always full, reverb adds on top)
+    if (eng.reverbGain) {
+      var revSend = (fx.reverbMix !== undefined ? fx.reverbMix : 0);
+      eng.reverbGain.gain.setTargetAtTime(revSend, t, 0.1);
     }
   }
 
