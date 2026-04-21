@@ -1,5 +1,5 @@
 // Camera Synth — v3.0.0
-var VERSION = "3.6.9";
+var VERSION = "3.7.0";
 
 var useState    = React.useState;
 var useEffect   = React.useEffect;
@@ -101,47 +101,7 @@ var LFO_DEST_NAMES = Object.keys(LFO_DESTS);
 var LFO_WAVES = ["sine", "square", "s&h"];
 
 // ── Shared reverb IR (pre-built before gesture) ───────────────────────────────
-var REVERB_IR = (function() {
-  var sr  = 44100;
-  var len = Math.floor(sr * 3.5); // longer decay
-  var L   = new Float32Array(len);
-  var R   = new Float32Array(len);
-
-  // Early reflections — sparse spikes at prime-ish intervals
-  // give the reverb a sense of space before the tail
-  var erTimes = [0.011, 0.017, 0.023, 0.031, 0.041, 0.057, 0.073, 0.089];
-  var erGains  = [0.7,   0.5,   0.6,   0.4,   0.45,  0.35,  0.3,   0.25];
-  for (var e = 0; e < erTimes.length; e++) {
-    var idx = Math.floor(erTimes[e] * sr);
-    if (idx < len) {
-      L[idx] += erGains[e] * (e % 2 === 0 ? 1 : -1);
-      // Offset R slightly for stereo width
-      var ridx = Math.min(len-1, idx + Math.floor(sr * 0.0007 * (e+1)));
-      R[ridx] += erGains[e] * (e % 2 === 0 ? -1 : 1);
-    }
-  }
-
-  // Diffuse tail — two independent noise streams for L/R decorrelation
-  // Use a slower exponential decay with a pre-delay before the tail
-  var preDelay = Math.floor(sr * 0.02); // 20ms pre-delay
-  for (var i = preDelay; i < len; i++) {
-    var t     = (i - preDelay) / (len - preDelay);
-    var decay = Math.pow(1 - t, 1.8) * Math.exp(-t * 2.5);
-    // Independent random seeds per channel = decorrelated stereo
-    L[i] += (Math.random() * 2 - 1) * decay;
-    R[i] += (Math.random() * 2 - 1) * decay;
-  }
-
-  // Apply a gentle lowpass to soften the metallic high-freq content
-  // Simple one-pole IIR: y[n] = 0.85*y[n-1] + 0.15*x[n]
-  var lpL = 0, lpR = 0;
-  for (var i = 0; i < len; i++) {
-    lpL = 0.85 * lpL + 0.15 * L[i]; L[i] = lpL;
-    lpR = 0.85 * lpR + 0.15 * R[i]; R[i] = lpR;
-  }
-
-  return { L: L, R: R, len: len };
-}());
+// Algorithmic reverb replaces convolution IR
 
 var SQUARE_COEFFS = makeSquareCoeffs(512);
 
@@ -153,8 +113,8 @@ function makeEngine1() {
   var eng = {
     ctx: null, voices: [],
     combFilters: [], lowpassNode: null,
-    reverbNode: null, reverbGain: null,
-    dryGain: null, masterGain: null,
+    algoReverb: null,
+    masterGain: null,
     limiterNode: null, analyserNode: null,
     active: false, currentPitchMidi: 60,
     wavetableData:    new Float32Array(ANALYSIS_RES),
@@ -184,11 +144,8 @@ function makeEngine1() {
       var AC  = window.AudioContext || window.webkitAudioContext;
       eng.ctx = new AC();
       var sr  = eng.ctx.sampleRate;
-      var buf = eng.ctx.createBuffer(2, REVERB_IR.len, sr);
-      buf.getChannelData(0).set(REVERB_IR.L);
-      buf.getChannelData(1).set(REVERB_IR.R);
-      eng.reverbNode = eng.ctx.createConvolver();
-      eng.reverbNode.buffer = buf;
+      // Algorithmic reverb (Schroeder)
+      eng.algoReverb = makeAlgoReverb(eng.ctx);
 
       var N = 8;
       eng.combFilters = [];
@@ -214,10 +171,6 @@ function makeEngine1() {
       eng.seqAmpGain = eng.ctx.createGain();
       eng.seqAmpGain.gain.value = 1.0; // sequencer amp env drives this (1.0 = drone mode)
 
-      eng.dryGain = eng.ctx.createGain();
-      eng.dryGain.gain.value = 1.0;  // FX drawer controls reverb mix
-      eng.reverbGain = eng.ctx.createGain();
-      eng.reverbGain.gain.value = 0;
       eng.masterGain = eng.ctx.createGain();
       eng.masterGain.gain.value = 0;
 
@@ -272,23 +225,13 @@ function makeEngine1() {
       eng.delayWetR.connect(eng.delayWet);
 
       // Signal chain:
-      // seqAmpGain → delayDry ─┬→ reverbInput ─→ reverbNode → reverbGain → master (wet)
-      //            → delayWet ─┘            └──→ dryGain              → master (dry bypass)
-      // reverbInput splits: one branch through convolver (wet), one bypasses it (dry)
-      // ConvolverNode only outputs convolved signal — dry must bypass it entirely
-      eng.reverbInput = eng.ctx.createGain();
-      eng.reverbInput.gain.value = 1.0;
-
+      // Signal chain: lowpass → preReverbGain → seqAmpGain → delay → algoReverb → master
       eng.lowpassNode.connect(eng.preReverbGain);
       eng.preReverbGain.connect(eng.seqAmpGain);
       eng.seqAmpGain.connect(eng.delayDry);
-      eng.delayDry.connect(eng.reverbInput);
-      eng.delayWet.connect(eng.reverbInput);
-      eng.reverbInput.connect(eng.reverbNode);   // wet: through convolver
-      eng.reverbInput.connect(eng.dryGain);      // dry: bypass convolver
-      eng.reverbNode.connect(eng.reverbGain);
-      eng.reverbGain.connect(eng.masterGain);
-      eng.dryGain.connect(eng.masterGain);
+      eng.delayDry.connect(eng.algoReverb.inputGain);
+      eng.delayWet.connect(eng.algoReverb.inputGain);
+      eng.algoReverb.outputGain.connect(eng.masterGain);
       eng.masterGain.connect(eng.limiterNode);
       eng.limiterNode.connect(eng.analyserNode);
       eng.analyserNode.connect(eng.ctx.destination);
@@ -608,7 +551,7 @@ function makeEngine1() {
     var param = null;
     if (d === "lp.freq")     param = eng._lpBase ? eng._lpBase.offset : (eng.lowpassNode ? eng.lowpassNode.frequency : null);
     if (d === "lp.q")        param = eng.lowpassNode ? eng.lowpassNode.Q : null;
-    if (d === "reverb.gain") param = eng.reverbGain  ? eng.reverbGain.gain : null;
+    if (d === "reverb.gain") param = eng.algoReverb ? eng.algoReverb.wetGain.gain : null;
     if (d === "master.gain") param = eng.preReverbGain ? eng.preReverbGain.gain : null;
     if (d === "haas.gain")   param = (eng.oscR && eng.oscR.haasGain) ? eng.oscR.haasGain.gain : null;
     if (d === "fm.depth")    param = (eng.oscR && eng.oscR.fmIndex) ? eng.oscR.fmIndex.gain : null;
@@ -751,8 +694,8 @@ function makeEngine2() {
     ctx: null,
     oscR: null, oscG: null, oscB: null,
     combFilters: [], lowpassNode: null,
-    reverbNode: null, reverbGain: null,
-    dryGain: null, masterGain: null,
+    algoReverb: null,
+    masterGain: null,
     limiterNode: null, analyserNode: null,
     active: false, currentPitchMidi: 60,
     _lfoNode: null, _lfoGain: null,
@@ -792,11 +735,7 @@ function makeEngine2() {
       var AC = window.AudioContext || window.webkitAudioContext;
       eng.ctx = new AC();
       var sr  = eng.ctx.sampleRate;
-      var rbuf = eng.ctx.createBuffer(2, REVERB_IR.len, sr);
-      rbuf.getChannelData(0).set(REVERB_IR.L);
-      rbuf.getChannelData(1).set(REVERB_IR.R);
-      eng.reverbNode = eng.ctx.createConvolver();
-      eng.reverbNode.buffer = rbuf;
+      eng.algoReverb = makeAlgoReverb(eng.ctx);
 
       // Comb + lowpass (identical to engine 1)
       var N = 8; eng.combFilters = [];
@@ -819,8 +758,6 @@ function makeEngine2() {
       eng.seqAmpGain = eng.ctx.createGain();
       eng.seqAmpGain.gain.value = 1.0;
 
-      eng.dryGain = eng.ctx.createGain(); eng.dryGain.gain.value = 1.0;
-      eng.reverbGain = eng.ctx.createGain(); eng.reverbGain.gain.value = 0;
       eng.masterGain = eng.ctx.createGain(); eng.masterGain.gain.value = 0;
 
       eng.limiterNode = eng.ctx.createDynamicsCompressor();
@@ -855,16 +792,10 @@ function makeEngine2() {
 
       eng.lowpassNode.connect(eng.preReverbGain);
       eng.preReverbGain.connect(eng.seqAmpGain);
-      eng.reverbInput = eng.ctx.createGain();
-      eng.reverbInput.gain.value = 1.0;
       eng.seqAmpGain.connect(eng.delayDry);
-      eng.delayDry.connect(eng.reverbInput);
-      eng.delayWet.connect(eng.reverbInput);
-      eng.reverbInput.connect(eng.reverbNode);  // wet: through convolver
-      eng.reverbInput.connect(eng.dryGain);     // dry: bypass convolver
-      eng.reverbNode.connect(eng.reverbGain);
-      eng.reverbGain.connect(eng.masterGain);
-      eng.dryGain.connect(eng.masterGain);
+      eng.delayDry.connect(eng.algoReverb.inputGain);
+      eng.delayWet.connect(eng.algoReverb.inputGain);
+      eng.algoReverb.outputGain.connect(eng.masterGain);
       eng.masterGain.connect(eng.limiterNode);
       eng.limiterNode.connect(eng.analyserNode);
       eng.analyserNode.connect(eng.ctx.destination);
@@ -1333,7 +1264,7 @@ function makeEngine2() {
     var param = null;
     if (d === "lp.freq")     param = eng._lpBase ? eng._lpBase.offset : (eng.lowpassNode ? eng.lowpassNode.frequency : null);
     if (d === "lp.q")        param = eng.lowpassNode ? eng.lowpassNode.Q : null;
-    if (d === "reverb.gain") param = eng.reverbGain  ? eng.reverbGain.gain : null;
+    if (d === "reverb.gain") param = eng.algoReverb ? eng.algoReverb.wetGain.gain : null;
     if (d === "master.gain") param = eng.preReverbGain ? eng.preReverbGain.gain : null;
     if (d === "haas.gain")   param = (eng.oscR && eng.oscR.haasGain) ? eng.oscR.haasGain.gain : null;
     if (d === "fm.depth")    param = (eng.oscR && eng.oscR.fmIndex) ? eng.oscR.fmIndex.gain : null;
@@ -1760,41 +1691,146 @@ var DIV_MULTS = {"1/16":0.25,"1/8":0.5,"1/4":1,"1/2":2,"1/1":4,
 
 
 
-// Generate reverb IR with variable decay length
-function makeReverbIR(ctx, decaySec) {
-  var sr  = ctx.sampleRate;
-  var len = Math.floor(sr * Math.max(0.1, decaySec));
-  var buf = ctx.createBuffer(2, len, sr);
-  var L   = buf.getChannelData(0);
-  var R   = buf.getChannelData(1);
 
-  // Early reflections
-  var erTimes = [0.011, 0.017, 0.023, 0.031, 0.041, 0.057, 0.073, 0.089];
-  var erGains  = [0.7,   0.5,   0.6,   0.4,   0.45,  0.35,  0.3,   0.25];
-  for (var e = 0; e < erTimes.length; e++) {
-    var idx = Math.floor(erTimes[e] * sr);
-    if (idx < len) {
-      L[idx] += erGains[e] * (e%2===0 ? 1 : -1);
-      var ridx = Math.min(len-1, idx + Math.floor(sr * 0.0007 * (e+1)));
-      R[ridx] += erGains[e] * (e%2===0 ? -1 : 1);
-    }
+// ── Algorithmic Reverb (Schroeder/Moorer style) ───────────────────────────────
+// 6 parallel comb filters → 3 series all-pass filters → wet/dry mix
+// All parameters smoothly controllable in real time — no buffer swaps
+function makeAlgoReverb(ctx) {
+  // Comb filter delay times (prime-ish, in seconds) — defines room character
+  // Slightly different L/R for stereo decorrelation
+  var combTimesL = [0.0297, 0.0371, 0.0411, 0.0437, 0.0517, 0.0557];
+  var combTimesR = [0.0307, 0.0379, 0.0421, 0.0443, 0.0527, 0.0563];
+  // All-pass delay times
+  var apTimes    = [0.0050, 0.0017, 0.0006];
+
+  var rv = {};
+  rv.inputGain  = ctx.createGain(); rv.inputGain.gain.value  = 1.0;
+  rv.wetGain    = ctx.createGain(); rv.wetGain.gain.value    = 0;
+  rv.dryGain    = ctx.createGain(); rv.dryGain.gain.value    = 1;
+  rv.outputGain = ctx.createGain(); rv.outputGain.gain.value = 1;
+
+  // Pre-delay (adds sense of distance/size)
+  rv.preDelay = ctx.createDelay(0.1);
+  rv.preDelay.delayTime.value = 0.02;
+  rv.inputGain.connect(rv.preDelay);
+
+  // Build comb filters — each: delayNode + feedbackGain + toneFilter (in loop)
+  rv.combsL = []; rv.combsR = [];
+  rv.combMixL = ctx.createGain(); rv.combMixL.gain.value = 1;
+  rv.combMixR = ctx.createGain(); rv.combMixR.gain.value = 1;
+
+  function makeComb(delayTime) {
+    var delay    = ctx.createDelay(0.5);
+    delay.delayTime.value = delayTime;
+    var feedback = ctx.createGain();
+    feedback.gain.value = 0.7; // will be set by setDecay
+    // Tone filter inside feedback loop — damps highs, like real room absorption
+    var tone = ctx.createBiquadFilter();
+    tone.type = 'lowpass';
+    tone.frequency.value = 4000; // will be set by setTone
+    tone.Q.value = 0.5;
+    // Routing: input → delay → tone → feedback → delay (loop)
+    //                       ↓ (output tap)
+    delay.connect(tone);
+    tone.connect(feedback);
+    feedback.connect(delay);
+    return { delay: delay, feedback: feedback, tone: tone };
   }
-  // Diffuse tail with variable decay
-  var preDelay = Math.floor(sr * 0.02);
-  var decayK   = 3.0 / decaySec; // steeper = shorter decay
-  for (var i = preDelay; i < len; i++) {
-    var t     = (i - preDelay) / (len - preDelay);
-    var decay = Math.pow(1 - t, 1.2) * Math.exp(-t * decayK);
-    L[i] += (Math.random() * 2 - 1) * decay;
-    R[i] += (Math.random() * 2 - 1) * decay;
+
+  for (var i = 0; i < combTimesL.length; i++) {
+    var cL = makeComb(combTimesL[i]);
+    var cR = makeComb(combTimesR[i]);
+    rv.preDelay.connect(cL.delay);
+    rv.preDelay.connect(cR.delay);
+    cL.tone.connect(rv.combMixL);
+    cR.tone.connect(rv.combMixR);
+    rv.combsL.push(cL);
+    rv.combsR.push(cR);
   }
-  // Gentle lowpass
-  var lpL = 0, lpR = 0;
-  for (var i = 0; i < len; i++) {
-    lpL = 0.85 * lpL + 0.15 * L[i]; L[i] = lpL;
-    lpR = 0.85 * lpR + 0.15 * R[i]; R[i] = lpR;
+
+  // All-pass chain for diffusion (reduces metallic flutter)
+  rv.apL = []; rv.apR = [];
+  function makeAllPass(delayTime) {
+    var delay    = ctx.createDelay(0.1);
+    delay.delayTime.value = delayTime;
+    var fbGain   = ctx.createGain(); fbGain.gain.value   = -0.7;
+    var ffGain   = ctx.createGain(); ffGain.gain.value   =  0.7;
+    var inputSum = ctx.createGain(); inputSum.gain.value = 1;
+    inputSum.connect(fbGain);
+    inputSum.connect(ffGain);
+    fbGain.connect(delay);
+    delay.connect(inputSum);
+    return { input: inputSum, output: ffGain };
   }
-  return buf;
+
+  // Chain all-pass filters L
+  var apChainL = [];
+  var apChainR = [];
+  for (var i = 0; i < apTimes.length; i++) {
+    apChainL.push(makeAllPass(apTimes[i]));
+    apChainR.push(makeAllPass(apTimes[i] * 1.02)); // slight R offset
+  }
+  // Connect L chain
+  rv.combMixL.connect(apChainL[0].input);
+  for (var i = 0; i < apChainL.length - 1; i++) apChainL[i].output.connect(apChainL[i+1].input);
+  // Connect R chain
+  rv.combMixR.connect(apChainR[0].input);
+  for (var i = 0; i < apChainR.length - 1; i++) apChainR[i].output.connect(apChainR[i+1].input);
+
+  // L/R panners for stereo output
+  var panL = ctx.createStereoPanner(); panL.pan.value = -0.6;
+  var panR = ctx.createStereoPanner(); panR.pan.value =  0.6;
+  apChainL[apChainL.length-1].output.connect(panL);
+  apChainR[apChainR.length-1].output.connect(panR);
+  panL.connect(rv.wetGain);
+  panR.connect(rv.wetGain);
+
+  // Dry path bypasses everything
+  rv.inputGain.connect(rv.dryGain);
+
+  // Both wet and dry → output
+  rv.wetGain.connect(rv.outputGain);
+  rv.dryGain.connect(rv.outputGain);
+
+  // ── Parameter setters ──────────────────────────────────────
+  // Decay: 0.0–1.0 → feedback coefficient per comb
+  // Uses RT60 formula: fb = 10^(-3 * delayTime / decaySec)
+  rv.setDecay = function(decaySec, t) {
+    t = t || ctx.currentTime;
+    var allCombs = rv.combsL.concat(rv.combsR);
+    allCombs.forEach(function(c) {
+      var dt = c.delay.delayTime.value;
+      var fb = Math.min(0.97, Math.pow(10, -3 * dt / Math.max(0.1, decaySec)));
+      c.feedback.gain.setTargetAtTime(fb, t, 0.1);
+    });
+  };
+
+  // Size: scales pre-delay (0.005s–0.08s) — sense of room distance
+  rv.setSize = function(size01, t) {
+    t = t || ctx.currentTime;
+    var pd = 0.005 + size01 * 0.075;
+    rv.preDelay.delayTime.setTargetAtTime(pd, t, 0.05);
+  };
+
+  // Tone: lowpass cutoff inside feedback loop (500Hz–12000Hz)
+  // Low = dark/warm, high = bright/metallic
+  rv.setTone = function(tone01, t) {
+    t = t || ctx.currentTime;
+    var freq = 500 + tone01 * 11500;
+    var allCombs = rv.combsL.concat(rv.combsR);
+    allCombs.forEach(function(c) {
+      c.tone.frequency.setTargetAtTime(freq, t, 0.1);
+    });
+  };
+
+  // Mix: wet/dry
+  rv.setMix = function(mix01, t) {
+    t = t || ctx.currentTime;
+    rv.wetGain.gain.setTargetAtTime(mix01, t, 0.05);
+    rv.dryGain.gain.setTargetAtTime(1 - mix01, t, 0.05);
+  };
+
+  return rv;
 }
 
 // ── App ───────────────────────────────────────────────────────────────────────
@@ -1822,8 +1858,8 @@ function App() {
   var rfxs= useState({
     delaySync: true, delayDiv: "1/8", delayTime: 250,
     feedback: 0, width: 0, delayMix: 0,
-    reverbMix: 0.3, reverbDecay: 70,
-    divMenuOpen: false,
+    reverbMix: 0, reverbDecay: 40, reverbSize: 50, reverbTone: 70,
+    divMenuOpen: false, fxTab: "delay",
   });
   var fxSettings = rfxs[0], setFxSettings = rfxs[1];
   function setFx(k,v){ setFxSettings(function(s){var n=Object.assign({},s);n[k]=v;return n;}); }
@@ -2206,19 +2242,16 @@ function App() {
     eng.delayWet.gain.setTargetAtTime(mix, t, 0.05);
     eng.delayDry.gain.setTargetAtTime(1 - mix, t, 0.05);
 
-    // Reverb dry/wet
-    var revMix = fx.reverbMix !== undefined ? fx.reverbMix : 0;
-    eng.reverbGain.gain.setTargetAtTime(revMix, t, 0.1);
-    eng.dryGain.gain.setTargetAtTime(1 - revMix, t, 0.1);
-
-    // Reverb decay — regenerate IR if decay changed
-    var decaySec = 0.5 + ((fx.reverbDecay || 50) / 100) * 7; // 0.5s–7.5s
-    if (eng.reverbNode && Math.abs((eng._lastDecay||0) - decaySec) > 0.05) {
-      eng._lastDecay = decaySec;
-      try {
-        var newBuf = makeReverbIR(eng.ctx, decaySec);
-        eng.reverbNode.buffer = newBuf;
-      } catch(e) { console.warn("IR gen failed", e); }
+    // Algo reverb — fully smooth real-time control
+    if (eng.algoReverb) {
+      var revMix   = fx.reverbMix   !== undefined ? fx.reverbMix   : 0;
+      var decaySec = 0.3 + ((fx.reverbDecay || 50) / 100) * 9.7; // 0.3s–10s
+      var size01   = (fx.reverbSize  !== undefined ? fx.reverbSize  : 50) / 100;
+      var tone01   = (fx.reverbTone  !== undefined ? fx.reverbTone  : 70) / 100;
+      eng.algoReverb.setMix(revMix, t);
+      eng.algoReverb.setDecay(decaySec, t);
+      eng.algoReverb.setSize(size01, t);
+      eng.algoReverb.setTone(tone01, t);
     }
   }
 
@@ -2452,31 +2485,39 @@ function App() {
     // ── FX inline drawer ──────────────────────────────────────────────────────
     showFx && el("div", { style:{ padding:"8px 14px 10px", borderTop:"1px solid #141414", background:"#0c0c0d", flexShrink:0, position:"relative" } },
 
-      // ── DELAY ──────────────────────────────────────────────────────────────
-      el("div", { style:{ marginBottom:8, paddingBottom:8, borderBottom:"1px solid #141414" } },
-        el("div", { style:{ fontSize:7, color:"#333", letterSpacing:"0.2em", textTransform:"uppercase", marginBottom:5 } }, "Delay"),
+      // Tab strip
+      el("div", { style:{ display:"flex", gap:4, marginBottom:8 } },
+        el("button", { className:cx("sg", fxSettings.fxTab==="delay"&&"sel"),
+          onClick:function(){ setFx("fxTab","delay"); },
+          style:{ flex:1, textAlign:"center", padding:"4px 0" }
+        }, "Delay"),
+        el("button", { className:cx("sg", fxSettings.fxTab==="reverb"&&"sel"),
+          onClick:function(){ setFx("fxTab","reverb"); },
+          style:{ flex:1, textAlign:"center", padding:"4px 0" }
+        }, "Reverb")
+      ),
+
+      // ── DELAY TAB ────────────────────────────────────────────────────────────
+      fxSettings.fxTab==="delay" && el("div", {},
 
         // Sync/Free + division picker + time display
-        el("div", { style:{ display:"flex", alignItems:"center", gap:6, marginBottom:6 } },
+        el("div", { style:{ display:"flex", alignItems:"center", gap:6, marginBottom:8 } },
           el("div", { style:{ display:"flex", gap:2 } },
             el("button", { className:cx("sg", fxSettings.delaySync&&"sel"), onClick:function(){ setFx("delaySync",true); } }, "sync"),
             el("button", { className:cx("sg", !fxSettings.delaySync&&"sel"), onClick:function(){ setFx("delaySync",false); } }, "free")
           ),
 
-          // Sync: show division button (opens contextual menu)
           fxSettings.delaySync && el("div", { style:{ position:"relative", flex:1 } },
             el("button", { className:"sg sel",
               onClick:function(){ setFx("divMenuOpen", !fxSettings.divMenuOpen); },
               style:{ width:"100%", textAlign:"center" }
             }, fxSettings.delayDiv+" ▾"),
-
-            // Contextual menu
             fxSettings.divMenuOpen && el("div", { style:{
               position:"absolute", bottom:"100%", left:0, right:0, zIndex:20,
               background:"#0e0e10", border:"1px solid #2a2a2a", borderRadius:4,
               padding:4, marginBottom:3
             } },
-              el("div", { style:{ fontSize:7, color:"#333", letterSpacing:"0.1em", marginBottom:3, paddingLeft:2 } }, "STRAIGHT"),
+              el("div", { style:{ fontSize:7, color:"#555", letterSpacing:"0.1em", marginBottom:3, paddingLeft:2 } }, "STRAIGHT"),
               el("div", { style:{ display:"flex", gap:2, marginBottom:4 } },
                 ["1/16","1/8","1/4","1/2","1/1"].map(function(d){
                   return el("button",{ key:d, className:cx("sg",fxSettings.delayDiv===d&&"sel"),
@@ -2485,7 +2526,7 @@ function App() {
                   }, d);
                 })
               ),
-              el("div", { style:{ fontSize:7, color:"#333", letterSpacing:"0.1em", marginBottom:3, paddingLeft:2 } }, "DOTTED"),
+              el("div", { style:{ fontSize:7, color:"#555", letterSpacing:"0.1em", marginBottom:3, paddingLeft:2 } }, "DOTTED"),
               el("div", { style:{ display:"flex", gap:2, marginBottom:4 } },
                 ["1/8.","1/4."].map(function(d){
                   return el("button",{ key:d, className:cx("sg",fxSettings.delayDiv===d&&"sel"),
@@ -2494,7 +2535,7 @@ function App() {
                   }, d);
                 })
               ),
-              el("div", { style:{ fontSize:7, color:"#333", letterSpacing:"0.1em", marginBottom:3, paddingLeft:2 } }, "TRIPLET"),
+              el("div", { style:{ fontSize:7, color:"#555", letterSpacing:"0.1em", marginBottom:3, paddingLeft:2 } }, "TRIPLET"),
               el("div", { style:{ display:"flex", gap:2 } },
                 ["1/16T","1/8T","1/4T"].map(function(d){
                   return el("button",{ key:d, className:cx("sg",fxSettings.delayDiv===d&&"sel"),
@@ -2506,13 +2547,11 @@ function App() {
             )
           ),
 
-          // Free: time slider
           !fxSettings.delaySync && el("input", { type:"range", min:1, max:3000, value:fxSettings.delayTime,
             style:{ flex:1 },
             onChange:function(e){ setFx("delayTime",+e.target.value); }
           }),
 
-          // Time readout
           el("span", { style:{ fontSize:11, color:"#7fff6a", minWidth:44, textAlign:"right", letterSpacing:"0.04em" } },
             fxSettings.delaySync
               ? Math.round((60/seqSettings.bpm)*(DIV_MULTS[fxSettings.delayDiv]||0.5)*1000)+"ms"
@@ -2520,7 +2559,6 @@ function App() {
           )
         ),
 
-        // Feedback + Width + Mix — 3 sliders
         el("div", { style:{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:8 } },
           [
             { key:"feedback", label:"Feedback", value:fxSettings.feedback, min:0, max:95, fmt:function(v){return v+"%";} },
@@ -2529,7 +2567,7 @@ function App() {
           ].map(function(sl){
             return el("div",{key:sl.key,style:{display:"flex",flexDirection:"column",gap:2}},
               el("div",{style:{display:"flex",justifyContent:"space-between"}},
-                el("span",{style:{fontSize:7,color:sl.color||"#444",letterSpacing:"0.1em",textTransform:"uppercase"}},sl.label),
+                el("span",{style:{fontSize:7,color:sl.color||"#555",letterSpacing:"0.1em",textTransform:"uppercase"}},sl.label),
                 el("span",{style:{fontSize:8,color:sl.color||"#7fff6a"}},sl.fmt(sl.value))
               ),
               el("input",{type:"range",min:sl.min,max:sl.max,value:sl.value,
@@ -2540,19 +2578,26 @@ function App() {
         )
       ),
 
-      // ── REVERB ──────────────────────────────────────────────────────────────
-      el("div", {},
-        el("div", { style:{ fontSize:7, color:"#333", letterSpacing:"0.2em", textTransform:"uppercase", marginBottom:5 } }, "Reverb"),
-        el("div", { style:{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 } },
+      // ── REVERB TAB ───────────────────────────────────────────────────────────
+      fxSettings.fxTab==="reverb" && el("div", {},
+        el("div", { style:{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 } },
           [
-            { key:"reverbMix",   label:"Mix",   value:Math.round(fxSettings.reverbMix*100), min:0, max:100, fmt:function(v){return v+"%";},
-              onChange:function(e){ setFx("reverbMix",e.target.value/100); } },
-            { key:"reverbDecay", label:"Decay", value:fxSettings.reverbDecay, min:0, max:100, fmt:function(v){return (0.5+v/100*7).toFixed(1)+"s";},
+            { key:"reverbMix",   label:"Mix",   value:Math.round(fxSettings.reverbMix*100),
+              min:0, max:100, fmt:function(v){return v+"%";},
+              onChange:function(e){ setFx("reverbMix",+e.target.value/100); } },
+            { key:"reverbDecay", label:"Decay", value:fxSettings.reverbDecay,
+              min:0, max:100, fmt:function(v){ return (0.3+(v/100)*9.7).toFixed(1)+"s"; },
               onChange:function(e){ setFx("reverbDecay",+e.target.value); } },
+            { key:"reverbSize",  label:"Size",  value:fxSettings.reverbSize,
+              min:0, max:100, fmt:function(v){ return v < 33 ? "small" : v < 66 ? "medium" : "large"; },
+              onChange:function(e){ setFx("reverbSize",+e.target.value); } },
+            { key:"reverbTone",  label:"Tone",  value:fxSettings.reverbTone,
+              min:0, max:100, fmt:function(v){ return v < 33 ? "dark" : v < 66 ? "warm" : "bright"; },
+              onChange:function(e){ setFx("reverbTone",+e.target.value); } },
           ].map(function(sl){
             return el("div",{key:sl.key,style:{display:"flex",flexDirection:"column",gap:2}},
               el("div",{style:{display:"flex",justifyContent:"space-between"}},
-                el("span",{style:{fontSize:7,color:"#444",letterSpacing:"0.1em",textTransform:"uppercase"}},sl.label),
+                el("span",{style:{fontSize:7,color:"#555",letterSpacing:"0.1em",textTransform:"uppercase"}},sl.label),
                 el("span",{style:{fontSize:8,color:"#7fff6a"}},sl.fmt(sl.value))
               ),
               el("input",{type:"range",min:sl.min,max:sl.max,value:sl.value,onChange:sl.onChange})
