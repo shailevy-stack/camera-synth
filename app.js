@@ -1,5 +1,5 @@
 // Camera Synth — v3.0.0
-var VERSION = "3.7.2";
+var VERSION = "3.7.3";
 
 var useState    = React.useState;
 var useEffect   = React.useEffect;
@@ -1699,90 +1699,72 @@ var DIV_MULTS = {"1/16":0.25,"1/8":0.5,"1/4":1,"1/2":2,"1/1":4,
 
 
 // ── Diffusion — all-pass chain inside delay feedback loop ────────────────────
-// Modelled after Replika-style delay diffusion.
-// Sits in the feedback path: delayR → diffusion → fbGain → delayL
-// Each repeat gets more smeared. Amount = all-pass coefficient (0=off, 1=full)
-// Size = all-pass delay lengths. LoCut/HiCut = filters in the loop.
+// ── Diffusion — multi-tap delay in feedback loop ─────────────────────────────
+// 4 parallel short delay taps feed into the feedback path.
+// Different tap times create density/smear on each repeat.
+// Amount scales tap gain. Size scales tap times. Lo/Hi cut filter the loop.
 function makeDiffusion(ctx) {
   var df = {};
 
-  // 3 all-pass delay stages (short delays, prime-ish ms values)
-  var apDelayTimes = [0.0053, 0.0089, 0.0127]; // base times in seconds
+  // Tap times (prime-ish ms) — different enough to avoid comb coloration
+  var tapTimes = [0.007, 0.011, 0.017, 0.023];
 
-  df.stages = apDelayTimes.map(function(t) {
-    var delay = ctx.createDelay(0.1);
-    delay.delayTime.value = t;
-    var fb = ctx.createGain(); fb.gain.value = 0;   // coefficient (amount)
-    var ff = ctx.createGain(); ff.gain.value = 0;   // feedforward = coefficient
-    var inv = ctx.createGain(); inv.gain.value = -1; // invert for all-pass
-    var sum = ctx.createGain(); sum.gain.value = 1;  // sum node
-
-    // All-pass structure:
-    // input → ff → output
-    // input → delay → inv → output (inverted delayed copy)
-    // input → delay → fb → input (feedback)
-    // Net effect: flat frequency response but phase-scrambled
-
-    // We use a simplified Schroeder all-pass:
-    // y[n] = -g*x[n] + x[n-D] + g*y[n-D]
-    return { delay: delay, fb: fb, ff: ff, inv: inv, sum: sum, baseTime: t };
-  });
-
-  // Lo cut filter (high-pass in feedback — removes mud)
-  df.loCut = ctx.createBiquadFilter();
-  df.loCut.type = 'highpass';
-  df.loCut.frequency.value = 20; // default off
-  df.loCut.Q.value = 0.5;
-
-  // Hi cut filter (low-pass in feedback — darkens repeats like tape)
-  df.hiCut = ctx.createBiquadFilter();
-  df.hiCut.type = 'lowpass';
-  df.hiCut.frequency.value = 20000; // default off
-  df.hiCut.Q.value = 0.5;
-
-  // Input/output gain nodes — chain everything in series
   df.input  = ctx.createGain(); df.input.gain.value  = 1;
   df.output = ctx.createGain(); df.output.gain.value = 1;
 
-  // Chain: input → loCut → hiCut → ap[0] → ap[1] → ap[2] → output
-  // Using simplified all-pass: input directly through delay with gain
-  // (full Schroeder all-pass needs careful Web Audio routing)
-  // Simplified: just delay + scaled feedback — still creates diffusion
+  // Lo/Hi cut filters in the feedback path
+  df.loCut = ctx.createBiquadFilter();
+  df.loCut.type = 'highpass';
+  df.loCut.frequency.value = 20;
+  df.loCut.Q.value = 0.5;
+
+  df.hiCut = ctx.createBiquadFilter();
+  df.hiCut.type = 'lowpass';
+  df.hiCut.frequency.value = 20000;
+  df.hiCut.Q.value = 0.5;
+
+  // Tap mix gain — scales all taps together (Amount control)
+  df.tapMix = ctx.createGain();
+  df.tapMix.gain.value = 0; // starts at 0 — no diffusion until Amount > 0
+
+  // 4 parallel delay taps
+  df.taps = tapTimes.map(function(t) {
+    var delay = ctx.createDelay(0.2);
+    delay.delayTime.value = t;
+    return { delay: delay, baseTime: t };
+  });
+
+  // Routing:
+  // input → loCut → hiCut → [4 parallel taps] → tapMix → output
+  // The direct signal + multi-tap sum = dense early reflections on each repeat
   df.input.connect(df.loCut);
   df.loCut.connect(df.hiCut);
 
-  var prev = df.hiCut;
-  df.stages.forEach(function(s) {
-    // Simple delay stage with adjustable time
-    // Input → delay → next stage
-    // The "all-pass" character comes from the delay summing with direct signal
-    // at the output. Actual all-pass needs sample-level routing not possible
-    // in Web Audio without ScriptProcessor. This is a close approximation.
-    prev.connect(s.delay);
-    prev = s.delay;
+  // Direct path (always passes through)
+  df.hiCut.connect(df.output);
+
+  // Parallel taps → tapMix → output
+  df.taps.forEach(function(tap) {
+    df.hiCut.connect(tap.delay);
+    tap.delay.connect(df.tapMix);
   });
-  df.stages[df.stages.length - 1].delay.connect(df.output);
+  df.tapMix.connect(df.output);
 
   // ── Parameter setters ──────────────────────────────────────
   df.setAmount = function(amount01, t) {
-    // amount controls delay mix depth — 0 = dry (no diffusion), 1 = full smear
-    // We scale the delay times shorter at low amount (less smearing)
     t = t || ctx.currentTime;
-    df.stages.forEach(function(s) {
-      // Scale delay time: at amount=0, time→very short (bypass-like)
-      // at amount=1, full delay time
-      var scaledTime = Math.max(0.0001, s.baseTime * Math.max(0.05, amount01));
-      s.delay.delayTime.setTargetAtTime(scaledTime, t, 0.05);
-    });
+    // Tap mix gain — 0 = no diffusion, 1 = full smear
+    df.tapMix.gain.setTargetAtTime(amount01 * 0.4, t, 0.05);
+    // Scale 0.4 to keep overall level stable (4 taps × 0.4 = ≤1.6× max)
   };
 
   df.setSize = function(size01, t) {
     t = t || ctx.currentTime;
-    // Size scales all delay times (0.5× to 2× base)
-    var scale = 0.5 + size01 * 1.5;
-    df.stages.forEach(function(s) {
-      s.delay.delayTime.setTargetAtTime(
-        Math.min(0.08, s.baseTime * scale), t, 0.05
+    // Scale tap times — 0.3× to 2× base
+    var scale = 0.3 + size01 * 1.7;
+    df.taps.forEach(function(tap) {
+      tap.delay.delayTime.setTargetAtTime(
+        Math.min(0.15, tap.baseTime * scale), t, 0.05
       );
     });
   };
@@ -1799,6 +1781,7 @@ function makeDiffusion(ctx) {
 
   return df;
 }
+
 
 // ── App ───────────────────────────────────────────────────────────────────────
 function App() {
