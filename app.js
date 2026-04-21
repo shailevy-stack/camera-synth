@@ -1,5 +1,5 @@
 // Camera Synth — v3.0.0
-var VERSION = "3.7.3";
+var VERSION = "3.7.4";
 
 var useState    = React.useState;
 var useEffect   = React.useEffect;
@@ -219,21 +219,21 @@ function makeEngine1() {
       eng.delayL.connect(eng.crossGain);    // L→crossGain→R (scalable)
       eng.crossGain.connect(eng.delayR);
       eng.delayR.connect(eng.delayWetR);
-      eng.delayR.connect(eng.diffusion.input);  // diffusion in feedback path
-      eng.diffusion.output.connect(eng.fbGain);
+      eng.delayR.connect(eng.fbGain);
       eng.fbGain.connect(eng.delayL);
       eng.delayWetL.connect(eng.delayWet);
       eng.delayWetR.connect(eng.delayWet);
 
       // Signal chain:
-      // Signal chain: seqAmpGain → delay+dry → master (diffusion inside feedback loop)
+      // Signal chain: dry → master direct, wet → diffusion → master
       eng.lowpassNode.connect(eng.preReverbGain);
       eng.preReverbGain.connect(eng.seqAmpGain);
       // Signal chain: seqAmpGain → dry+wet delay → master
-      // Diffusion lives inside the feedback loop (delayR→diffusion→fbGain→delayL)
+      // Diffusion on wet output: each repeat gets all-pass smeared
       eng.seqAmpGain.connect(eng.delayDry);
       eng.delayDry.connect(eng.masterGain);
-      eng.delayWet.connect(eng.masterGain);
+      eng.delayWet.connect(eng.diffusion.input);
+      eng.diffusion.output.connect(eng.masterGain);
       eng.masterGain.connect(eng.limiterNode);
       eng.limiterNode.connect(eng.analyserNode);
       eng.analyserNode.connect(eng.ctx.destination);
@@ -787,8 +787,7 @@ function makeEngine2() {
       eng.delayL.connect(eng.crossGain);
       eng.crossGain.connect(eng.delayR);
       eng.delayR.connect(eng.delayWetR);
-      eng.delayR.connect(eng.diffusion.input);
-      eng.diffusion.output.connect(eng.fbGain);
+      eng.delayR.connect(eng.fbGain);
       eng.fbGain.connect(eng.delayL);
       eng.delayWetL.connect(eng.delayWet);
       eng.delayWetR.connect(eng.delayWet);
@@ -796,10 +795,11 @@ function makeEngine2() {
       eng.lowpassNode.connect(eng.preReverbGain);
       eng.preReverbGain.connect(eng.seqAmpGain);
       // Signal chain: seqAmpGain → dry+wet delay → master
-      // Diffusion lives inside the feedback loop (delayR→diffusion→fbGain→delayL)
+      // Diffusion on wet output: each repeat gets all-pass smeared
       eng.seqAmpGain.connect(eng.delayDry);
       eng.delayDry.connect(eng.masterGain);
-      eng.delayWet.connect(eng.masterGain);
+      eng.delayWet.connect(eng.diffusion.input);
+      eng.diffusion.output.connect(eng.masterGain);
       eng.masterGain.connect(eng.limiterNode);
       eng.limiterNode.connect(eng.analyserNode);
       eng.analyserNode.connect(eng.ctx.destination);
@@ -1699,20 +1699,20 @@ var DIV_MULTS = {"1/16":0.25,"1/8":0.5,"1/4":1,"1/2":2,"1/1":4,
 
 
 // ── Diffusion — all-pass chain inside delay feedback loop ────────────────────
-// ── Diffusion — multi-tap delay in feedback loop ─────────────────────────────
-// 4 parallel short delay taps feed into the feedback path.
-// Different tap times create density/smear on each repeat.
-// Amount scales tap gain. Size scales tap times. Lo/Hi cut filter the loop.
+// ── Diffusion — cascaded Schroeder all-pass delays ──────────────────────────
+// Applied to delay wet output. Each stage: short delay with all-pass structure.
+// Amount = all-pass coefficient g (0=off, ~0.6=max useful)
+// Size = scales delay lengths. Lo/Hi cut on the cascade input.
 function makeDiffusion(ctx) {
   var df = {};
 
-  // Tap times (prime-ish ms) — different enough to avoid comb coloration
-  var tapTimes = [0.007, 0.011, 0.017, 0.023];
+  // 4 cascaded all-pass stages, prime-ish delay times (ms)
+  var apTimes = [0.0053, 0.0089, 0.0137, 0.0211];
 
   df.input  = ctx.createGain(); df.input.gain.value  = 1;
   df.output = ctx.createGain(); df.output.gain.value = 1;
 
-  // Lo/Hi cut filters in the feedback path
+  // Lo/Hi cut on input — shape frequency content before diffusion
   df.loCut = ctx.createBiquadFilter();
   df.loCut.type = 'highpass';
   df.loCut.frequency.value = 20;
@@ -1723,48 +1723,68 @@ function makeDiffusion(ctx) {
   df.hiCut.frequency.value = 20000;
   df.hiCut.Q.value = 0.5;
 
-  // Tap mix gain — scales all taps together (Amount control)
-  df.tapMix = ctx.createGain();
-  df.tapMix.gain.value = 0; // starts at 0 — no diffusion until Amount > 0
-
-  // 4 parallel delay taps
-  df.taps = tapTimes.map(function(t) {
-    var delay = ctx.createDelay(0.2);
-    delay.delayTime.value = t;
-    return { delay: delay, baseTime: t };
-  });
-
-  // Routing:
-  // input → loCut → hiCut → [4 parallel taps] → tapMix → output
-  // The direct signal + multi-tap sum = dense early reflections on each repeat
   df.input.connect(df.loCut);
   df.loCut.connect(df.hiCut);
 
-  // Direct path (always passes through)
-  df.hiCut.connect(df.output);
+  // Build cascade of Schroeder all-pass stages
+  // Structure per stage:
+  //   stageIn ──→ negGain(−g) ──────────────────→ stageOut
+  //   stageIn ──→ delay ──→ posGain(+1) ─→ stageOut
+  //                ↑                ↓
+  //                └── fbGain(g) ←──┘
+  df.stages = apTimes.map(function(t) {
+    var delay   = ctx.createDelay(0.2);
+    delay.delayTime.value = t;
 
-  // Parallel taps → tapMix → output
-  df.taps.forEach(function(tap) {
-    df.hiCut.connect(tap.delay);
-    tap.delay.connect(df.tapMix);
+    var negGain = ctx.createGain(); negGain.gain.value = 0;   // −g (amount)
+    var fbGain  = ctx.createGain(); fbGain.gain.value  = 0;   // +g (feedback)
+    var stageIn = ctx.createGain(); stageIn.gain.value = 1;
+    var stageOut= ctx.createGain(); stageOut.gain.value= 1;
+
+    // Wire: stageIn → negGain → stageOut (direct, negated)
+    stageIn.connect(negGain);
+    negGain.connect(stageOut);
+
+    // Wire: stageIn → delay
+    stageIn.connect(delay);
+
+    // Wire: delay → stageOut (delayed copy)
+    delay.connect(stageOut);
+
+    // Wire: delay → fbGain → delay input (feedback loop)
+    delay.connect(fbGain);
+    fbGain.connect(delay);
+
+    return { delay: delay, negGain: negGain, fbGain: fbGain,
+             stageIn: stageIn, stageOut: stageOut, baseTime: t };
   });
-  df.tapMix.connect(df.output);
+
+  // Chain stages in series: hiCut → stage[0] → stage[1] → ... → output
+  var prev = df.hiCut;
+  df.stages.forEach(function(s) {
+    prev.connect(s.stageIn);
+    prev = s.stageOut;
+  });
+  df.stages[df.stages.length - 1].stageOut.connect(df.output);
 
   // ── Parameter setters ──────────────────────────────────────
   df.setAmount = function(amount01, t) {
     t = t || ctx.currentTime;
-    // Tap mix gain — 0 = no diffusion, 1 = full smear
-    df.tapMix.gain.setTargetAtTime(amount01 * 0.4, t, 0.05);
-    // Scale 0.4 to keep overall level stable (4 taps × 0.4 = ≤1.6× max)
+    // g coefficient: 0=bypass, 0.6=max (above 0.7 gets metallic)
+    var g = amount01 * 0.6;
+    df.stages.forEach(function(s) {
+      s.negGain.gain.setTargetAtTime(-g, t, 0.05);
+      s.fbGain.gain.setTargetAtTime(g, t, 0.05);
+    });
   };
 
   df.setSize = function(size01, t) {
     t = t || ctx.currentTime;
-    // Scale tap times — 0.3× to 2× base
-    var scale = 0.3 + size01 * 1.7;
-    df.taps.forEach(function(tap) {
-      tap.delay.delayTime.setTargetAtTime(
-        Math.min(0.15, tap.baseTime * scale), t, 0.05
+    // Scale delay times 0.3× to 3× base
+    var scale = 0.3 + size01 * 2.7;
+    df.stages.forEach(function(s) {
+      s.delay.delayTime.setTargetAtTime(
+        Math.min(0.15, s.baseTime * scale), t, 0.05
       );
     });
   };
