@@ -1,5 +1,5 @@
 // Camera Synth — v3.0.0
-var VERSION = "3.8.4";
+var VERSION = "3.8.5";
 
 var useState    = React.useState;
 var useEffect   = React.useEffect;
@@ -735,6 +735,7 @@ function makeEngine2() {
     lfo1: null, lfo2: null,
     // FM modulator shape per oscillator (0=sine, 0.5=tri, 1=square)
     fmModShapeR: 0, fmModShapeG: 0, fmModShapeB: 0,
+    _crossGains: [],
     _normAlpha: 0.02,      // how fast min/max tracks (per frame)
     _normMinSpread: 0.04,  // minimum spread to avoid noise amplification
     settings: {
@@ -939,10 +940,61 @@ function makeEngine2() {
     eng.oscR = eng.makeOscVoice(rHz,  1, CM_RATIOS[s.cmR]);
     eng.oscG = eng.makeOscVoice(gHz,  0, CM_RATIOS[s.cmG]);
     eng.oscB = eng.makeOscVoice(bHz, -1, CM_RATIOS[s.cmB]);
+
+    // Wire cross-modulation for current matrix
+    eng.wireFmMatrix();
+
     // Reconnect LFOs to fresh oscillator nodes
     if (eng.lfo1 || eng.lfo2) {
       eng.destroyUserLFOs();
       eng.initUserLFOs();
+    }
+  };
+
+  // ── FM Matrix cross-modulation wiring ─────────────────────
+  // Each matrix adds carrier→frequency connections on top of
+  // the internal fmMod→carrier connections (which always exist)
+  // Cross-gain depth: scaled by fmDepth setting
+  eng.wireFmMatrix = function() {
+    var matrix = eng.settings.fmMatrix || "A";
+    var t = eng.ctx.currentTime;
+
+    // Destroy old cross gains
+    if (eng._crossGains) {
+      eng._crossGains.forEach(function(g) { try { g.disconnect(); } catch(e) {} });
+    }
+    eng._crossGains = [];
+
+    if (!eng.oscR || !eng.oscG || !eng.oscB) return;
+
+    // Cross-modulation depth — scales with fmDepth
+    // Using a modest fixed index so it doesn't overwhelm at high fmDepth
+    var baseHz = midiToHz(eng.currentPitchMidi);
+    var crossDepth = (eng.settings.fmDepth || 0.4) * baseHz * 0.3;
+
+    function makeCross(srcOsc, destOsc) {
+      var g = eng.ctx.createGain();
+      g.gain.value = crossDepth;
+      srcOsc.osc.connect(g);
+      g.connect(destOsc.osc.frequency);
+      eng._crossGains.push(g);
+    }
+
+    if (matrix === "A") {
+      // Independent — no cross connections
+    } else if (matrix === "B") {
+      // Series: R→G, G→B
+      makeCross(eng.oscR, eng.oscG);
+      makeCross(eng.oscG, eng.oscB);
+    } else if (matrix === "C") {
+      // Star: R→G, R→B
+      makeCross(eng.oscR, eng.oscG);
+      makeCross(eng.oscR, eng.oscB);
+    } else if (matrix === "D") {
+      // Ring: R→G, G→B, B→R
+      makeCross(eng.oscR, eng.oscG);
+      makeCross(eng.oscG, eng.oscB);
+      makeCross(eng.oscB, eng.oscR);
     }
   };
 
@@ -2624,7 +2676,11 @@ function App() {
               overflow:"hidden",
               position:"relative"
             },
-            onClick:function(){ setSettings2(function(s){var n=Object.assign({},s);n.fmMatrix=m.id;return n;}); }
+            onClick:function(){
+              setSettings2(function(s){var n=Object.assign({},s);n.fmMatrix=m.id;return n;});
+              var eng=eng2Ref.current;
+              if(eng){eng.settings.fmMatrix=m.id;eng.spawnOscillators&&eng.spawnOscillators();}
+            }
           },
             el("div", {
               dangerouslySetInnerHTML:{__html: m.svg},
