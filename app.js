@@ -1,5 +1,5 @@
 // Camera Synth — v3.0.0
-var VERSION = "3.8.2";
+var VERSION = "3.8.3";
 
 var useState    = React.useState;
 var useEffect   = React.useEffect;
@@ -1829,7 +1829,7 @@ function App() {
   // Engine 2 settings
   var rs2 = useState({ quantize:false, scale:"pentatonic", rootNote:48,
     pitchMin:36, pitchMax:72, reverbMix:0.3, fps:10, showScales:false,
-    intervalR:"1×2", intervalG:"3×2", intervalB:"5×4", glide:200,
+    intervalR:"1×2", intervalG:"3×2", intervalB:"5×4", glide:200, fmMatrix:"A",
     cmR:"1:1", cmG:"1:1", cmB:"1:1", fmDepth:0.4, fmModShape:0,
     lfo1:{ rate:0.5, depth:0, wave:"sine", dest:"filter cutoff", active:false },
     lfo2:{ rate:0.2, depth:0, wave:"sine", dest:"filter Q",      active:false } });
@@ -2237,10 +2237,7 @@ function App() {
     el("div", { style:{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"10px 14px 6px", paddingTop:"max(env(safe-area-inset-top,10px),10px)", flexShrink:0 } },
       el("div", { style:{ display:"flex", alignItems:"baseline", gap:7 } },
         el("span", { style:{ fontSize:10, letterSpacing:"0.2em", textTransform:"uppercase" } },
-          el("span", { style:{ color:"#ff9944" } }, "SYN"),
-          el("span", { style:{ color:"#7fff6a" } }, "E"),
-          el("span", { style:{ color:"#ff9944" } }, "TH"),
-          el("span", { style:{ color:"#7fff6a" } }, "ESIA")
+          el("span", { style:{ color:"#7fff6a" } }, "SYNESTHESIA")
         ),
         el("span", { style:{ fontSize:8, color:"#888", letterSpacing:"0.1em" } }, "v"+VERSION)
       ),
@@ -2339,7 +2336,7 @@ function App() {
       el("button", { className:cx("cb",loopCapturing&&"blink",looping&&"on"), onClick:handleLoopPress, style:{ flex:1 } }, loopCapturing?"\u25cf LOOP":looping?"\u21ba LOOP":"\u25cb LOOP"),
       el("button", { className:cx("cb",recording&&"rec"), onClick:handleRecord, style:{ flex:1 } }, recording?"\u25cf REC":"\u25cb REC"),
       el("button", { className:cx("cb",camOn&&"on"), onClick:handleCamToggle, style:{ flex:1 } }, "\u25a3 CAM"),
-      el("button", { className:cx("cb",showFx&&"on"), onClick:function(){setShowFx(function(s){return !s;});setShowSettings(false);setShowSeq(false);}, style:{ flex:1, borderColor:showFx?"#ff9944":"", color:showFx?"#ff9944":"" } }, "FX"),
+      el("button", { className:cx("cb",showFx&&"on"), onClick:function(){setShowFx(function(s){return !s;});setShowSettings(false);setShowSeq(false);}, style:{ flex:1 } }, "FX"),
       el("button", { className:cx("cb",showSeq&&"on"), onClick:function(){
         setShowSeq(function(s){return !s;});
         setShowSettings(false);setShowFx(false);
@@ -2449,7 +2446,7 @@ function App() {
           )
         ),
         !fxSettings.delaySync && el("input", { type:"range", min:1, max:3000, value:fxSettings.delayTime, style:{ flex:1 }, onChange:function(e){ setFx("delayTime",+e.target.value); } }),
-        el("span", { style:{ fontSize:11, color:"#6bb5ff", minWidth:44, textAlign:"right", letterSpacing:"0.04em" } },
+        el("span", { style:{ fontSize:11, color:"#7fff6a", minWidth:44, textAlign:"right", letterSpacing:"0.04em" } },
           fxSettings.delaySync ? Math.round((60/seqSettings.bpm)*(DIV_MULTS[fxSettings.delayDiv]||0.5)*1000)+"ms" : fxSettings.delayTime+"ms"
         )
       ),
@@ -2460,44 +2457,44 @@ function App() {
         // Left col
         el("div",{style:{display:"flex",flexDirection:"column",gap:2}},
           el("div",{style:{display:"flex",justifyContent:"space-between"}},
-            el("span",{style:{fontSize:7,color:"#6bb5ff",letterSpacing:"0.1em",textTransform:"uppercase"}},"Delay"),
-            el("span",{style:{fontSize:8,color:"#6bb5ff"}},fxSettings.delayMix+"%")
+            el("span",{style:{fontSize:7,color:"#555",letterSpacing:"0.1em",textTransform:"uppercase"}},"Delay"),
+            el("span",{style:{fontSize:8,color:"#7fff6a"}},fxSettings.delayMix+"%")
           ),
           el("input",{type:"range",min:0,max:100,value:fxSettings.delayMix,onChange:function(e){setFx("delayMix",+e.target.value);}})
         ),
         // Right col
         el("div",{style:{display:"flex",flexDirection:"column",gap:2}},
           el("div",{style:{display:"flex",justifyContent:"space-between"}},
-            el("span",{style:{fontSize:7,color:"#ff9944",letterSpacing:"0.1em",textTransform:"uppercase"}},"Lo Cut"),
-            el("span",{style:{fontSize:8,color:"#ff9944"}},fxSettings.fxLoCut<=20?"off":fxSettings.fxLoCut+"Hz")
+            el("span",{style:{fontSize:7,color:"#555",letterSpacing:"0.1em",textTransform:"uppercase"}},"Lo Cut"),
+            el("span",{style:{fontSize:8,color:"#7fff6a"}},fxSettings.fxLoCut<=20?"off":fxSettings.fxLoCut+"Hz")
           ),
           el("input",{type:"range",min:20,max:2000,value:fxSettings.fxLoCut,onChange:function(e){setFx("fxLoCut",+e.target.value);}})
         ),
         el("div",{style:{display:"flex",flexDirection:"column",gap:2}},
           el("div",{style:{display:"flex",justifyContent:"space-between"}},
-            el("span",{style:{fontSize:7,color:"#6bb5ff",letterSpacing:"0.1em",textTransform:"uppercase"}},"Feedback"),
-            el("span",{style:{fontSize:8,color:"#6bb5ff"}},fxSettings.feedback+"%")
+            el("span",{style:{fontSize:7,color:"#555",letterSpacing:"0.1em",textTransform:"uppercase"}},"Feedback"),
+            el("span",{style:{fontSize:8,color:"#7fff6a"}},fxSettings.feedback+"%")
           ),
           el("input",{type:"range",min:0,max:95,value:fxSettings.feedback,onChange:function(e){setFx("feedback",+e.target.value);}})
         ),
         el("div",{style:{display:"flex",flexDirection:"column",gap:2}},
           el("div",{style:{display:"flex",justifyContent:"space-between"}},
-            el("span",{style:{fontSize:7,color:"#ff9944",letterSpacing:"0.1em",textTransform:"uppercase"}},"Hi Cut"),
-            el("span",{style:{fontSize:8,color:"#ff9944"}},fxSettings.fxHiCut>=20000?"off":(fxSettings.fxHiCut>=1000?(fxSettings.fxHiCut/1000).toFixed(1)+"k":fxSettings.fxHiCut+"Hz"))
+            el("span",{style:{fontSize:7,color:"#555",letterSpacing:"0.1em",textTransform:"uppercase"}},"Hi Cut"),
+            el("span",{style:{fontSize:8,color:"#7fff6a"}},fxSettings.fxHiCut>=20000?"off":(fxSettings.fxHiCut>=1000?(fxSettings.fxHiCut/1000).toFixed(1)+"k":fxSettings.fxHiCut+"Hz"))
           ),
           el("input",{type:"range",min:1000,max:20000,value:fxSettings.fxHiCut,onChange:function(e){setFx("fxHiCut",+e.target.value);}})
         ),
         el("div",{style:{display:"flex",flexDirection:"column",gap:2}},
           el("div",{style:{display:"flex",justifyContent:"space-between"}},
-            el("span",{style:{fontSize:7,color:"#6bb5ff",letterSpacing:"0.1em",textTransform:"uppercase"}},"Width"),
-            el("span",{style:{fontSize:8,color:"#6bb5ff"}},fxSettings.width+"%")
+            el("span",{style:{fontSize:7,color:"#555",letterSpacing:"0.1em",textTransform:"uppercase"}},"Width"),
+            el("span",{style:{fontSize:8,color:"#7fff6a"}},fxSettings.width+"%")
           ),
           el("input",{type:"range",min:0,max:100,value:fxSettings.width,onChange:function(e){setFx("width",+e.target.value);}})
         ),
         el("div",{style:{display:"flex",flexDirection:"column",gap:2}},
           el("div",{style:{display:"flex",justifyContent:"space-between"}},
-            el("span",{style:{fontSize:7,color:"#ff9944",letterSpacing:"0.1em",textTransform:"uppercase"}},"Reverb"),
-            el("span",{style:{fontSize:8,color:"#ff9944"}},Math.round((fxSettings.reverbMix||0)*100)+"%")
+            el("span",{style:{fontSize:7,color:"#555",letterSpacing:"0.1em",textTransform:"uppercase"}},"Reverb"),
+            el("span",{style:{fontSize:8,color:"#7fff6a"}},Math.round((fxSettings.reverbMix||0)*100)+"%")
           ),
           el("input",{type:"range",min:0,max:100,value:Math.round((fxSettings.reverbMix||0)*100),onChange:function(e){setFx("reverbMix",+e.target.value/100);}})
         )
@@ -2524,7 +2521,7 @@ function App() {
         }, style:{ padding:"6px 14px", fontSize:10, flexShrink:0 } }, seqPlaying?"◼ STOP":"▶ PLAY"),
 
         el("div", { style:{ display:"flex", alignItems:"center", gap:4 } },
-          el("span", { style:{ fontSize:8, color:"#6bb5ff", letterSpacing:"0.1em", marginRight:2 } }, "BPM"),
+          el("span", { style:{ fontSize:8, color:"#444", letterSpacing:"0.1em", marginRight:2 } }, "BPM"),
           el("button", { className:"sg", style:{padding:"2px 7px"}, onClick:function(){ setSeqSettings(function(s){ var n=Object.assign({},s); n.bpm=Math.max(40,s.bpm-5); if(seqRef.current)seqRef.current.bpm=n.bpm; return n; }); } }, "-"),
           el("input", { type:"text", inputMode:"numeric",
             defaultValue:seqSettings.bpm, key:"bpm-"+seqSettings.bpm,
@@ -2538,7 +2535,7 @@ function App() {
         ),
 
         el("div", { style:{ display:"flex", alignItems:"center", gap:4 } },
-          el("span", { style:{ fontSize:8, color:"#6bb5ff", letterSpacing:"0.1em", marginRight:2 } }, "STEPS"),
+          el("span", { style:{ fontSize:8, color:"#444", letterSpacing:"0.1em", marginRight:2 } }, "STEPS"),
           el("button", { className:"sg", style:{padding:"2px 7px"}, onClick:function(){ setSeqSettings(function(s){ var n=Object.assign({},s); n.steps=Math.max(1,s.steps-1); if(seqRef.current)seqRef.current.steps=n.steps; return n; }); } }, "-"),
           el("span", { style:{ fontSize:13, color:"#7fff6a", minWidth:20, textAlign:"center" } }, seqSettings.steps),
           el("button", { className:"sg", style:{padding:"2px 7px"}, onClick:function(){ setSeqSettings(function(s){ var n=Object.assign({},s); n.steps=Math.min(16,s.steps+1); if(seqRef.current)seqRef.current.steps=n.steps; return n; }); } }, "+")
@@ -2607,10 +2604,29 @@ function App() {
 
     // Engine 2 — interval selectors
     activeEngine==="2" && el("div", { style:{ padding:"8px 14px", overflowY:"auto", flexShrink:0 } },
-      el("div", { style:{ fontSize:8, color:"#2a2a2a", lineHeight:2, letterSpacing:"0.08em", marginBottom:10 } },
-        el("div", null, "3 RGB oscillators — sine \u2194 square morph per channel"),
-        el("div", null, "Color relations drive pitch within each interval range"),
-        el("div", null, "Stereo width from color deviation")
+
+      el("div", { style:{ fontSize:7, color:"#333", letterSpacing:"0.15em", textTransform:"uppercase", marginBottom:6 } }, "FM Matrix"),
+      el("div", { style:{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr 1fr", gap:5, marginBottom:14 } },
+        [
+          { id:"A", label:"Indep", desc:"Self only" },
+          { id:"B", label:"Series", desc:"R→G→B" },
+          { id:"C", label:"Star",   desc:"R→G,B" },
+          { id:"D", label:"Ring",   desc:"R→G→B→R" },
+        ].map(function(m) {
+          var active = (settings2.fmMatrix||"A") === m.id;
+          return el("div", { key:m.id,
+            style:{
+              border:"1px solid " + (active?"#7fff6a":"#1e1e1e"),
+              borderRadius:3, padding:"6px 4px",
+              background: active?"rgba(127,255,106,0.05)":"transparent",
+              cursor:"pointer", textAlign:"center"
+            },
+            onClick:function(){ setSettings2(function(s){var n=Object.assign({},s);n.fmMatrix=m.id;return n;}); }
+          },
+            el("div",{style:{fontSize:9,color:active?"#7fff6a":"#444",letterSpacing:"0.08em"}},m.id),
+            el("div",{style:{fontSize:7,color:active?"#5a8a52":"#2a2a2a",letterSpacing:"0.06em",marginTop:2}},m.label)
+          );
+        })
       ),
       el("div", { style:{ fontSize:8, color:"#444", letterSpacing:"0.15em", textTransform:"uppercase", marginBottom:6 } }, "Interval range per oscillator"),
       ["R","G","B"].map(function(ch) {
