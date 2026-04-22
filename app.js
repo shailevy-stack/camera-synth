@@ -1,5 +1,5 @@
 // Camera Synth — v3.0.0
-var VERSION = "3.8.8";
+var VERSION = "3.8.9";
 
 var useState    = React.useState;
 var useEffect   = React.useEffect;
@@ -411,7 +411,7 @@ function makeEngine1() {
   };
 
   eng.setLpFreq = function(freq) {
-    var safeFreq = Math.max(50, Math.min(20000, freq));
+    var safeFreq = Math.max(20, Math.min(20000, freq));
     if (eng._lpBase) {
       eng._lpBase.offset.setTargetAtTime(safeFreq, eng.ctx.currentTime, 0.02);
     } else {
@@ -1253,7 +1253,7 @@ function makeEngine2() {
   };
 
   eng.setLpFreq = function(freq) {
-    var safeFreq = Math.max(50, Math.min(20000, freq));
+    var safeFreq = Math.max(20, Math.min(20000, freq));
     if (eng._lpBase) {
       eng._lpBase.offset.setTargetAtTime(safeFreq, eng.ctx.currentTime, 0.02);
     } else {
@@ -1261,7 +1261,7 @@ function makeEngine2() {
     }
     if (eng.lowpassNode2) eng.lowpassNode2.frequency.setTargetAtTime(safeFreq, eng.ctx.currentTime, 0.02);
     eng._lpBaseValue = safeFreq;
-    var maxDepth = safeFreq - 50;
+    var maxDepth = Math.max(0, safeFreq - 20);
     if (eng._lfoGain && eng._lfoGain.gain.value > maxDepth) {
       eng._lfoGain.gain.setTargetAtTime(maxDepth, eng.ctx.currentTime, 0.02);
     }
@@ -2232,21 +2232,14 @@ function App() {
     setLpX(x);
     var eng = synthRef.current;
     if (!eng || !eng.ctx) return;
-    // Map 0..1 → 150Hz..12000Hz (log scale feels more natural)
-    var freq = 150 * Math.pow(12000/150, x);
-    // Slope: 24dB when closed (low x), morphs to 12dB when open
-    // Approximate by changing Q: high Q at low x
-    var node = eng.lowpassNode;
-    if (!node) return;
-    var t = eng.ctx.currentTime;
-    // Use setLpFreq so LFO offset is preserved (ConstantSourceNode base)
+    // Map 0..1 → 20Hz..12000Hz (log scale)
+    var freq = 20 * Math.pow(12000/20, x);
     if (eng.setLpFreq) {
       eng.setLpFreq(freq);
     } else {
-      node.frequency.setTargetAtTime(freq, t, 0.05);
+      eng.lowpassNode.frequency.setTargetAtTime(freq, eng.ctx.currentTime, 0.05);
     }
-    // Q: 0.7 (flat/12dB-ish) when open, 2.0 (resonant/steeper) when closed
-    node.Q.setTargetAtTime(0.7 + (1 - x) * 1.3, t, 0.05);
+    // Q is controlled exclusively by resonance ribbon — never touched here
   }, []);
 
   var handleFlip    = useCallback(function(){setFacingMode(function(f){return f==="environment"?"user":"environment";});}, []);
@@ -2436,12 +2429,12 @@ function App() {
 
 
 
-    // Filter ribbon (narrowed)
-    el("div", { style:{ flexShrink:0, padding:"0 14px" } },
-      el("div", { style:{ display:"flex", alignItems:"center", padding:"2px 0 1px", gap:8 } },
+    // Filter ribbon (edge to edge)
+    el("div", { style:{ flexShrink:0 } },
+      el("div", { style:{ display:"flex", alignItems:"center", padding:"2px 14px 1px", gap:8 } },
         el("span", { style:{ fontSize:8, color:"#2a2a2a", letterSpacing:"0.1em" } }, "FILTER"),
         el("span", { style:{ fontSize:11, color:"#6bb5ff", letterSpacing:"0.04em", minWidth:60 } },
-          (150 * Math.pow(12000/150, lpX)).toFixed(0)+" Hz"
+          (20 * Math.pow(12000/20, lpX)).toFixed(0)+" Hz"
         ),
         el("span", { style:{ fontSize:8, color:"#1a1a1a", marginLeft:"auto" } }, "24dB")
       ),
@@ -2451,10 +2444,10 @@ function App() {
         onTouchStart:handleLpRibbon, onTouchMove:handleLpRibbon,
         style:{ height:32, position:"relative", cursor:"crosshair",
           background:"linear-gradient(90deg, #050a14 0%, #0a1628 30%, #0d2040 60%, #1a3a6a 80%, #2050a0 100%)",
-          borderTop:"1px solid #141c24", borderBottom:"1px solid #141c24", borderRadius:2 }
+          borderTop:"1px solid #141c24", borderBottom:"1px solid #141c24" }
       },
-        [150,300,600,1200,3000,6000,12000].map(function(f) {
-          var pos = Math.log(f/150) / Math.log(12000/150);
+        [20,60,200,600,2000,6000,12000].map(function(f) {
+          var pos = Math.log(f/20) / Math.log(12000/20);
           return el("div", { key:f, style:{ position:"absolute", left:(pos*100)+"%", top:0, bottom:0, width:1, background:"rgba(107,181,255,0.15)" } });
         }),
         el("div", { style:{ position:"absolute", left:(lpX*100)+"%", top:0, bottom:0, width:2,
@@ -2462,9 +2455,9 @@ function App() {
       )
     ),
 
-    // Resonance ribbon
-    el("div", { style:{ flexShrink:0, padding:"0 14px" } },
-      el("div", { style:{ display:"flex", alignItems:"center", padding:"2px 0 1px", gap:8 } },
+    // Resonance ribbon (edge to edge)
+    el("div", { style:{ flexShrink:0 } },
+      el("div", { style:{ display:"flex", alignItems:"center", padding:"2px 14px 1px", gap:8 } },
         el("span", { style:{ fontSize:8, color:"#2a2a2a", letterSpacing:"0.1em" } }, "RES"),
         el("span", { style:{ fontSize:11, color:"#6bb5ff", letterSpacing:"0.04em", minWidth:60 } },
           (0.5 * Math.pow(30, lpQ)).toFixed(1)
@@ -2476,7 +2469,7 @@ function App() {
         onTouchStart:handleLpRes, onTouchMove:handleLpRes,
         style:{ height:24, position:"relative", cursor:"crosshair",
           background:"linear-gradient(90deg, #050a14 0%, #0d2040 60%, #1a3a8a 100%)",
-          borderTop:"1px solid #141c24", borderBottom:"1px solid #141c24", borderRadius:2 }
+          borderTop:"1px solid #141c24", borderBottom:"1px solid #141c24" }
       },
         el("div", { style:{ position:"absolute", left:(lpQ*100)+"%", top:0, bottom:0, width:2,
           background:"#6bb5ff", boxShadow:"0 0 8px #6bb5ff", transform:"translateX(-50%)", pointerEvents:"none" } })
