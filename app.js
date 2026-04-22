@@ -1,5 +1,5 @@
 // Camera Synth — v3.0.0
-var VERSION = "3.8.7";
+var VERSION = "3.8.8";
 
 var useState    = React.useState;
 var useEffect   = React.useEffect;
@@ -170,6 +170,16 @@ function makeEngine1() {
       eng.lowpassNode.type = "lowpass";
       eng.lowpassNode.frequency.value = 2000;
       eng.lowpassNode.Q.value = 0.7;
+      eng.lowpassNode2 = eng.ctx.createBiquadFilter();
+      eng.lowpassNode2.type = "lowpass";
+      eng.lowpassNode2.frequency.value = 2000;
+      eng.lowpassNode2.Q.value = 0.7;
+      eng.lowpassNode.connect(eng.lowpassNode2);
+      eng.lowpassNode2 = eng.ctx.createBiquadFilter();
+      eng.lowpassNode2.type = "lowpass";
+      eng.lowpassNode2.frequency.value = 2000;
+      eng.lowpassNode2.Q.value = 0.7;
+      eng.lowpassNode.connect(eng.lowpassNode2);
       eng.combFilters[N - 1].connect(eng.lowpassNode);
 
       eng.preReverbGain = eng.ctx.createGain();
@@ -401,12 +411,13 @@ function makeEngine1() {
   };
 
   eng.setLpFreq = function(freq) {
-    var safeFreq = Math.max(30, Math.min(20000, freq));
+    var safeFreq = Math.max(50, Math.min(20000, freq));
     if (eng._lpBase) {
       eng._lpBase.offset.setTargetAtTime(safeFreq, eng.ctx.currentTime, 0.02);
     } else {
       eng.lowpassNode.frequency.setTargetAtTime(safeFreq, eng.ctx.currentTime, 0.02);
     }
+    if (eng.lowpassNode2) eng.lowpassNode2.frequency.setTargetAtTime(safeFreq, eng.ctx.currentTime, 0.02);
     eng._lpBaseValue = safeFreq;
     // Clamp any active LFO gains targeting filter so they can't push below 30Hz
     var maxDepth = safeFreq - 30;
@@ -574,7 +585,7 @@ function makeEngine1() {
     if (!d) return null;
     var param = null;
     if (d === "lp.freq")     param = eng._lpBase ? eng._lpBase.offset : (eng.lowpassNode ? eng.lowpassNode.frequency : null);
-    if (d === "lp.q")        param = eng.lowpassNode ? eng.lowpassNode.Q : null;
+    if (d === "lp.q")        param = eng.lowpassNode ? eng.lowpassNode.Q : null; // Note: lowpassNode2.Q set separately
     if (d === "reverb.gain") param = eng.reverbGain ? eng.reverbGain.gain : null;
     if (d === "master.gain") param = eng.preReverbGain ? eng.preReverbGain.gain : null;
     if (d === "haas.gain")   param = (eng.oscR && eng.oscR.haasGain) ? eng.oscR.haasGain.gain : null;
@@ -782,6 +793,16 @@ function makeEngine2() {
       eng.lowpassNode.type = "lowpass";
       eng.lowpassNode.frequency.value = 2000;
       eng.lowpassNode.Q.value = 0.7;
+      eng.lowpassNode2 = eng.ctx.createBiquadFilter();
+      eng.lowpassNode2.type = "lowpass";
+      eng.lowpassNode2.frequency.value = 2000;
+      eng.lowpassNode2.Q.value = 0.7;
+      eng.lowpassNode.connect(eng.lowpassNode2);
+      eng.lowpassNode2 = eng.ctx.createBiquadFilter();
+      eng.lowpassNode2.type = "lowpass";
+      eng.lowpassNode2.frequency.value = 2000;
+      eng.lowpassNode2.Q.value = 0.7;
+      eng.lowpassNode.connect(eng.lowpassNode2);
       eng.combFilters[N-1].connect(eng.lowpassNode);
 
       eng.preReverbGain = eng.ctx.createGain();
@@ -1025,10 +1046,15 @@ function makeEngine2() {
 
     } else if (matrix === "C") {
       // G as master modulator: G carrier → R freq and B freq
-      // R and B audible, G not audible
       silence(eng.oscG);
+      makeCrossCarrier(eng.oscG, eng.oscR, "g");
+      makeCrossCarrier(eng.oscG, eng.oscB, "g");
+    } else if (matrix === "D") {
+      // Reverse chain: B→G→R→out, only R audible
+      silence(eng.oscB);
+      silence(eng.oscG);
+      makeCrossCarrier(eng.oscB, eng.oscG, "b"); // B carrier → G freq
       makeCrossCarrier(eng.oscG, eng.oscR, "g"); // G carrier → R freq
-      makeCrossCarrier(eng.oscG, eng.oscB, "g"); // G carrier → B freq
     }
   };
 
@@ -1227,14 +1253,15 @@ function makeEngine2() {
   };
 
   eng.setLpFreq = function(freq) {
-    var safeFreq = Math.max(30, Math.min(20000, freq));
+    var safeFreq = Math.max(50, Math.min(20000, freq));
     if (eng._lpBase) {
       eng._lpBase.offset.setTargetAtTime(safeFreq, eng.ctx.currentTime, 0.02);
     } else {
       eng.lowpassNode.frequency.setTargetAtTime(safeFreq, eng.ctx.currentTime, 0.02);
     }
+    if (eng.lowpassNode2) eng.lowpassNode2.frequency.setTargetAtTime(safeFreq, eng.ctx.currentTime, 0.02);
     eng._lpBaseValue = safeFreq;
-    var maxDepth = safeFreq - 30;
+    var maxDepth = safeFreq - 50;
     if (eng._lfoGain && eng._lfoGain.gain.value > maxDepth) {
       eng._lfoGain.gain.setTargetAtTime(maxDepth, eng.ctx.currentTime, 0.02);
     }
@@ -1400,7 +1427,7 @@ function makeEngine2() {
     if (!d) return null;
     var param = null;
     if (d === "lp.freq")     param = eng._lpBase ? eng._lpBase.offset : (eng.lowpassNode ? eng.lowpassNode.frequency : null);
-    if (d === "lp.q")        param = eng.lowpassNode ? eng.lowpassNode.Q : null;
+    if (d === "lp.q")        param = eng.lowpassNode ? eng.lowpassNode.Q : null; // Note: lowpassNode2.Q set separately
     if (d === "reverb.gain") param = eng.reverbGain ? eng.reverbGain.gain : null;
     if (d === "master.gain") param = eng.preReverbGain ? eng.preReverbGain.gain : null;
     if (d === "haas.gain")   param = (eng.oscR && eng.oscR.haasGain) ? eng.oscR.haasGain.gain : null;
@@ -1900,6 +1927,7 @@ function App() {
   var rf  = useState("environment"); var facingMode = rf[0], setFacingMode = rf[1];
   var rx  = useState(0.5);    var ribbonX       = rx[0],  setRibbonX      = rx[1];
   var rlp = useState(0.7);    var lpX           = rlp[0], setLpX          = rlp[1]; // 0=closed 1=open
+  var rlpq = useState(0.1);  var lpQ           = rlpq[0], setLpQ         = rlpq[1]; // resonance 0..1
   var rcr = useState(false);  var camReady      = rcr[0], setCamReady     = rcr[1];
   var rce = useState(null);   var camError      = rce[0], setCamError     = rce[1];
   var rer = useState(false);  var engReady      = rer[0], setEngReady     = rer[1];
@@ -1993,6 +2021,7 @@ function App() {
         if (state.settings2) setSettings2(function(s){ return Object.assign({},s,state.settings2); });
         if (state.lfoState)  setLfoState(function(s){ return Object.assign({},s,state.lfoState); });
         if (state.lpX !== undefined) setLpX(state.lpX);
+        if (state.lpQ !== undefined) setLpQ(state.lpQ);
         if (state.ribbonX !== undefined) setRibbonX(state.ribbonX);
       } else {
         synthRef.current = eng2Ref.current; // default CamSynth_2
@@ -2016,7 +2045,7 @@ function App() {
       try {
         localStorage.setItem("synesthesia_state", JSON.stringify({
           engine: activeEngine, settings1: settings1, settings2: settings2,
-          lfoState: lfoState, lpX: lpX, ribbonX: ribbonX
+          lfoState: lfoState, lpX: lpX, lpQ: lpQ, ribbonX: ribbonX
         }));
       } catch(e) {}
     }, 500);
@@ -2178,6 +2207,22 @@ function App() {
     if(synthRef.current)synthRef.current.updatePitch(x);
   }, []);
 
+  var lpResRef = useRef(null);
+  var handleLpRes = useCallback(function(e) {
+    e.preventDefault();
+    var rect = lpResRef.current ? lpResRef.current.getBoundingClientRect() : null;
+    if (!rect) return;
+    var touch = e.touches ? e.touches[0] : e;
+    var x = Math.max(0, Math.min(1, (touch.clientX - rect.left) / rect.width));
+    setLpQ(x);
+    var eng = synthRef.current;
+    if (eng && eng.lowpassNode) {
+      var q = 0.5 * Math.pow(30, x);
+      eng.lowpassNode.Q.setTargetAtTime(q, eng.ctx.currentTime, 0.02);
+      if (eng.lowpassNode2) eng.lowpassNode2.Q.setTargetAtTime(q, eng.ctx.currentTime, 0.02);
+    }
+  }, []);
+
   var handleLpRibbon = useCallback(function(e) {
     e.preventDefault();
     var rect = lpRibbonRef.current ? lpRibbonRef.current.getBoundingClientRect() : null;
@@ -2283,7 +2328,7 @@ function App() {
     // Reverb — send with quadratic curve (stays low, rises sharply at top)
     if (eng.reverbGain) {
       var revLin = (fx.reverbMix !== undefined ? fx.reverbMix : 0);
-      var revSend = revLin * revLin; // quadratic: fine control at low, dramatic at top
+      var revSend = Math.pow(revLin, 1.3); // soft power curve
       eng.reverbGain.gain.setTargetAtTime(revSend, t, 0.1);
     }
   }
@@ -2343,7 +2388,28 @@ function App() {
     // Camera
     el("div", { style:{ position:"relative", background:"#050505", overflow:"hidden", borderTop:"1px solid #141414", borderBottom:"1px solid #141414", flexShrink:0, height:"42vh" } },
       el("video", { ref:videoRef, playsInline:true, muted:true, autoPlay:true, controls:false, style:{ width:"100%", height:"100%", objectFit:"cover", display:"block", transform:facingMode==="user"?"scaleX(-1)":"none" } }),
-      el("canvas", { ref:scopeRef, width:480, height:80, style:{ position:"absolute", bottom:0, left:0, width:"100%", height:60, pointerEvents:"none" } }),
+      el("canvas", { ref:scopeRef, width:480, height:80, style:{ position:"absolute", bottom:40, left:0, width:"100%", height:50, pointerEvents:"none" } }),
+      el("div", { style:{ position:"absolute", bottom:0, left:0, right:0 } },
+        el("div", { style:{ display:"flex", alignItems:"center", padding:"1px 14px", gap:8 } },
+          el("span", { style:{ fontSize:8, color:"rgba(127,255,106,0.3)", letterSpacing:"0.1em" } }, "PITCH"),
+          el("span", { style:{ fontSize:11, color:"#7fff6a", letterSpacing:"0.04em", minWidth:34 } }, noteName),
+          el("span", { style:{ fontSize:8, color:"rgba(255,255,255,0.1)", marginLeft:"auto" } }, settings.quantize?settings.scale:"free")
+        ),
+        el("div", { ref:ribbonRef, onMouseDown:handleRibbon, onMouseMove:function(e){if(e.buttons)handleRibbon(e);}, onTouchStart:handleRibbon, onTouchMove:handleRibbon,
+          style:{ height:30, background:"rgba(7,12,7,0.85)", borderTop:"1px solid rgba(20,28,20,0.8)", position:"relative", cursor:"crosshair", margin:"0 14px" } },
+          Array.from({length:pr+1},function(_,i){
+            var midi = settings.pitchMin + i;
+            var semitone = midi % 12;
+            var isOctave = semitone === (settings.rootNote % 12);
+            var inScale = !settings.quantize || SCALES[settings.scale].indexOf(((semitone - settings.rootNote%12)+12)%12) >= 0;
+            var tickH = isOctave ? 18 : inScale ? 10 : 5;
+            var bg = isOctave ? "rgba(42,74,42,0.9)" : inScale ? "rgba(28,50,28,0.9)" : "rgba(14,20,14,0.9)";
+            var topPx = (30 - tickH) / 2;
+            return el("div",{key:i,style:{position:"absolute",left:((i/pr)*100)+"%",top:topPx+"px",width:isOctave?2:1,height:tickH+"px",background:bg}});
+          }),
+          el("div", { style:{ position:"absolute", left:(ribbonX*100)+"%", top:0, bottom:0, width:2, background:"#7fff6a", boxShadow:"0 0 8px #7fff6a", transform:"translateX(-50%)", pointerEvents:"none" } })
+        )
+      ),
       frameData && el("div", { style:{ position:"absolute", top:8, left:8, fontSize:8, color:"rgba(127,255,106,0.35)", letterSpacing:"0.1em", lineHeight:2, pointerEvents:"none" } },
         el("div",null,"LMA "+(frameData.luma*100).toFixed(1)),
         el("div",null,"HUE "+Math.round(frameData.hue*360)+"\xb0"),
@@ -2368,40 +2434,16 @@ function App() {
       el("canvas", { ref:loopOverlayRef, style:{ position:"absolute", inset:0, width:"100%", height:"100%", pointerEvents:"none", display:looping?"block":"none" } })
     ),
 
-    // Pitch ribbon
-    el("div", { style:{ flexShrink:0 } },
-      el("div", { style:{ display:"flex", alignItems:"center", padding:"2px 14px 1px", gap:8 } },
-        el("span", { style:{ fontSize:8, color:"#2a2a2a", letterSpacing:"0.1em" } }, "PITCH"),
-        el("span", { style:{ fontSize:13, color:"#7fff6a", letterSpacing:"0.04em", minWidth:34 } }, noteName),
-        el("span", { style:{ fontSize:8, color:"#1a1a1a", marginLeft:"auto" } }, settings.quantize?settings.scale:"free")
-      ),
-      el("div", { ref:ribbonRef, onMouseDown:handleRibbon, onMouseMove:function(e){if(e.buttons)handleRibbon(e);}, onTouchStart:handleRibbon, onTouchMove:handleRibbon,
-        style:{ height:32, background:"linear-gradient(90deg,#070c07 0%,#101810 50%,#070c07 100%)", borderTop:"1px solid #141c14", borderBottom:"1px solid #141c14", position:"relative", cursor:"crosshair" } },
-        Array.from({length:pr+1},function(_,i){
-          var midi = settings.pitchMin + i;
-          var semitone = midi % 12;
-          var isOctave = semitone === (settings.rootNote % 12);
-          var inScale = !settings.quantize || SCALES[settings.scale].indexOf(((semitone - settings.rootNote%12)+12)%12) >= 0;
-          var tickH = isOctave ? 20 : inScale ? 12 : 6;
-          var bg = isOctave ? "#2a4a2a" : inScale ? "#1c321c" : "#0e140e";
-          // Center ticks vertically within 32px ribbon
-          var topPx = (32 - tickH) / 2;
-          return el("div",{key:i,style:{position:"absolute",left:((i/pr)*100)+"%",top:topPx+"px",width:isOctave?2:1,height:tickH+"px",background:bg}});
-        }),
-        el("div", { style:{ position:"absolute", left:(ribbonX*100)+"%", top:0, bottom:0, width:2, background:"#7fff6a", boxShadow:"0 0 10px #7fff6a", transform:"translateX(-50%)", pointerEvents:"none" } })
-      )
-    ),
 
-    // Lowpass ribbon
-    el("div", { style:{ flexShrink:0 } },
-      el("div", { style:{ display:"flex", alignItems:"center", padding:"2px 14px 1px", gap:8 } },
+
+    // Filter ribbon (narrowed)
+    el("div", { style:{ flexShrink:0, padding:"0 14px" } },
+      el("div", { style:{ display:"flex", alignItems:"center", padding:"2px 0 1px", gap:8 } },
         el("span", { style:{ fontSize:8, color:"#2a2a2a", letterSpacing:"0.1em" } }, "FILTER"),
         el("span", { style:{ fontSize:11, color:"#6bb5ff", letterSpacing:"0.04em", minWidth:60 } },
           (150 * Math.pow(12000/150, lpX)).toFixed(0)+" Hz"
         ),
-        el("span", { style:{ fontSize:8, color:"#1a1a1a", marginLeft:"auto" } },
-          lpX < 0.3 ? "24db" : lpX < 0.7 ? "18db" : "12db"
-        )
+        el("span", { style:{ fontSize:8, color:"#1a1a1a", marginLeft:"auto" } }, "24dB")
       ),
       el("div", {
         ref:lpRibbonRef,
@@ -2409,15 +2451,34 @@ function App() {
         onTouchStart:handleLpRibbon, onTouchMove:handleLpRibbon,
         style:{ height:32, position:"relative", cursor:"crosshair",
           background:"linear-gradient(90deg, #050a14 0%, #0a1628 30%, #0d2040 60%, #1a3a6a 80%, #2050a0 100%)",
-          borderTop:"1px solid #141c24", borderBottom:"1px solid #141c24" }
+          borderTop:"1px solid #141c24", borderBottom:"1px solid #141c24", borderRadius:2 }
       },
-        // Frequency markers
         [150,300,600,1200,3000,6000,12000].map(function(f) {
           var pos = Math.log(f/150) / Math.log(12000/150);
           return el("div", { key:f, style:{ position:"absolute", left:(pos*100)+"%", top:0, bottom:0, width:1, background:"rgba(107,181,255,0.15)" } });
         }),
-        // Playhead
         el("div", { style:{ position:"absolute", left:(lpX*100)+"%", top:0, bottom:0, width:2,
+          background:"#6bb5ff", boxShadow:"0 0 8px #6bb5ff", transform:"translateX(-50%)", pointerEvents:"none" } })
+      )
+    ),
+
+    // Resonance ribbon
+    el("div", { style:{ flexShrink:0, padding:"0 14px" } },
+      el("div", { style:{ display:"flex", alignItems:"center", padding:"2px 0 1px", gap:8 } },
+        el("span", { style:{ fontSize:8, color:"#2a2a2a", letterSpacing:"0.1em" } }, "RES"),
+        el("span", { style:{ fontSize:11, color:"#6bb5ff", letterSpacing:"0.04em", minWidth:60 } },
+          (0.5 * Math.pow(30, lpQ)).toFixed(1)
+        )
+      ),
+      el("div", {
+        ref:lpResRef,
+        onMouseDown:handleLpRes, onMouseMove:function(e){if(e.buttons)handleLpRes(e);},
+        onTouchStart:handleLpRes, onTouchMove:handleLpRes,
+        style:{ height:24, position:"relative", cursor:"crosshair",
+          background:"linear-gradient(90deg, #050a14 0%, #0d2040 60%, #1a3a8a 100%)",
+          borderTop:"1px solid #141c24", borderBottom:"1px solid #141c24", borderRadius:2 }
+      },
+        el("div", { style:{ position:"absolute", left:(lpQ*100)+"%", top:0, bottom:0, width:2,
           background:"#6bb5ff", boxShadow:"0 0 8px #6bb5ff", transform:"translateX(-50%)", pointerEvents:"none" } })
       )
     ),
@@ -2698,11 +2759,12 @@ function App() {
     activeEngine==="2" && el("div", { style:{ padding:"8px 14px", overflowY:"auto", flexShrink:0 } },
 
       el("div", { style:{ fontSize:7, color:"#333", letterSpacing:"0.15em", textTransform:"uppercase", marginBottom:6 } }, "FM Matrix"),
-      el("div", { style:{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:5, marginBottom:14 } },
+      el("div", { style:{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr 1fr", gap:5, marginBottom:14 } },
         [
           { id:"A", svg:"<svg viewBox=\"0 0 72 64\" xmlns=\"http://www.w3.org/2000/svg\" style=\"width:100%;height:100%;display:block\"><rect x=\"8\" y=\"4\" width=\"12\" height=\"8\" rx=\"1.5\" fill=\"#ff6b6b15\" stroke=\"#ff6b6b\" stroke-width=\"0.8\" stroke-dasharray=\"2,1\"/><text x=\"14\" y=\"10.8\" text-anchor=\"middle\" fill=\"#ff6b6b\" font-size=\"5.5\" font-family=\"monospace\">r</text><line x1=\"14.0\" y1=\"12.0\" x2=\"14.0\" y2=\"16.0\" stroke=\"#555\" stroke-width=\"0.8\"/><polygon points=\"14.0,20.0 12.0,16.0 16.0,16.0\" fill=\"#555\"/><rect x=\"6\" y=\"20\" width=\"16\" height=\"10\" rx=\"2\" fill=\"#ff6b6b22\" stroke=\"#ff6b6b\" stroke-width=\"1.2\"/><text x=\"14\" y=\"28.5\" text-anchor=\"middle\" fill=\"#ff6b6b\" font-size=\"6.5\" font-family=\"monospace\" font-weight=\"bold\" >R</text><line x1=\"14\" y1=\"30\" x2=\"14\" y2=\"38\" stroke=\"#444\" stroke-width=\"1\" stroke-dasharray=\"2,1\"/><line x1=\"10\" y1=\"38\" x2=\"18\" y2=\"38\" stroke=\"#444\" stroke-width=\"1\"/><rect x=\"30\" y=\"4\" width=\"12\" height=\"8\" rx=\"1.5\" fill=\"#7fff6a15\" stroke=\"#7fff6a\" stroke-width=\"0.8\" stroke-dasharray=\"2,1\"/><text x=\"36\" y=\"10.8\" text-anchor=\"middle\" fill=\"#7fff6a\" font-size=\"5.5\" font-family=\"monospace\">g</text><line x1=\"36.0\" y1=\"12.0\" x2=\"36.0\" y2=\"16.0\" stroke=\"#555\" stroke-width=\"0.8\"/><polygon points=\"36.0,20.0 34.0,16.0 38.0,16.0\" fill=\"#555\"/><rect x=\"28\" y=\"20\" width=\"16\" height=\"10\" rx=\"2\" fill=\"#7fff6a22\" stroke=\"#7fff6a\" stroke-width=\"1.2\"/><text x=\"36\" y=\"28.5\" text-anchor=\"middle\" fill=\"#7fff6a\" font-size=\"6.5\" font-family=\"monospace\" font-weight=\"bold\" >G</text><line x1=\"36\" y1=\"30\" x2=\"36\" y2=\"38\" stroke=\"#444\" stroke-width=\"1\" stroke-dasharray=\"2,1\"/><line x1=\"32\" y1=\"38\" x2=\"40\" y2=\"38\" stroke=\"#444\" stroke-width=\"1\"/><rect x=\"52\" y=\"4\" width=\"12\" height=\"8\" rx=\"1.5\" fill=\"#6bb5ff15\" stroke=\"#6bb5ff\" stroke-width=\"0.8\" stroke-dasharray=\"2,1\"/><text x=\"58\" y=\"10.8\" text-anchor=\"middle\" fill=\"#6bb5ff\" font-size=\"5.5\" font-family=\"monospace\">b</text><line x1=\"58.0\" y1=\"12.0\" x2=\"58.0\" y2=\"16.0\" stroke=\"#555\" stroke-width=\"0.8\"/><polygon points=\"58.0,20.0 56.0,16.0 60.0,16.0\" fill=\"#555\"/><rect x=\"50\" y=\"20\" width=\"16\" height=\"10\" rx=\"2\" fill=\"#6bb5ff22\" stroke=\"#6bb5ff\" stroke-width=\"1.2\"/><text x=\"58\" y=\"28.5\" text-anchor=\"middle\" fill=\"#6bb5ff\" font-size=\"6.5\" font-family=\"monospace\" font-weight=\"bold\" >B</text><line x1=\"58\" y1=\"30\" x2=\"58\" y2=\"38\" stroke=\"#444\" stroke-width=\"1\" stroke-dasharray=\"2,1\"/><line x1=\"54\" y1=\"38\" x2=\"62\" y2=\"38\" stroke=\"#444\" stroke-width=\"1\"/><line x1=\"8\" y1=\"38\" x2=\"64\" y2=\"38\" stroke=\"#444\" stroke-width=\"0.8\"/></svg>" },
           { id:"B", svg:"<svg viewBox=\"0 0 72 64\" xmlns=\"http://www.w3.org/2000/svg\" style=\"width:100%;height:100%;display:block\"><rect x=\"8\" y=\"3\" width=\"12\" height=\"8\" rx=\"1.5\" fill=\"#ff6b6b15\" stroke=\"#ff6b6b\" stroke-width=\"0.8\" stroke-dasharray=\"2,1\"/><text x=\"14\" y=\"9.8\" text-anchor=\"middle\" fill=\"#ff6b6b\" font-size=\"5.5\" font-family=\"monospace\">r</text><line x1=\"14.0\" y1=\"11.0\" x2=\"14.0\" y2=\"15.0\" stroke=\"#555\" stroke-width=\"0.8\"/><polygon points=\"14.0,19.0 12.0,15.0 16.0,15.0\" fill=\"#555\"/><rect x=\"6\" y=\"19\" width=\"16\" height=\"10\" rx=\"2\" fill=\"#ff6b6b11\" stroke=\"#ff6b6b\" stroke-width=\"0.7\" stroke-dasharray=\"3,1\"/><text x=\"14\" y=\"27.5\" text-anchor=\"middle\" fill=\"#ff6b6b\" font-size=\"6.5\" font-family=\"monospace\" font-weight=\"bold\" opacity=\"0.4\">R</text><rect x=\"30\" y=\"3\" width=\"12\" height=\"8\" rx=\"1.5\" fill=\"#7fff6a15\" stroke=\"#7fff6a\" stroke-width=\"0.8\" stroke-dasharray=\"2,1\"/><text x=\"36\" y=\"9.8\" text-anchor=\"middle\" fill=\"#7fff6a\" font-size=\"5.5\" font-family=\"monospace\">g</text><line x1=\"36.0\" y1=\"11.0\" x2=\"36.0\" y2=\"15.0\" stroke=\"#555\" stroke-width=\"0.8\"/><polygon points=\"36.0,19.0 34.0,15.0 38.0,15.0\" fill=\"#555\"/><rect x=\"28\" y=\"19\" width=\"16\" height=\"10\" rx=\"2\" fill=\"#7fff6a11\" stroke=\"#7fff6a\" stroke-width=\"0.7\" stroke-dasharray=\"3,1\"/><text x=\"36\" y=\"27.5\" text-anchor=\"middle\" fill=\"#7fff6a\" font-size=\"6.5\" font-family=\"monospace\" font-weight=\"bold\" opacity=\"0.4\">G</text><rect x=\"52\" y=\"3\" width=\"12\" height=\"8\" rx=\"1.5\" fill=\"#6bb5ff15\" stroke=\"#6bb5ff\" stroke-width=\"0.8\" stroke-dasharray=\"2,1\"/><text x=\"58\" y=\"9.8\" text-anchor=\"middle\" fill=\"#6bb5ff\" font-size=\"5.5\" font-family=\"monospace\">b</text><line x1=\"58.0\" y1=\"11.0\" x2=\"58.0\" y2=\"15.0\" stroke=\"#555\" stroke-width=\"0.8\"/><polygon points=\"58.0,19.0 56.0,15.0 60.0,15.0\" fill=\"#555\"/><rect x=\"50\" y=\"19\" width=\"16\" height=\"10\" rx=\"2\" fill=\"#6bb5ff22\" stroke=\"#6bb5ff\" stroke-width=\"1.2\"/><text x=\"58\" y=\"27.5\" text-anchor=\"middle\" fill=\"#6bb5ff\" font-size=\"6.5\" font-family=\"monospace\" font-weight=\"bold\" >B</text><line x1=\"58\" y1=\"29\" x2=\"58\" y2=\"37\" stroke=\"#444\" stroke-width=\"1\" stroke-dasharray=\"2,1\"/><line x1=\"54\" y1=\"37\" x2=\"62\" y2=\"37\" stroke=\"#444\" stroke-width=\"1\"/><line x1=\"22.0\" y1=\"24.0\" x2=\"25.2\" y2=\"23.1\" stroke=\"#ff6b6bcc\" stroke-width=\"1.0\"/><polygon points=\"29.0,22.0 25.7,25.0 24.6,21.2\" fill=\"#ff6b6bcc\"/><line x1=\"44.0\" y1=\"24.0\" x2=\"47.2\" y2=\"23.1\" stroke=\"#7fff6acc\" stroke-width=\"1.0\"/><polygon points=\"51.0,22.0 47.7,25.0 46.6,21.2\" fill=\"#7fff6acc\"/><line x1=\"50\" y1=\"37\" x2=\"66\" y2=\"37\" stroke=\"#444\" stroke-width=\"0.8\"/></svg>" },
           { id:"C", svg:"<svg viewBox=\"0 0 72 64\" xmlns=\"http://www.w3.org/2000/svg\" style=\"width:100%;height:100%;display:block\"><rect x=\"8\" y=\"3\" width=\"12\" height=\"8\" rx=\"1.5\" fill=\"#ff6b6b15\" stroke=\"#ff6b6b\" stroke-width=\"0.8\" stroke-dasharray=\"2,1\"/><text x=\"14\" y=\"9.8\" text-anchor=\"middle\" fill=\"#ff6b6b\" font-size=\"5.5\" font-family=\"monospace\">r</text><line x1=\"14.0\" y1=\"11.0\" x2=\"14.0\" y2=\"15.0\" stroke=\"#555\" stroke-width=\"0.8\"/><polygon points=\"14.0,19.0 12.0,15.0 16.0,15.0\" fill=\"#555\"/><rect x=\"6\" y=\"19\" width=\"16\" height=\"10\" rx=\"2\" fill=\"#ff6b6b22\" stroke=\"#ff6b6b\" stroke-width=\"1.2\"/><text x=\"14\" y=\"27.5\" text-anchor=\"middle\" fill=\"#ff6b6b\" font-size=\"6.5\" font-family=\"monospace\" font-weight=\"bold\" >R</text><line x1=\"14\" y1=\"29\" x2=\"14\" y2=\"37\" stroke=\"#444\" stroke-width=\"1\" stroke-dasharray=\"2,1\"/><line x1=\"10\" y1=\"37\" x2=\"18\" y2=\"37\" stroke=\"#444\" stroke-width=\"1\"/><rect x=\"30\" y=\"3\" width=\"12\" height=\"8\" rx=\"1.5\" fill=\"#7fff6a15\" stroke=\"#7fff6a\" stroke-width=\"0.8\" stroke-dasharray=\"2,1\"/><text x=\"36\" y=\"9.8\" text-anchor=\"middle\" fill=\"#7fff6a\" font-size=\"5.5\" font-family=\"monospace\">g</text><line x1=\"36.0\" y1=\"11.0\" x2=\"36.0\" y2=\"15.0\" stroke=\"#555\" stroke-width=\"0.8\"/><polygon points=\"36.0,19.0 34.0,15.0 38.0,15.0\" fill=\"#555\"/><rect x=\"28\" y=\"19\" width=\"16\" height=\"10\" rx=\"2\" fill=\"#7fff6a11\" stroke=\"#7fff6a\" stroke-width=\"0.7\" stroke-dasharray=\"3,1\"/><text x=\"36\" y=\"27.5\" text-anchor=\"middle\" fill=\"#7fff6a\" font-size=\"6.5\" font-family=\"monospace\" font-weight=\"bold\" opacity=\"0.4\">G</text><rect x=\"52\" y=\"3\" width=\"12\" height=\"8\" rx=\"1.5\" fill=\"#6bb5ff15\" stroke=\"#6bb5ff\" stroke-width=\"0.8\" stroke-dasharray=\"2,1\"/><text x=\"58\" y=\"9.8\" text-anchor=\"middle\" fill=\"#6bb5ff\" font-size=\"5.5\" font-family=\"monospace\">b</text><line x1=\"58.0\" y1=\"11.0\" x2=\"58.0\" y2=\"15.0\" stroke=\"#555\" stroke-width=\"0.8\"/><polygon points=\"58.0,19.0 56.0,15.0 60.0,15.0\" fill=\"#555\"/><rect x=\"50\" y=\"19\" width=\"16\" height=\"10\" rx=\"2\" fill=\"#6bb5ff22\" stroke=\"#6bb5ff\" stroke-width=\"1.2\"/><text x=\"58\" y=\"27.5\" text-anchor=\"middle\" fill=\"#6bb5ff\" font-size=\"6.5\" font-family=\"monospace\" font-weight=\"bold\" >B</text><line x1=\"58\" y1=\"29\" x2=\"58\" y2=\"37\" stroke=\"#444\" stroke-width=\"1\" stroke-dasharray=\"2,1\"/><line x1=\"54\" y1=\"37\" x2=\"62\" y2=\"37\" stroke=\"#444\" stroke-width=\"1\"/><line x1=\"29.0\" y1=\"24.0\" x2=\"24.9\" y2=\"23.0\" stroke=\"#7fff6acc\" stroke-width=\"1.0\"/><polygon points=\"21.0,22.0 25.4,21.0 24.4,24.9\" fill=\"#7fff6acc\"/><line x1=\"43.0\" y1=\"24.0\" x2=\"47.1\" y2=\"23.0\" stroke=\"#7fff6acc\" stroke-width=\"1.0\"/><polygon points=\"51.0,22.0 47.6,24.9 46.6,21.0\" fill=\"#7fff6acc\"/><line x1=\"8\" y1=\"37\" x2=\"22\" y2=\"37\" stroke=\"#444\" stroke-width=\"0.8\"/><line x1=\"50\" y1=\"37\" x2=\"66\" y2=\"37\" stroke=\"#444\" stroke-width=\"0.8\"/></svg>" },
+          { id:"D", svg:"<svg viewBox=\"0 0 72 64\" xmlns=\"http://www.w3.org/2000/svg\" style=\"width:100%;height:100%;display:block\"><rect x=\"8\" y=\"3\" width=\"12\" height=\"8\" rx=\"1.5\" fill=\"#ff6b6b15\" stroke=\"#ff6b6b\" stroke-width=\"0.8\" stroke-dasharray=\"2,1\"/><text x=\"14\" y=\"9.8\" text-anchor=\"middle\" fill=\"#ff6b6b\" font-size=\"5.5\" font-family=\"monospace\">r</text><line x1=\"14.0\" y1=\"11.0\" x2=\"14.0\" y2=\"15.0\" stroke=\"#555\" stroke-width=\"0.8\"/><polygon points=\"14.0,19.0 12.0,15.0 16.0,15.0\" fill=\"#555\"/><rect x=\"6\" y=\"19\" width=\"16\" height=\"10\" rx=\"2\" fill=\"#ff6b6b22\" stroke=\"#ff6b6b\" stroke-width=\"1.2\"/><text x=\"14\" y=\"27.5\" text-anchor=\"middle\" fill=\"#ff6b6b\" font-size=\"6.5\" font-family=\"monospace\" font-weight=\"bold\">R</text><line x1=\"14\" y1=\"29\" x2=\"14\" y2=\"37\" stroke=\"#444\" stroke-width=\"1\" stroke-dasharray=\"2,1\"/><line x1=\"10\" y1=\"37\" x2=\"18\" y2=\"37\" stroke=\"#444\" stroke-width=\"1\"/><rect x=\"30\" y=\"3\" width=\"12\" height=\"8\" rx=\"1.5\" fill=\"#7fff6a15\" stroke=\"#7fff6a\" stroke-width=\"0.8\" stroke-dasharray=\"2,1\"/><text x=\"36\" y=\"9.8\" text-anchor=\"middle\" fill=\"#7fff6a\" font-size=\"5.5\" font-family=\"monospace\">g</text><line x1=\"36.0\" y1=\"11.0\" x2=\"36.0\" y2=\"15.0\" stroke=\"#555\" stroke-width=\"0.8\"/><polygon points=\"36.0,19.0 34.0,15.0 38.0,15.0\" fill=\"#555\"/><rect x=\"28\" y=\"19\" width=\"16\" height=\"10\" rx=\"2\" fill=\"#7fff6a11\" stroke=\"#7fff6a\" stroke-width=\"0.7\" stroke-dasharray=\"3,1\"/><text x=\"36\" y=\"27.5\" text-anchor=\"middle\" fill=\"#7fff6a\" font-size=\"6.5\" font-family=\"monospace\" font-weight=\"bold\" opacity=\"0.4\">G</text><rect x=\"52\" y=\"3\" width=\"12\" height=\"8\" rx=\"1.5\" fill=\"#6bb5ff15\" stroke=\"#6bb5ff\" stroke-width=\"0.8\" stroke-dasharray=\"2,1\"/><text x=\"58\" y=\"9.8\" text-anchor=\"middle\" fill=\"#6bb5ff\" font-size=\"5.5\" font-family=\"monospace\">b</text><line x1=\"58.0\" y1=\"11.0\" x2=\"58.0\" y2=\"15.0\" stroke=\"#555\" stroke-width=\"0.8\"/><polygon points=\"58.0,19.0 56.0,15.0 60.0,15.0\" fill=\"#555\"/><rect x=\"50\" y=\"19\" width=\"16\" height=\"10\" rx=\"2\" fill=\"#6bb5ff11\" stroke=\"#6bb5ff\" stroke-width=\"0.7\" stroke-dasharray=\"3,1\"/><text x=\"58\" y=\"27.5\" text-anchor=\"middle\" fill=\"#6bb5ff\" font-size=\"6.5\" font-family=\"monospace\" font-weight=\"bold\" opacity=\"0.4\">B</text><line x1=\"44.0\" y1=\"24.0\" x2=\"44.8\" y2=\"25.6\" stroke=\"#6bb5ffcc\" stroke-width=\"1.0\"/><polygon points=\"43.0,22.0 46.6,24.7 43.0,26.5\" fill=\"#6bb5ffcc\"/><line x1=\"22.0\" y1=\"24.0\" x2=\"22.8\" y2=\"25.6\" stroke=\"#7fff6acc\" stroke-width=\"1.0\"/><polygon points=\"21.0,22.0 24.6,24.7 21.0,26.5\" fill=\"#7fff6acc\"/><line x1=\"8\" y1=\"37\" x2=\"22\" y2=\"37\" stroke=\"#444\" stroke-width=\"0.8\"/></svg>" },
         ].map(function(m) {
           var active = (settings2.fmMatrix||"A") === m.id;
           return el("div", { key:m.id,
