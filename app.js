@@ -2326,7 +2326,17 @@ function App() {
   }, []);
 
   var handleFlip    = useCallback(function(){setFacingMode(function(f){return f==="environment"?"user":"environment";});}, []);
-  var handleReload  = useCallback(function(){window.location.reload();}, []);
+  var handleReload = useCallback(function(){
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.getRegistrations().then(function(regs){
+        Promise.all(regs.map(function(r){ return r.unregister(); })).then(function(){
+          window.location.reload();
+        });
+      });
+    } else {
+      window.location.reload();
+    }
+  }, []);
 
   var handleLoopPress = function(e) {
     e.preventDefault();
