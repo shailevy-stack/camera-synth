@@ -1,5 +1,5 @@
 // Camera Synth — v3.0.0
-var VERSION = "3.9.5";
+var VERSION = "3.9.6";
 
 var useState    = React.useState;
 var useEffect   = React.useEffect;
@@ -190,14 +190,12 @@ function makeEngine1() {
       }
       for (var li = 0; li < 3; li++) eng.ladder[li].connect(eng.ladder[li+1]);
       // Resonance feedback: output → feedbackGain → input
+      // Resonance feedback: ladder output → negative gain → ladder input
+      // Negative feedback is stable; positive would oscillate
       eng.ladderFb = eng.ctx.createGain();
-      eng.ladderFb.gain.value = 0;
-      // Invert feedback for stability (subtract from input)
-      eng.ladderFbInv = eng.ctx.createGain();
-      eng.ladderFbInv.gain.value = -1;
+      eng.ladderFb.gain.value = 0; // 0 = no resonance
       eng.ladder[3].connect(eng.ladderFb);
-      eng.ladderFb.connect(eng.ladderFbInv);
-      eng.ladderFbInv.connect(eng.ladder[0]);
+      eng.ladderFb.connect(eng.ladder[0]);
       // ladder[0] = lowpassNode for compatibility
       eng.lowpassNode  = eng.ladder[0];
       eng.lowpassNode2 = eng.ladder[3]; // output stage
@@ -835,14 +833,12 @@ function makeEngine2() {
       }
       for (var li = 0; li < 3; li++) eng.ladder[li].connect(eng.ladder[li+1]);
       // Resonance feedback: output → feedbackGain → input
+      // Resonance feedback: ladder output → negative gain → ladder input
+      // Negative feedback is stable; positive would oscillate
       eng.ladderFb = eng.ctx.createGain();
-      eng.ladderFb.gain.value = 0;
-      // Invert feedback for stability (subtract from input)
-      eng.ladderFbInv = eng.ctx.createGain();
-      eng.ladderFbInv.gain.value = -1;
+      eng.ladderFb.gain.value = 0; // 0 = no resonance
       eng.ladder[3].connect(eng.ladderFb);
-      eng.ladderFb.connect(eng.ladderFbInv);
-      eng.ladderFbInv.connect(eng.ladder[0]);
+      eng.ladderFb.connect(eng.ladder[0]);
       // ladder[0] = lowpassNode for compatibility
       eng.lowpassNode  = eng.ladder[0];
       eng.lowpassNode2 = eng.ladder[3]; // output stage
@@ -2288,8 +2284,9 @@ function App() {
     setLpQ(x);
     var eng = synthRef.current;
     if (eng && eng.ladderFb) {
-      // Resonance: 0 = flat, ~3.8 = self-oscillation threshold
-      var fb = x * 3.6;
+      // Negative feedback — stable. x=0 → 0, x=1 → -0.88
+      // Negative values create resonance without runaway risk
+      var fb = -(x * 0.88);
       eng.ladderFb.gain.setTargetAtTime(fb, eng.ctx.currentTime, 0.02);
     }
   }, []);
@@ -2501,9 +2498,9 @@ function App() {
       el("canvas", { ref:captureRef, style:{ display:"none" } }),
       el("canvas", { ref:loopOverlayRef, style:{ position:"absolute", inset:0, width:"100%", height:"100%", pointerEvents:"none", display:looping?"block":"none" } }),
       el("button", { className:cx("cb",recording&&"rec"), onClick:handleRecord,
-        style:{ position:"absolute", top:8, right:8, fontSize:9, padding:"4px 8px",
-          background:"rgba(10,10,11,0.7)", backdropFilter:"blur(4px)" }
-      }, recording?"●":"○")
+        style:{ position:"absolute", top:8, right:8, fontSize:18, padding:"3px 8px",
+          lineHeight:1, background:"rgba(10,10,11,0.7)", backdropFilter:"blur(4px)" }
+      }, recording?"\u25cf":"\u25cb")
     ),
 
 
@@ -2541,7 +2538,7 @@ function App() {
       el("div", { style:{ display:"flex", alignItems:"center", padding:"2px 14px 1px", gap:8 } },
         el("span", { style:{ fontSize:8, color:"#2a2a2a", letterSpacing:"0.1em" } }, "RES"),
         el("span", { style:{ fontSize:11, color:"#6bb5ff", letterSpacing:"0.04em", minWidth:60 } },
-          (lpQ * 3.6).toFixed(2)+" fb"
+          Math.round(lpQ*100)+"%"
         )
       ),
       el("div", {
@@ -2562,17 +2559,17 @@ function App() {
     // Controls
     el("div", { style:{ display:"flex", gap:5, padding:"7px 14px", flexShrink:0 } },
       el("button", { className:cx("cb",soundOn&&"on"), onClick:handleSound, style:{ flex:2, fontSize:11, padding:"10px 0", letterSpacing:"0.1em" } }, soundOn?"\u25fc ON":"\u25b6 OFF"),
-      el("button", { className:cx("cb",loopCapturing&&"blink",looping&&"on"), onClick:handleLoopPress, style:{ flex:1, padding:"10px 0" } }, loopCapturing?"\u25cf":looping?"\u21ba":"\u25cb"),
-      el("button", { className:cx("cb",camOn&&"on"), onClick:handleCamToggle, style:{ flex:1, padding:"10px 0" } }, "\u25a3"),
-      el("button", { className:cx("cb",showFx&&"on"), onClick:function(){setShowFx(function(s){return !s;});setShowSettings(false);setShowSeq(false);}, style:{ flex:1, padding:"10px 0" } }, "FX"),
+      el("button", { className:cx("cb",loopCapturing&&"blink",looping&&"on"), onClick:handleLoopPress, style:{ flex:1, padding:"10px 0", fontSize:9 } }, loopCapturing?"\u25cf REC":looping?"\u21ba LOOP":"\u25cb LOOP"),
+      el("button", { className:cx("cb",camOn&&"on"), onClick:handleCamToggle, style:{ flex:1, padding:"10px 0", fontSize:9 } }, "\u25a3 CAM"),
+      el("button", { className:cx("cb",showFx&&"on"), onClick:function(){setShowFx(function(s){return !s;});setShowSettings(false);setShowSeq(false);}, style:{ flex:1, padding:"10px 0", fontSize:9 } }, "FX"),
       el("button", { className:cx("cb",showSeq&&"on"), onClick:function(){
         setShowSeq(function(s){return !s;});
         setShowSettings(false);setShowFx(false);
         // sync seq settings on open
         var sq=seqRef.current;
         if(sq){sq.bpm=seqSettings.bpm;sq.steps=seqSettings.steps;sq.pattern=seqSettings.pattern.slice();}
-      }, style:{ flex:1, padding:"10px 0" } }, "SEQ"),
-      el("button", { className:cx("cb",showSettings&&"on"), onClick:function(){setShowSettings(function(s){return !s;});setShowSeq(false);setShowFx(false);}, style:{ flex:1 } }, "\u266a")
+      }, style:{ flex:1, padding:"10px 0", fontSize:9 } }, "SEQ"),
+      el("button", { className:cx("cb",showSettings&&"on"), onClick:function(){setShowSettings(function(s){return !s;});setShowSeq(false);setShowFx(false);}, style:{ flex:1, padding:"10px 0", fontSize:12 } }, "\u266a")
     ),
 
     // Settings drawer — engine 1
@@ -2999,10 +2996,10 @@ function App() {
           // Rate slider
           el("div", { style:{display:"flex",alignItems:"center",gap:6,marginBottom:3} },
             el("span", { style:{fontSize:8,color:"#444",minWidth:30,letterSpacing:"0.08em"} }, "RATE"),
-            el("input", { type:"range", min:0, max:1000, value:Math.round(Math.pow(Math.log((cfg.rate||0.5)/0.01)/Math.log(10000),1/1.5)*1000),
+            el("input", { type:"range", min:0, max:1000, value:Math.round(Math.pow(Math.log((cfg.rate||0.5)/0.01)/Math.log(10000),2)*1000),
               onChange:function(e){
                 var x = e.target.value/1000;
-                var hz = 0.01 * Math.pow(10000, Math.pow(x, 1.5));
+                var hz = 0.01 * Math.pow(10000, Math.sqrt(x));
                 setLfo(which,"rate", Math.min(100, Math.max(0.01, hz)));
               },
               style:{flex:1}
