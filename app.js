@@ -1,5 +1,5 @@
 // Camera Synth — v3.0.0
-var VERSION = "3.9.6";
+var VERSION = "3.9.7";
 
 var useState    = React.useState;
 var useEffect   = React.useEffect;
@@ -87,7 +87,7 @@ function makeSquareCoeffs(size) {
 // LFO destinations — label: key used to resolve AudioParam in engine
 var LFO_DESTS = {
   "filter cutoff":   "lp.freq",
-  "filter Q":        "lp.q",
+  "filter res":      "lp.q",
   "FM depth":        "fm.depth",
   "reverb mix":      "reverb.gain",
   "amp":             "master.gain",
@@ -134,7 +134,7 @@ function makeEngine1() {
       pitchMin: 36, pitchMax: 72, reverbMix: 0.3, fps: 10,
       showScales: false,
       lfo1: { rate:0.5, depth:0, wave:"sine", dest:"filter cutoff", active:false },
-      lfo2: { rate:0.2, depth:0, wave:"sine", dest:"filter Q",      active:false },
+      lfo2: { rate:0.2, depth:0, wave:"sine", dest:"filter res",      active:false },
     },
   };
 
@@ -190,15 +190,18 @@ function makeEngine1() {
       }
       for (var li = 0; li < 3; li++) eng.ladder[li].connect(eng.ladder[li+1]);
       // Resonance feedback: output → feedbackGain → input
-      // Resonance feedback: ladder output → negative gain → ladder input
-      // Negative feedback is stable; positive would oscillate
-      eng.ladderFb = eng.ctx.createGain();
-      eng.ladderFb.gain.value = 0; // 0 = no resonance
-      eng.ladder[3].connect(eng.ladderFb);
-      eng.ladderFb.connect(eng.ladder[0]);
+      // Resonance: peaking EQ at cutoff frequency, gain = resonance amount
+      // Tracks cutoff via separate connection to _lpBase (set up in initLFO)
+      eng.resPeak = eng.ctx.createBiquadFilter();
+      eng.resPeak.type = "peaking";
+      eng.resPeak.frequency.value = 2000;
+      eng.resPeak.Q.value = 5;      // moderate peak width
+      eng.resPeak.gain.value = 0;   // 0dB = flat (no resonance)
+      // ladder[3] → resPeak → (connects to preReverbGain in signal chain)
+      eng.ladder[3].connect(eng.resPeak);
       // ladder[0] = lowpassNode for compatibility
       eng.lowpassNode  = eng.ladder[0];
-      eng.lowpassNode2 = eng.ladder[3]; // output stage
+      eng.lowpassNode2 = eng.resPeak; // output stage is now resPeak
       eng.combFilters[N - 1].connect(eng.lowpassNode);
       eng.combSidePanL.connect(eng.lowpassNode);
       eng.combSidePanR.connect(eng.lowpassNode);
@@ -414,6 +417,7 @@ function makeEngine1() {
       eng._lpBase = eng.ctx.createConstantSource();
       eng._lpBase.offset.value = 2000; // default
       eng.ladder.forEach(function(lf){ eng._lpBase.connect(lf.frequency); });
+      eng._lpBase.connect(eng.resPeak.frequency); // resonance peak tracks cutoff
       eng._lpBase.start();
     }
     eng._lfoNode = eng.ctx.createOscillator();
@@ -439,6 +443,7 @@ function makeEngine1() {
       eng.lowpassNode.frequency.setTargetAtTime(safeFreq, eng.ctx.currentTime, 0.02);
     }
     if (eng.ladder) eng.ladder.forEach(function(lf){ lf.frequency.setTargetAtTime(safeFreq, eng.ctx.currentTime, 0.02); });
+    if (eng.resPeak) eng.resPeak.frequency.setTargetAtTime(safeFreq, eng.ctx.currentTime, 0.02);
     eng._lpBaseValue = safeFreq;
     // Clamp any active LFO gains targeting filter so they can't push below 30Hz
     var maxDepth = safeFreq - 30;
@@ -610,7 +615,7 @@ function makeEngine1() {
     if (!d) return null;
     var param = null;
     if (d === "lp.freq")     param = eng._lpBase ? eng._lpBase.offset : (eng.lowpassNode ? eng.lowpassNode.frequency : null);
-    if (d === "lp.q")        param = eng.lowpassNode ? eng.lowpassNode.Q : null; // Note: lowpassNode2.Q set separately
+    if (d === "lp.q")        param = eng.resPeak ? eng.resPeak.gain : null;
     if (d === "reverb.gain") param = eng.reverbGain ? eng.reverbGain.gain : null;
     if (d === "master.gain") param = eng.preReverbGain ? eng.preReverbGain.gain : null;
     if (d === "haas.gain")   param = (eng.oscR && eng.oscR.haasGain) ? eng.oscR.haasGain.gain : null;
@@ -694,7 +699,7 @@ function makeEngine1() {
     var depthScale = 1;
     var d = LFO_DESTS[cfg.dest];
     if (d === "lp.freq")     depthScale = 4000; // ±4000Hz max
-    if (d === "lp.q")        depthScale = 5;    // ±5 Q
+    if (d === "lp.q")        depthScale = 9;    // ±9dB resonance peak
     if (d === "reverb.gain") depthScale = 0.4;
     if (d === "master.gain") depthScale = 0.3;
     if (d === "haas.gain")   depthScale = 0.5;
@@ -786,7 +791,7 @@ function makeEngine2() {
       fmDepth: 0.4,
       fmModShape: 0, // global modulator shape (0=sine, 0.5=tri, 1=square)
       lfo1: { rate:0.5, depth:0, wave:"sine", dest:"filter cutoff", active:false },
-      lfo2: { rate:0.2, depth:0, wave:"sine", dest:"filter Q",      active:false },
+      lfo2: { rate:0.2, depth:0, wave:"sine", dest:"filter res",      active:false },
     },
   };
 
@@ -833,15 +838,18 @@ function makeEngine2() {
       }
       for (var li = 0; li < 3; li++) eng.ladder[li].connect(eng.ladder[li+1]);
       // Resonance feedback: output → feedbackGain → input
-      // Resonance feedback: ladder output → negative gain → ladder input
-      // Negative feedback is stable; positive would oscillate
-      eng.ladderFb = eng.ctx.createGain();
-      eng.ladderFb.gain.value = 0; // 0 = no resonance
-      eng.ladder[3].connect(eng.ladderFb);
-      eng.ladderFb.connect(eng.ladder[0]);
+      // Resonance: peaking EQ at cutoff frequency, gain = resonance amount
+      // Tracks cutoff via separate connection to _lpBase (set up in initLFO)
+      eng.resPeak = eng.ctx.createBiquadFilter();
+      eng.resPeak.type = "peaking";
+      eng.resPeak.frequency.value = 2000;
+      eng.resPeak.Q.value = 5;      // moderate peak width
+      eng.resPeak.gain.value = 0;   // 0dB = flat (no resonance)
+      // ladder[3] → resPeak → (connects to preReverbGain in signal chain)
+      eng.ladder[3].connect(eng.resPeak);
       // ladder[0] = lowpassNode for compatibility
       eng.lowpassNode  = eng.ladder[0];
-      eng.lowpassNode2 = eng.ladder[3]; // output stage
+      eng.lowpassNode2 = eng.resPeak; // output stage is now resPeak
       eng.combFilters[N-1].connect(eng.lowpassNode);
       eng.combSidePanL.connect(eng.lowpassNode);
       eng.combSidePanR.connect(eng.lowpassNode);
@@ -1291,6 +1299,7 @@ function makeEngine2() {
       eng._lpBase = eng.ctx.createConstantSource();
       eng._lpBase.offset.value = 2000;
       eng.ladder.forEach(function(lf){ eng._lpBase.connect(lf.frequency); });
+      eng._lpBase.connect(eng.resPeak.frequency); // resonance peak tracks cutoff
       eng._lpBase.start();
     }
     eng._lfoNode = eng.ctx.createOscillator();
@@ -1315,6 +1324,7 @@ function makeEngine2() {
       eng.lowpassNode.frequency.setTargetAtTime(safeFreq, eng.ctx.currentTime, 0.02);
     }
     if (eng.ladder) eng.ladder.forEach(function(lf){ lf.frequency.setTargetAtTime(safeFreq, eng.ctx.currentTime, 0.02); });
+    if (eng.resPeak) eng.resPeak.frequency.setTargetAtTime(safeFreq, eng.ctx.currentTime, 0.02);
     eng._lpBaseValue = safeFreq;
     var maxDepth = Math.max(0, safeFreq - 20);
     if (eng._lfoGain && eng._lfoGain.gain.value > maxDepth) {
@@ -1486,7 +1496,7 @@ function makeEngine2() {
     if (!d) return null;
     var param = null;
     if (d === "lp.freq")     param = eng._lpBase ? eng._lpBase.offset : (eng.lowpassNode ? eng.lowpassNode.frequency : null);
-    if (d === "lp.q")        param = eng.lowpassNode ? eng.lowpassNode.Q : null; // Note: lowpassNode2.Q set separately
+    if (d === "lp.q")        param = eng.resPeak ? eng.resPeak.gain : null;
     if (d === "reverb.gain") param = eng.reverbGain ? eng.reverbGain.gain : null;
     if (d === "master.gain") param = eng.preReverbGain ? eng.preReverbGain.gain : null;
     if (d === "haas.gain")   param = (eng.oscR && eng.oscR.haasGain) ? eng.oscR.haasGain.gain : null;
@@ -1570,7 +1580,7 @@ function makeEngine2() {
     var depthScale = 1;
     var d = LFO_DESTS[cfg.dest];
     if (d === "lp.freq")     depthScale = 4000; // ±4000Hz max
-    if (d === "lp.q")        depthScale = 5;    // ±5 Q
+    if (d === "lp.q")        depthScale = 9;    // ±9dB resonance peak
     if (d === "reverb.gain") depthScale = 0.4;
     if (d === "master.gain") depthScale = 0.3;
     if (d === "haas.gain")   depthScale = 0.5;
@@ -2011,12 +2021,12 @@ function App() {
     intervalR:"1×2", intervalG:"3×2", intervalB:"5×4", glide:200, fmMatrix:"A",
     cmR:"1:1", cmG:"1:1", cmB:"1:1", fmDepth:0.4, fmModShape:0,
     lfo1:{ rate:0.5, depth:0, wave:"sine", dest:"filter cutoff", active:false },
-    lfo2:{ rate:0.2, depth:0, wave:"sine", dest:"filter Q",      active:false } });
+    lfo2:{ rate:0.2, depth:0, wave:"sine", dest:"filter res",      active:false } });
 
   // Shared LFO UI state (same for both engines)
   var rlfo = useState({
     lfo1:{ rate:0.5, depth:0, wave:"sine", dest:"filter cutoff", active:false },
-    lfo2:{ rate:0.2, depth:0, wave:"sine", dest:"filter Q",      active:false }
+    lfo2:{ rate:0.2, depth:0, wave:"sine", dest:"filter res",      active:false }
   });
   var lfoState = rlfo[0], setLfoState = rlfo[1];
 
@@ -2283,11 +2293,12 @@ function App() {
     var x = Math.max(0, Math.min(1, (touch.clientX - rect.left) / rect.width));
     setLpQ(x);
     var eng = synthRef.current;
-    if (eng && eng.ladderFb) {
-      // Negative feedback — stable. x=0 → 0, x=1 → -0.88
-      // Negative values create resonance without runaway risk
-      var fb = -(x * 0.88);
-      eng.ladderFb.gain.setTargetAtTime(fb, eng.ctx.currentTime, 0.02);
+    if (eng && eng.resPeak) {
+      var t = eng.ctx.currentTime;
+      // Peak gain: 0 → 0dB (flat), 1 → +18dB (strong resonance)
+      eng.resPeak.gain.setTargetAtTime(x * 18, t, 0.05);
+      // Q tightens with resonance: 5 (wide) → 12 (narrow peak)
+      eng.resPeak.Q.setTargetAtTime(5 + x * 7, t, 0.05);
     }
   }, []);
 
@@ -2498,8 +2509,9 @@ function App() {
       el("canvas", { ref:captureRef, style:{ display:"none" } }),
       el("canvas", { ref:loopOverlayRef, style:{ position:"absolute", inset:0, width:"100%", height:"100%", pointerEvents:"none", display:looping?"block":"none" } }),
       el("button", { className:cx("cb",recording&&"rec"), onClick:handleRecord,
-        style:{ position:"absolute", top:8, right:8, fontSize:18, padding:"3px 8px",
-          lineHeight:1, background:"rgba(10,10,11,0.7)", backdropFilter:"blur(4px)" }
+        style:{ position:"absolute", top:6, right:8, fontSize:18, padding:"3px 8px",
+          lineHeight:1, background:"rgba(10,10,11,0.85)", backdropFilter:"blur(4px)",
+          display:"flex", alignItems:"center", justifyContent:"center" }
       }, recording?"\u25cf":"\u25cb")
     ),
 
@@ -2828,9 +2840,9 @@ function App() {
     ),
 
     // Engine 2 — interval selectors
-    activeEngine==="2" && el("div", { style:{ padding:"8px 14px", overflowY:"auto", flexShrink:0 } },
+    activeEngine==="2" && el("div", { style:{ padding:"4px 14px", overflowY:"auto", flexShrink:0 } },
 
-      el("div", { style:{ fontSize:7, color:"#333", letterSpacing:"0.15em", textTransform:"uppercase", marginBottom:6 } }, "FM Matrix"),
+      el("div", { style:{ fontSize:7, color:"#333", letterSpacing:"0.15em", textTransform:"uppercase", marginBottom:4, marginTop:2 } }, "FM Matrix"),
       el("div", { style:{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr 1fr", gap:5, marginBottom:14 } },
         [
           { id:"A", svg:"<svg viewBox=\"0 0 72 46\" xmlns=\"http://www.w3.org/2000/svg\" style=\"width:100%;height:100%;display:block\"><rect x=\"8\" y=\"4\" width=\"12\" height=\"8\" rx=\"1.5\" fill=\"#ff6b6b15\" stroke=\"#ff6b6b\" stroke-width=\"0.8\" stroke-dasharray=\"2,1\"/><text x=\"14\" y=\"10.8\" text-anchor=\"middle\" fill=\"#ff6b6b\" font-size=\"5.5\" font-family=\"monospace\">r</text><line x1=\"14.0\" y1=\"12.0\" x2=\"14.0\" y2=\"16.0\" stroke=\"#555\" stroke-width=\"0.8\"/><polygon points=\"14.0,20.0 12.0,16.0 16.0,16.0\" fill=\"#555\"/><rect x=\"6\" y=\"20\" width=\"16\" height=\"10\" rx=\"2\" fill=\"#ff6b6b22\" stroke=\"#ff6b6b\" stroke-width=\"1.2\"/><text x=\"14\" y=\"28.5\" text-anchor=\"middle\" fill=\"#ff6b6b\" font-size=\"6.5\" font-family=\"monospace\" font-weight=\"bold\" >R</text><line x1=\"14\" y1=\"30\" x2=\"14\" y2=\"38\" stroke=\"#444\" stroke-width=\"1\" stroke-dasharray=\"2,1\"/><line x1=\"10\" y1=\"38\" x2=\"18\" y2=\"38\" stroke=\"#444\" stroke-width=\"1\"/><rect x=\"30\" y=\"4\" width=\"12\" height=\"8\" rx=\"1.5\" fill=\"#7fff6a15\" stroke=\"#7fff6a\" stroke-width=\"0.8\" stroke-dasharray=\"2,1\"/><text x=\"36\" y=\"10.8\" text-anchor=\"middle\" fill=\"#7fff6a\" font-size=\"5.5\" font-family=\"monospace\">g</text><line x1=\"36.0\" y1=\"12.0\" x2=\"36.0\" y2=\"16.0\" stroke=\"#555\" stroke-width=\"0.8\"/><polygon points=\"36.0,20.0 34.0,16.0 38.0,16.0\" fill=\"#555\"/><rect x=\"28\" y=\"20\" width=\"16\" height=\"10\" rx=\"2\" fill=\"#7fff6a22\" stroke=\"#7fff6a\" stroke-width=\"1.2\"/><text x=\"36\" y=\"28.5\" text-anchor=\"middle\" fill=\"#7fff6a\" font-size=\"6.5\" font-family=\"monospace\" font-weight=\"bold\" >G</text><line x1=\"36\" y1=\"30\" x2=\"36\" y2=\"38\" stroke=\"#444\" stroke-width=\"1\" stroke-dasharray=\"2,1\"/><line x1=\"32\" y1=\"38\" x2=\"40\" y2=\"38\" stroke=\"#444\" stroke-width=\"1\"/><rect x=\"52\" y=\"4\" width=\"12\" height=\"8\" rx=\"1.5\" fill=\"#6bb5ff15\" stroke=\"#6bb5ff\" stroke-width=\"0.8\" stroke-dasharray=\"2,1\"/><text x=\"58\" y=\"10.8\" text-anchor=\"middle\" fill=\"#6bb5ff\" font-size=\"5.5\" font-family=\"monospace\">b</text><line x1=\"58.0\" y1=\"12.0\" x2=\"58.0\" y2=\"16.0\" stroke=\"#555\" stroke-width=\"0.8\"/><polygon points=\"58.0,20.0 56.0,16.0 60.0,16.0\" fill=\"#555\"/><rect x=\"50\" y=\"20\" width=\"16\" height=\"10\" rx=\"2\" fill=\"#6bb5ff22\" stroke=\"#6bb5ff\" stroke-width=\"1.2\"/><text x=\"58\" y=\"28.5\" text-anchor=\"middle\" fill=\"#6bb5ff\" font-size=\"6.5\" font-family=\"monospace\" font-weight=\"bold\" >B</text><line x1=\"58\" y1=\"30\" x2=\"58\" y2=\"38\" stroke=\"#444\" stroke-width=\"1\" stroke-dasharray=\"2,1\"/><line x1=\"54\" y1=\"38\" x2=\"62\" y2=\"38\" stroke=\"#444\" stroke-width=\"1\"/><line x1=\"8\" y1=\"38\" x2=\"64\" y2=\"38\" stroke=\"#444\" stroke-width=\"0.8\"/></svg>" },
@@ -2845,7 +2857,7 @@ function App() {
               borderRadius:3,
               background: active?"rgba(127,255,106,0.04)":"transparent",
               cursor:"pointer",
-              height:52,
+              height:56,
               overflow:"hidden",
               position:"relative"
             },
@@ -2996,10 +3008,16 @@ function App() {
           // Rate slider
           el("div", { style:{display:"flex",alignItems:"center",gap:6,marginBottom:3} },
             el("span", { style:{fontSize:8,color:"#444",minWidth:30,letterSpacing:"0.08em"} }, "RATE"),
-            el("input", { type:"range", min:0, max:1000, value:Math.round(Math.pow(Math.log((cfg.rate||0.5)/0.01)/Math.log(10000),2)*1000),
+            el("input", { type:"range", min:0, max:1000, value:(function(){
+                var r=cfg.rate||0.5;
+                if(r<=20) return Math.round((Math.log10(r)-Math.log10(0.01))/(Math.log10(20)-Math.log10(0.01))*330);
+                return Math.round(330+(Math.log10(r)-Math.log10(20))/(Math.log10(100)-Math.log10(20))*670);
+              })(),
               onChange:function(e){
-                var x = e.target.value/1000;
-                var hz = 0.01 * Math.pow(10000, Math.sqrt(x));
+                var s=e.target.value/1000;
+                var hz;
+                if(s<=0.33) hz=Math.pow(10, Math.log10(0.01)+(Math.log10(20)-Math.log10(0.01))*(s/0.33));
+                else        hz=Math.pow(10, Math.log10(20)+(Math.log10(100)-Math.log10(20))*((s-0.33)/0.67));
                 setLfo(which,"rate", Math.min(100, Math.max(0.01, hz)));
               },
               style:{flex:1}
