@@ -1,5 +1,5 @@
 // Camera Synth — v3.0.0
-var VERSION = "3.9.8";
+var VERSION = "4.0.0";
 
 var useState    = React.useState;
 var useEffect   = React.useEffect;
@@ -413,6 +413,12 @@ function makeEngine1() {
       eng.ladder.forEach(function(lf){ eng._lpBase.connect(lf.frequency); });
       eng._lpBase.start();
     }
+    if (!eng._qBase) {
+      eng._qBase = eng.ctx.createConstantSource();
+      eng._qBase.offset.value = 0.5;
+      eng.ladder.forEach(function(lf){ eng._qBase.connect(lf.Q); });
+      eng._qBase.start();
+    }
     eng._lfoNode = eng.ctx.createOscillator();
     eng._lfoNode.setPeriodicWave(eng.makeLFOWave(0));
     eng._lfoNode.frequency.value = 0.2;
@@ -607,7 +613,7 @@ function makeEngine1() {
     if (!d) return null;
     var param = null;
     if (d === "lp.freq")     param = eng._lpBase ? eng._lpBase.offset : (eng.lowpassNode ? eng.lowpassNode.frequency : null);
-    if (d === "lp.q")        param = (eng.ladder && eng.ladder[0]) ? eng.ladder[0].Q : null;
+    if (d === "lp.q")        param = eng._qBase ? eng._qBase.offset : null;
     if (d === "reverb.gain") param = eng.reverbGain ? eng.reverbGain.gain : null;
     if (d === "master.gain") param = eng.preReverbGain ? eng.preReverbGain.gain : null;
     if (d === "haas.gain")   param = (eng.oscR && eng.oscR.haasGain) ? eng.oscR.haasGain.gain : null;
@@ -1287,6 +1293,12 @@ function makeEngine2() {
       eng.ladder.forEach(function(lf){ eng._lpBase.connect(lf.frequency); });
       eng._lpBase.start();
     }
+    if (!eng._qBase) {
+      eng._qBase = eng.ctx.createConstantSource();
+      eng._qBase.offset.value = 0.5; // default Q = 0.5 (flat)
+      eng.ladder.forEach(function(lf){ eng._qBase.connect(lf.Q); });
+      eng._qBase.start();
+    }
     eng._lfoNode = eng.ctx.createOscillator();
     eng._lfoNode.setPeriodicWave(eng.makeLFOWave(0));
     eng._lfoNode.frequency.value = 0.2;
@@ -1480,7 +1492,7 @@ function makeEngine2() {
     if (!d) return null;
     var param = null;
     if (d === "lp.freq")     param = eng._lpBase ? eng._lpBase.offset : (eng.lowpassNode ? eng.lowpassNode.frequency : null);
-    if (d === "lp.q")        param = (eng.ladder && eng.ladder[0]) ? eng.ladder[0].Q : null;
+    if (d === "lp.q")        param = eng._qBase ? eng._qBase.offset : null;
     if (d === "reverb.gain") param = eng.reverbGain ? eng.reverbGain.gain : null;
     if (d === "master.gain") param = eng.preReverbGain ? eng.preReverbGain.gain : null;
     if (d === "haas.gain")   param = (eng.oscR && eng.oscR.haasGain) ? eng.oscR.haasGain.gain : null;
@@ -2277,13 +2289,10 @@ function App() {
     var x = Math.max(0, Math.min(1, (touch.clientX - rect.left) / rect.width));
     setLpQ(x);
     var eng = synthRef.current;
-    if (eng && eng.ladder) {
-      var t = eng.ctx.currentTime;
-      // Q range: 0.5 (flat) → 4.0 (resonant peak)
-      var q = 0.5 + x * 3.5;
-      eng.ladder.forEach(function(lf) {
-        lf.Q.setTargetAtTime(q, t, 0.05);
-      });
+    if (eng && eng._qBase) {
+      // Q range: 0.5 (flat) → 8.0 (strong resonance)
+      var q = 0.5 + x * 7.5;
+      eng._qBase.offset.setTargetAtTime(q, eng.ctx.currentTime, 0.05);
     }
   }, []);
 
@@ -2481,7 +2490,7 @@ function App() {
           el("div", { style:{ position:"absolute", left:(ribbonX*100)+"%", top:0, bottom:0, width:2, background:"#7fff6a", boxShadow:"0 0 8px #7fff6a", transform:"translateX(-50%)", pointerEvents:"none" } })
         )
       ),
-      frameData && el("div", { style:{ position:"absolute", top:8, left:8, fontSize:8, color:"rgba(127,255,106,0.35)", letterSpacing:"0.1em", lineHeight:2, pointerEvents:"none" } },
+      frameData && el("div", { style:{ position:"absolute", top:46, left:8, fontSize:8, color:"rgba(127,255,106,0.35)", letterSpacing:"0.1em", lineHeight:2, pointerEvents:"none" } },
         el("div",null,"LMA "+(frameData.luma*100).toFixed(1)),
         el("div",null,"HUE "+Math.round(frameData.hue*360)+"\xb0"),
         el("div",null,"CHR "+(frameData.chromaContrast*100).toFixed(1)),
@@ -2548,7 +2557,7 @@ function App() {
       el("div", { style:{ display:"flex", alignItems:"center", padding:"2px 14px 1px", gap:8 } },
         el("span", { style:{ fontSize:8, color:"#2a2a2a", letterSpacing:"0.1em" } }, "RES"),
         el("span", { style:{ fontSize:11, color:"#6bb5ff", letterSpacing:"0.04em", minWidth:60 } },
-          (0.5+lpQ*3.5).toFixed(1)+" Q"
+          (0.5+lpQ*7.5).toFixed(1)+" Q"
         )
       ),
       el("div", {

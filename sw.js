@@ -1,5 +1,5 @@
 // SYNESTHESIA — Service Worker
-const CACHE = "synesthesia-v3.9.8";
+const CACHE = "synesthesia-v4.0.0";
 const ASSETS = [
   "/",
   "/index.html",
