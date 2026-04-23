@@ -1,5 +1,5 @@
 // Camera Synth — v3.0.0
-var VERSION = "3.9.4";
+var VERSION = "3.9.5";
 
 var useState    = React.useState;
 var useEffect   = React.useEffect;
@@ -164,23 +164,46 @@ function makeEngine1() {
         f.gain.value = 0;
         eng.combFilters.push(f);
       }
+      // Chain first 7 combs in series
       for (var ci = 0; ci < N - 1; ci++) eng.combFilters[ci].connect(eng.combFilters[ci + 1]);
+      // High-freq stereo: tap upper combs (4-7) through side panners
+      eng.combSidePanL = eng.ctx.createStereoPanner(); eng.combSidePanL.pan.value = -0.6;
+      eng.combSidePanR = eng.ctx.createStereoPanner(); eng.combSidePanR.pan.value =  0.6;
+      eng.combSideGain = eng.ctx.createGain(); eng.combSideGain.gain.value = 0.5;
+      // Upper 4 combs tap into side chain
+      for (var ci = 4; ci < N; ci++) {
+        eng.combFilters[ci].connect(eng.combSideGain);
+      }
+      eng.combSideGain.connect(eng.combSidePanL);
+      eng.combSideGain.connect(eng.combSidePanR);
 
-      eng.lowpassNode = eng.ctx.createBiquadFilter();
-      eng.lowpassNode.type = "lowpass";
-      eng.lowpassNode.frequency.value = 2000;
-      eng.lowpassNode.Q.value = 0.7;
-      eng.lowpassNode2 = eng.ctx.createBiquadFilter();
-      eng.lowpassNode2.type = "lowpass";
-      eng.lowpassNode2.frequency.value = 2000;
-      eng.lowpassNode2.Q.value = 0.7;
-      eng.lowpassNode.connect(eng.lowpassNode2);
-      eng.lowpassNode2 = eng.ctx.createBiquadFilter();
-      eng.lowpassNode2.type = "lowpass";
-      eng.lowpassNode2.frequency.value = 2000;
-      eng.lowpassNode2.Q.value = 0.7;
-      eng.lowpassNode.connect(eng.lowpassNode2);
+
+      // 4-pole ladder filter (Moog-style approximation)
+      // 4 × 1-pole lowpass stages in series + resonance feedback
+      eng.ladder = [];
+      for (var li = 0; li < 4; li++) {
+        var lf = eng.ctx.createBiquadFilter();
+        lf.type = "lowpass";
+        lf.frequency.value = 2000;
+        lf.Q.value = 0.5; // flat 1-pole response per stage
+        eng.ladder.push(lf);
+      }
+      for (var li = 0; li < 3; li++) eng.ladder[li].connect(eng.ladder[li+1]);
+      // Resonance feedback: output → feedbackGain → input
+      eng.ladderFb = eng.ctx.createGain();
+      eng.ladderFb.gain.value = 0;
+      // Invert feedback for stability (subtract from input)
+      eng.ladderFbInv = eng.ctx.createGain();
+      eng.ladderFbInv.gain.value = -1;
+      eng.ladder[3].connect(eng.ladderFb);
+      eng.ladderFb.connect(eng.ladderFbInv);
+      eng.ladderFbInv.connect(eng.ladder[0]);
+      // ladder[0] = lowpassNode for compatibility
+      eng.lowpassNode  = eng.ladder[0];
+      eng.lowpassNode2 = eng.ladder[3]; // output stage
       eng.combFilters[N - 1].connect(eng.lowpassNode);
+      eng.combSidePanL.connect(eng.lowpassNode);
+      eng.combSidePanR.connect(eng.lowpassNode);
 
       eng.preReverbGain = eng.ctx.createGain();
       eng.preReverbGain.gain.value = 1.0; // LFO amp modulates this
@@ -392,7 +415,7 @@ function makeEngine1() {
     if (!eng._lpBase) {
       eng._lpBase = eng.ctx.createConstantSource();
       eng._lpBase.offset.value = 2000; // default
-      eng._lpBase.connect(eng.lowpassNode.frequency);
+      eng.ladder.forEach(function(lf){ eng._lpBase.connect(lf.frequency); });
       eng._lpBase.start();
     }
     eng._lfoNode = eng.ctx.createOscillator();
@@ -405,7 +428,7 @@ function makeEngine1() {
     if (eng._lpBase) {
       eng._lfoGain.connect(eng._lpBase.offset);
     } else {
-      eng._lfoGain.connect(eng.lowpassNode.frequency);
+      if (eng.ladder) { eng.ladder.forEach(function(lf){ eng._lfoGain.connect(lf.frequency); }); } else { eng._lfoGain.connect(eng.lowpassNode.frequency); }
     }
     eng._lfoNode.start();
   };
@@ -417,7 +440,7 @@ function makeEngine1() {
     } else {
       eng.lowpassNode.frequency.setTargetAtTime(safeFreq, eng.ctx.currentTime, 0.02);
     }
-    if (eng.lowpassNode2) eng.lowpassNode2.frequency.setTargetAtTime(safeFreq, eng.ctx.currentTime, 0.02);
+    if (eng.ladder) eng.ladder.forEach(function(lf){ lf.frequency.setTargetAtTime(safeFreq, eng.ctx.currentTime, 0.02); });
     eng._lpBaseValue = safeFreq;
     // Clamp any active LFO gains targeting filter so they can't push below 30Hz
     var maxDepth = safeFreq - 30;
@@ -466,11 +489,15 @@ function makeEngine1() {
   eng.setSoundOn = function(on) {
     if (!eng.ctx) return;
     eng.ctx.resume();
-    eng.masterGain.gain.cancelScheduledValues(0);
-    eng.masterGain.gain.value = on ? 0.7 : 0;
+    var t = eng.ctx.currentTime;
+    eng.masterGain.gain.cancelScheduledValues(t);
     if (on) {
-      // Apply FX settings now that engine is active
+      eng.masterGain.gain.setValueAtTime(0, t);
+      eng.masterGain.gain.linearRampToValueAtTime(0.7, t + 0.08);
       setTimeout(function(){ applyFxToEngine(fxSettings, seqSettings.bpm); }, 100);
+    } else {
+      eng.masterGain.gain.setValueAtTime(eng.masterGain.gain.value, t);
+      eng.masterGain.gain.linearRampToValueAtTime(0, t + 0.08);
     }
     eng.active = on;
     if (on) eng.initUserLFOs();
@@ -788,22 +815,40 @@ function makeEngine2() {
         eng.combFilters.push(f);
       }
       for (var ci = 0; ci < N-1; ci++) eng.combFilters[ci].connect(eng.combFilters[ci+1]);
+      eng.combSidePanL = eng.ctx.createStereoPanner(); eng.combSidePanL.pan.value = -0.6;
+      eng.combSidePanR = eng.ctx.createStereoPanner(); eng.combSidePanR.pan.value =  0.6;
+      eng.combSideGain = eng.ctx.createGain(); eng.combSideGain.gain.value = 0.5;
+      for (var ci = 4; ci < N; ci++) eng.combFilters[ci].connect(eng.combSideGain);
+      eng.combSideGain.connect(eng.combSidePanL);
+      eng.combSideGain.connect(eng.combSidePanR);
 
-      eng.lowpassNode = eng.ctx.createBiquadFilter();
-      eng.lowpassNode.type = "lowpass";
-      eng.lowpassNode.frequency.value = 2000;
-      eng.lowpassNode.Q.value = 0.7;
-      eng.lowpassNode2 = eng.ctx.createBiquadFilter();
-      eng.lowpassNode2.type = "lowpass";
-      eng.lowpassNode2.frequency.value = 2000;
-      eng.lowpassNode2.Q.value = 0.7;
-      eng.lowpassNode.connect(eng.lowpassNode2);
-      eng.lowpassNode2 = eng.ctx.createBiquadFilter();
-      eng.lowpassNode2.type = "lowpass";
-      eng.lowpassNode2.frequency.value = 2000;
-      eng.lowpassNode2.Q.value = 0.7;
-      eng.lowpassNode.connect(eng.lowpassNode2);
+
+      // 4-pole ladder filter (Moog-style approximation)
+      // 4 × 1-pole lowpass stages in series + resonance feedback
+      eng.ladder = [];
+      for (var li = 0; li < 4; li++) {
+        var lf = eng.ctx.createBiquadFilter();
+        lf.type = "lowpass";
+        lf.frequency.value = 2000;
+        lf.Q.value = 0.5; // flat 1-pole response per stage
+        eng.ladder.push(lf);
+      }
+      for (var li = 0; li < 3; li++) eng.ladder[li].connect(eng.ladder[li+1]);
+      // Resonance feedback: output → feedbackGain → input
+      eng.ladderFb = eng.ctx.createGain();
+      eng.ladderFb.gain.value = 0;
+      // Invert feedback for stability (subtract from input)
+      eng.ladderFbInv = eng.ctx.createGain();
+      eng.ladderFbInv.gain.value = -1;
+      eng.ladder[3].connect(eng.ladderFb);
+      eng.ladderFb.connect(eng.ladderFbInv);
+      eng.ladderFbInv.connect(eng.ladder[0]);
+      // ladder[0] = lowpassNode for compatibility
+      eng.lowpassNode  = eng.ladder[0];
+      eng.lowpassNode2 = eng.ladder[3]; // output stage
       eng.combFilters[N-1].connect(eng.lowpassNode);
+      eng.combSidePanL.connect(eng.lowpassNode);
+      eng.combSidePanR.connect(eng.lowpassNode);
 
       eng.preReverbGain = eng.ctx.createGain();
       eng.preReverbGain.gain.value = 1.0;
@@ -1249,7 +1294,7 @@ function makeEngine2() {
     if (!eng._lpBase) {
       eng._lpBase = eng.ctx.createConstantSource();
       eng._lpBase.offset.value = 2000;
-      eng._lpBase.connect(eng.lowpassNode.frequency);
+      eng.ladder.forEach(function(lf){ eng._lpBase.connect(lf.frequency); });
       eng._lpBase.start();
     }
     eng._lfoNode = eng.ctx.createOscillator();
@@ -1261,7 +1306,7 @@ function makeEngine2() {
     if (eng._lpBase) {
       eng._lfoGain.connect(eng._lpBase.offset);
     } else {
-      eng._lfoGain.connect(eng.lowpassNode.frequency);
+      if (eng.ladder) { eng.ladder.forEach(function(lf){ eng._lfoGain.connect(lf.frequency); }); } else { eng._lfoGain.connect(eng.lowpassNode.frequency); }
     }
     eng._lfoNode.start();
   };
@@ -1273,7 +1318,7 @@ function makeEngine2() {
     } else {
       eng.lowpassNode.frequency.setTargetAtTime(safeFreq, eng.ctx.currentTime, 0.02);
     }
-    if (eng.lowpassNode2) eng.lowpassNode2.frequency.setTargetAtTime(safeFreq, eng.ctx.currentTime, 0.02);
+    if (eng.ladder) eng.ladder.forEach(function(lf){ lf.frequency.setTargetAtTime(safeFreq, eng.ctx.currentTime, 0.02); });
     eng._lpBaseValue = safeFreq;
     var maxDepth = Math.max(0, safeFreq - 20);
     if (eng._lfoGain && eng._lfoGain.gain.value > maxDepth) {
@@ -1325,11 +1370,15 @@ function makeEngine2() {
   eng.setSoundOn = function(on) {
     if (!eng.ctx) return;
     eng.ctx.resume();
-    eng.masterGain.gain.cancelScheduledValues(0);
-    eng.masterGain.gain.value = on ? 0.7 : 0;
+    var t = eng.ctx.currentTime;
+    eng.masterGain.gain.cancelScheduledValues(t);
     if (on) {
-      // Apply FX settings now that engine is active
+      eng.masterGain.gain.setValueAtTime(0, t);
+      eng.masterGain.gain.linearRampToValueAtTime(0.7, t + 0.08);
       setTimeout(function(){ applyFxToEngine(fxSettings, seqSettings.bpm); }, 100);
+    } else {
+      eng.masterGain.gain.setValueAtTime(eng.masterGain.gain.value, t);
+      eng.masterGain.gain.linearRampToValueAtTime(0, t + 0.08);
     }
     eng.active = on;
     if (on) eng.initUserLFOs();
@@ -2238,10 +2287,10 @@ function App() {
     var x = Math.max(0, Math.min(1, (touch.clientX - rect.left) / rect.width));
     setLpQ(x);
     var eng = synthRef.current;
-    if (eng && eng.lowpassNode) {
-      var q = 0.5 * Math.pow(80, x);
-      eng.lowpassNode.Q.setTargetAtTime(q, eng.ctx.currentTime, 0.02);
-      if (eng.lowpassNode2) eng.lowpassNode2.Q.setTargetAtTime(q, eng.ctx.currentTime, 0.02);
+    if (eng && eng.ladderFb) {
+      // Resonance: 0 = flat, ~3.8 = self-oscillation threshold
+      var fb = x * 3.6;
+      eng.ladderFb.gain.setTargetAtTime(fb, eng.ctx.currentTime, 0.02);
     }
   }, []);
 
@@ -2414,7 +2463,7 @@ function App() {
           el("span", { style:{ fontSize:11, color:"#7fff6a", letterSpacing:"0.04em", minWidth:34 } }, noteName),
           el("span", { style:{ fontSize:8, color:"rgba(255,255,255,0.1)", marginLeft:"auto" } }, settings.quantize?settings.scale:"free")
         ),
-        el("div", { ref:ribbonRef, onMouseDown:function(e){handleRibbon(e);}, onMouseMove:function(e){if(e.buttons)handleRibbon(e);}, onTouchStart:function(e){handleRibbon(e);}, onTouchMove:function(e){handleRibbon(e);},
+        el("div", { ref:ribbonRef, onMouseDown:function(e){handleRibbon(e);}, onMouseMove:function(e){if(e.buttons)handleRibbon(e);}, onMouseUp:function(){ribbonRectRef.current=null;}, onTouchStart:function(e){handleRibbon(e);}, onTouchMove:function(e){handleRibbon(e);}, onTouchEnd:function(){ribbonRectRef.current=null;},
           style:{ height:30, background:"rgba(7,12,7,0.85)", borderTop:"1px solid rgba(20,28,20,0.8)", position:"relative", cursor:"crosshair" } },
           Array.from({length:pr+1},function(_,i){
             var midi = settings.pitchMin + i;
@@ -2450,7 +2499,11 @@ function App() {
         el("span", { style:{ color:"#ff4444", fontSize:10 } }, camError)
       ),
       el("canvas", { ref:captureRef, style:{ display:"none" } }),
-      el("canvas", { ref:loopOverlayRef, style:{ position:"absolute", inset:0, width:"100%", height:"100%", pointerEvents:"none", display:looping?"block":"none" } })
+      el("canvas", { ref:loopOverlayRef, style:{ position:"absolute", inset:0, width:"100%", height:"100%", pointerEvents:"none", display:looping?"block":"none" } }),
+      el("button", { className:cx("cb",recording&&"rec"), onClick:handleRecord,
+        style:{ position:"absolute", top:8, right:8, fontSize:9, padding:"4px 8px",
+          background:"rgba(10,10,11,0.7)", backdropFilter:"blur(4px)" }
+      }, recording?"●":"○")
     ),
 
 
@@ -2467,7 +2520,9 @@ function App() {
       el("div", {
         ref:lpRibbonRef,
         onMouseDown:handleLpRibbon, onMouseMove:function(e){if(e.buttons)handleLpRibbon(e);},
+        onMouseUp:function(){lpRibbonRectRef.current=null;},
         onTouchStart:handleLpRibbon, onTouchMove:handleLpRibbon,
+        onTouchEnd:function(){lpRibbonRectRef.current=null;},
         style:{ height:32, position:"relative", cursor:"crosshair",
           background:"linear-gradient(90deg, #050a14 0%, #0a1628 30%, #0d2040 60%, #1a3a6a 80%, #2050a0 100%)",
           borderTop:"1px solid #141c24", borderBottom:"1px solid #141c24" }
@@ -2486,13 +2541,15 @@ function App() {
       el("div", { style:{ display:"flex", alignItems:"center", padding:"2px 14px 1px", gap:8 } },
         el("span", { style:{ fontSize:8, color:"#2a2a2a", letterSpacing:"0.1em" } }, "RES"),
         el("span", { style:{ fontSize:11, color:"#6bb5ff", letterSpacing:"0.04em", minWidth:60 } },
-          (0.5 * Math.pow(80, lpQ)).toFixed(1)
+          (lpQ * 3.6).toFixed(2)+" fb"
         )
       ),
       el("div", {
         ref:lpResRef,
         onMouseDown:handleLpRes, onMouseMove:function(e){if(e.buttons)handleLpRes(e);},
+        onMouseUp:function(){lpResRectRef.current=null;},
         onTouchStart:handleLpRes, onTouchMove:handleLpRes,
+        onTouchEnd:function(){lpResRectRef.current=null;},
         style:{ height:24, position:"relative", cursor:"crosshair",
           background:"linear-gradient(90deg, #050a14 0%, #0d2040 60%, #1a3a8a 100%)",
           borderTop:"1px solid #141c24", borderBottom:"1px solid #141c24" }
@@ -2505,17 +2562,16 @@ function App() {
     // Controls
     el("div", { style:{ display:"flex", gap:5, padding:"7px 14px", flexShrink:0 } },
       el("button", { className:cx("cb",soundOn&&"on"), onClick:handleSound, style:{ flex:2, fontSize:11, padding:"10px 0", letterSpacing:"0.1em" } }, soundOn?"\u25fc ON":"\u25b6 OFF"),
-      el("button", { className:cx("cb",loopCapturing&&"blink",looping&&"on"), onClick:handleLoopPress, style:{ flex:1 } }, loopCapturing?"\u25cf LOOP":looping?"\u21ba LOOP":"\u25cb LOOP"),
-      el("button", { className:cx("cb",recording&&"rec"), onClick:handleRecord, style:{ flex:1 } }, recording?"\u25cf REC":"\u25cb REC"),
-      el("button", { className:cx("cb",camOn&&"on"), onClick:handleCamToggle, style:{ flex:1 } }, "\u25a3 CAM"),
-      el("button", { className:cx("cb",showFx&&"on"), onClick:function(){setShowFx(function(s){return !s;});setShowSettings(false);setShowSeq(false);}, style:{ flex:1 } }, "FX"),
+      el("button", { className:cx("cb",loopCapturing&&"blink",looping&&"on"), onClick:handleLoopPress, style:{ flex:1, padding:"10px 0" } }, loopCapturing?"\u25cf":looping?"\u21ba":"\u25cb"),
+      el("button", { className:cx("cb",camOn&&"on"), onClick:handleCamToggle, style:{ flex:1, padding:"10px 0" } }, "\u25a3"),
+      el("button", { className:cx("cb",showFx&&"on"), onClick:function(){setShowFx(function(s){return !s;});setShowSettings(false);setShowSeq(false);}, style:{ flex:1, padding:"10px 0" } }, "FX"),
       el("button", { className:cx("cb",showSeq&&"on"), onClick:function(){
         setShowSeq(function(s){return !s;});
         setShowSettings(false);setShowFx(false);
         // sync seq settings on open
         var sq=seqRef.current;
         if(sq){sq.bpm=seqSettings.bpm;sq.steps=seqSettings.steps;sq.pattern=seqSettings.pattern.slice();}
-      }, style:{ flex:1 } }, "SEQ"),
+      }, style:{ flex:1, padding:"10px 0" } }, "SEQ"),
       el("button", { className:cx("cb",showSettings&&"on"), onClick:function(){setShowSettings(function(s){return !s;});setShowSeq(false);setShowFx(false);}, style:{ flex:1 } }, "\u266a")
     ),
 
@@ -2943,8 +2999,12 @@ function App() {
           // Rate slider
           el("div", { style:{display:"flex",alignItems:"center",gap:6,marginBottom:3} },
             el("span", { style:{fontSize:8,color:"#444",minWidth:30,letterSpacing:"0.08em"} }, "RATE"),
-            el("input", { type:"range", min:1, max:10000, value:Math.round((cfg.rate||0.5)*100),
-              onChange:function(e){ setLfo(which,"rate",e.target.value/100); },
+            el("input", { type:"range", min:0, max:1000, value:Math.round(Math.pow(Math.log((cfg.rate||0.5)/0.01)/Math.log(10000),1/1.5)*1000),
+              onChange:function(e){
+                var x = e.target.value/1000;
+                var hz = 0.01 * Math.pow(10000, Math.pow(x, 1.5));
+                setLfo(which,"rate", Math.min(100, Math.max(0.01, hz)));
+              },
               style:{flex:1}
             }),
             el("span", { style:{fontSize:8,color:(cfg.rate||0.5)>=20?"#ff9944":"#7fff6a",minWidth:44,textAlign:"right"} },
