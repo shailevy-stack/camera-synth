@@ -1,5 +1,5 @@
 // Camera Synth — v3.0.0
-var VERSION = "4.0.0";
+var VERSION = "4.0.1";
 
 var useState    = React.useState;
 var useEffect   = React.useEffect;
@@ -185,15 +185,14 @@ function makeEngine1() {
         var lf = eng.ctx.createBiquadFilter();
         lf.type = "lowpass";
         lf.frequency.value = 2000;
-        lf.Q.value = 0.5; // flat 1-pole response per stage
+        lf.Q.value = 0; // Q driven entirely by _qBase
         eng.ladder.push(lf);
       }
       for (var li = 0; li < 3; li++) eng.ladder[li].connect(eng.ladder[li+1]);
-      // Resonance feedback: output → feedbackGain → input
-      // Resonance: peaking EQ at cutoff frequency, gain = resonance amount
-      // Tracks cutoff via separate connection to _lpBase (set up in initLFO)
-      // Resonance: Q on all 4 ladder stages (0.5=flat, 4=resonant peak)
-      // ladder[0] = lowpassNode, ladder[3] = output
+      eng._qBase = eng.ctx.createConstantSource();
+      eng._qBase.offset.value = 0.5;
+      eng.ladder.forEach(function(lf){ eng._qBase.connect(lf.Q); });
+      eng._qBase.start();
       eng.lowpassNode  = eng.ladder[0];
       eng.lowpassNode2 = eng.ladder[3];
       eng.combFilters[N - 1].connect(eng.lowpassNode);
@@ -413,12 +412,7 @@ function makeEngine1() {
       eng.ladder.forEach(function(lf){ eng._lpBase.connect(lf.frequency); });
       eng._lpBase.start();
     }
-    if (!eng._qBase) {
-      eng._qBase = eng.ctx.createConstantSource();
-      eng._qBase.offset.value = 0.5;
-      eng.ladder.forEach(function(lf){ eng._qBase.connect(lf.Q); });
-      eng._qBase.start();
-    }
+
     eng._lfoNode = eng.ctx.createOscillator();
     eng._lfoNode.setPeriodicWave(eng.makeLFOWave(0));
     eng._lfoNode.frequency.value = 0.2;
@@ -831,15 +825,14 @@ function makeEngine2() {
         var lf = eng.ctx.createBiquadFilter();
         lf.type = "lowpass";
         lf.frequency.value = 2000;
-        lf.Q.value = 0.5; // flat 1-pole response per stage
+        lf.Q.value = 0; // Q driven entirely by _qBase
         eng.ladder.push(lf);
       }
       for (var li = 0; li < 3; li++) eng.ladder[li].connect(eng.ladder[li+1]);
-      // Resonance feedback: output → feedbackGain → input
-      // Resonance: peaking EQ at cutoff frequency, gain = resonance amount
-      // Tracks cutoff via separate connection to _lpBase (set up in initLFO)
-      // Resonance: Q on all 4 ladder stages (0.5=flat, 4=resonant peak)
-      // ladder[0] = lowpassNode, ladder[3] = output
+      eng._qBase = eng.ctx.createConstantSource();
+      eng._qBase.offset.value = 0.5;
+      eng.ladder.forEach(function(lf){ eng._qBase.connect(lf.Q); });
+      eng._qBase.start();
       eng.lowpassNode  = eng.ladder[0];
       eng.lowpassNode2 = eng.ladder[3];
       eng.combFilters[N-1].connect(eng.lowpassNode);
@@ -1292,12 +1285,6 @@ function makeEngine2() {
       eng._lpBase.offset.value = 2000;
       eng.ladder.forEach(function(lf){ eng._lpBase.connect(lf.frequency); });
       eng._lpBase.start();
-    }
-    if (!eng._qBase) {
-      eng._qBase = eng.ctx.createConstantSource();
-      eng._qBase.offset.value = 0.5; // default Q = 0.5 (flat)
-      eng.ladder.forEach(function(lf){ eng._qBase.connect(lf.Q); });
-      eng._qBase.start();
     }
     eng._lfoNode = eng.ctx.createOscillator();
     eng._lfoNode.setPeriodicWave(eng.makeLFOWave(0));
@@ -2262,13 +2249,9 @@ function App() {
     setSoundOn(next);
   }, [soundOn]);
 
-  var ribbonRectRef = useRef(null);
   var handleRibbon = useCallback(function(e) {
     e.preventDefault();
-    if (e.type === "touchstart" || e.type === "mousedown") {
-      ribbonRectRef.current = ribbonRef.current ? ribbonRef.current.getBoundingClientRect() : null;
-    }
-    var rect = ribbonRectRef.current;
+    var rect = ribbonRef.current ? ribbonRef.current.getBoundingClientRect() : null;
     if(!rect)return;
     var cx=e.touches?e.touches[0].clientX:e.clientX;
     var x=Math.max(0,Math.min(1,(cx-rect.left)/rect.width));
@@ -2277,13 +2260,9 @@ function App() {
   }, []);
 
   var lpResRef = useRef(null);
-  var lpResRectRef = useRef(null);
   var handleLpRes = useCallback(function(e) {
     e.preventDefault();
-    if (e.type === "touchstart" || e.type === "mousedown") {
-      lpResRectRef.current = lpResRef.current ? lpResRef.current.getBoundingClientRect() : null;
-    }
-    var rect = lpResRectRef.current;
+    var rect = lpResRef.current ? lpResRef.current.getBoundingClientRect() : null;
     if (!rect) return;
     var touch = e.touches ? e.touches[0] : e;
     var x = Math.max(0, Math.min(1, (touch.clientX - rect.left) / rect.width));
@@ -2296,13 +2275,9 @@ function App() {
     }
   }, []);
 
-  var lpRibbonRectRef = useRef(null);
   var handleLpRibbon = useCallback(function(e) {
     e.preventDefault();
-    if (e.type === "touchstart" || e.type === "mousedown") {
-      lpRibbonRectRef.current = lpRibbonRef.current ? lpRibbonRef.current.getBoundingClientRect() : null;
-    }
-    var rect = lpRibbonRectRef.current;
+    var rect = lpRibbonRef.current ? lpRibbonRef.current.getBoundingClientRect() : null;
     if (!rect) return;
     var cx = e.touches ? e.touches[0].clientX : e.clientX;
     var x  = Math.max(0, Math.min(1, (cx - rect.left) / rect.width));
@@ -2536,9 +2511,7 @@ function App() {
       el("div", {
         ref:lpRibbonRef,
         onMouseDown:handleLpRibbon, onMouseMove:function(e){if(e.buttons)handleLpRibbon(e);},
-        onMouseUp:function(){lpRibbonRectRef.current=null;},
         onTouchStart:handleLpRibbon, onTouchMove:handleLpRibbon,
-        onTouchEnd:function(){lpRibbonRectRef.current=null;},
         style:{ height:32, position:"relative", cursor:"crosshair",
           background:"linear-gradient(90deg, #050a14 0%, #0a1628 30%, #0d2040 60%, #1a3a6a 80%, #2050a0 100%)",
           borderTop:"1px solid #141c24", borderBottom:"1px solid #141c24" }
@@ -2563,9 +2536,7 @@ function App() {
       el("div", {
         ref:lpResRef,
         onMouseDown:handleLpRes, onMouseMove:function(e){if(e.buttons)handleLpRes(e);},
-        onMouseUp:function(){lpResRectRef.current=null;},
         onTouchStart:handleLpRes, onTouchMove:handleLpRes,
-        onTouchEnd:function(){lpResRectRef.current=null;},
         style:{ height:24, position:"relative", cursor:"crosshair",
           background:"linear-gradient(90deg, #050a14 0%, #0d2040 60%, #1a3a8a 100%)",
           borderTop:"1px solid #141c24", borderBottom:"1px solid #141c24" }
