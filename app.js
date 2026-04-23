@@ -1,5 +1,5 @@
 // Camera Synth — v3.0.0
-var VERSION = "3.9.7";
+var VERSION = "3.9.8";
 
 var useState    = React.useState;
 var useEffect   = React.useEffect;
@@ -192,16 +192,10 @@ function makeEngine1() {
       // Resonance feedback: output → feedbackGain → input
       // Resonance: peaking EQ at cutoff frequency, gain = resonance amount
       // Tracks cutoff via separate connection to _lpBase (set up in initLFO)
-      eng.resPeak = eng.ctx.createBiquadFilter();
-      eng.resPeak.type = "peaking";
-      eng.resPeak.frequency.value = 2000;
-      eng.resPeak.Q.value = 5;      // moderate peak width
-      eng.resPeak.gain.value = 0;   // 0dB = flat (no resonance)
-      // ladder[3] → resPeak → (connects to preReverbGain in signal chain)
-      eng.ladder[3].connect(eng.resPeak);
-      // ladder[0] = lowpassNode for compatibility
+      // Resonance: Q on all 4 ladder stages (0.5=flat, 4=resonant peak)
+      // ladder[0] = lowpassNode, ladder[3] = output
       eng.lowpassNode  = eng.ladder[0];
-      eng.lowpassNode2 = eng.resPeak; // output stage is now resPeak
+      eng.lowpassNode2 = eng.ladder[3];
       eng.combFilters[N - 1].connect(eng.lowpassNode);
       eng.combSidePanL.connect(eng.lowpassNode);
       eng.combSidePanR.connect(eng.lowpassNode);
@@ -417,7 +411,6 @@ function makeEngine1() {
       eng._lpBase = eng.ctx.createConstantSource();
       eng._lpBase.offset.value = 2000; // default
       eng.ladder.forEach(function(lf){ eng._lpBase.connect(lf.frequency); });
-      eng._lpBase.connect(eng.resPeak.frequency); // resonance peak tracks cutoff
       eng._lpBase.start();
     }
     eng._lfoNode = eng.ctx.createOscillator();
@@ -443,7 +436,6 @@ function makeEngine1() {
       eng.lowpassNode.frequency.setTargetAtTime(safeFreq, eng.ctx.currentTime, 0.02);
     }
     if (eng.ladder) eng.ladder.forEach(function(lf){ lf.frequency.setTargetAtTime(safeFreq, eng.ctx.currentTime, 0.02); });
-    if (eng.resPeak) eng.resPeak.frequency.setTargetAtTime(safeFreq, eng.ctx.currentTime, 0.02);
     eng._lpBaseValue = safeFreq;
     // Clamp any active LFO gains targeting filter so they can't push below 30Hz
     var maxDepth = safeFreq - 30;
@@ -615,7 +607,7 @@ function makeEngine1() {
     if (!d) return null;
     var param = null;
     if (d === "lp.freq")     param = eng._lpBase ? eng._lpBase.offset : (eng.lowpassNode ? eng.lowpassNode.frequency : null);
-    if (d === "lp.q")        param = eng.resPeak ? eng.resPeak.gain : null;
+    if (d === "lp.q")        param = (eng.ladder && eng.ladder[0]) ? eng.ladder[0].Q : null;
     if (d === "reverb.gain") param = eng.reverbGain ? eng.reverbGain.gain : null;
     if (d === "master.gain") param = eng.preReverbGain ? eng.preReverbGain.gain : null;
     if (d === "haas.gain")   param = (eng.oscR && eng.oscR.haasGain) ? eng.oscR.haasGain.gain : null;
@@ -699,7 +691,7 @@ function makeEngine1() {
     var depthScale = 1;
     var d = LFO_DESTS[cfg.dest];
     if (d === "lp.freq")     depthScale = 4000; // ±4000Hz max
-    if (d === "lp.q")        depthScale = 9;    // ±9dB resonance peak
+    if (d === "lp.q")        depthScale = 2;    // ±2 Q units
     if (d === "reverb.gain") depthScale = 0.4;
     if (d === "master.gain") depthScale = 0.3;
     if (d === "haas.gain")   depthScale = 0.5;
@@ -840,16 +832,10 @@ function makeEngine2() {
       // Resonance feedback: output → feedbackGain → input
       // Resonance: peaking EQ at cutoff frequency, gain = resonance amount
       // Tracks cutoff via separate connection to _lpBase (set up in initLFO)
-      eng.resPeak = eng.ctx.createBiquadFilter();
-      eng.resPeak.type = "peaking";
-      eng.resPeak.frequency.value = 2000;
-      eng.resPeak.Q.value = 5;      // moderate peak width
-      eng.resPeak.gain.value = 0;   // 0dB = flat (no resonance)
-      // ladder[3] → resPeak → (connects to preReverbGain in signal chain)
-      eng.ladder[3].connect(eng.resPeak);
-      // ladder[0] = lowpassNode for compatibility
+      // Resonance: Q on all 4 ladder stages (0.5=flat, 4=resonant peak)
+      // ladder[0] = lowpassNode, ladder[3] = output
       eng.lowpassNode  = eng.ladder[0];
-      eng.lowpassNode2 = eng.resPeak; // output stage is now resPeak
+      eng.lowpassNode2 = eng.ladder[3];
       eng.combFilters[N-1].connect(eng.lowpassNode);
       eng.combSidePanL.connect(eng.lowpassNode);
       eng.combSidePanR.connect(eng.lowpassNode);
@@ -1299,7 +1285,6 @@ function makeEngine2() {
       eng._lpBase = eng.ctx.createConstantSource();
       eng._lpBase.offset.value = 2000;
       eng.ladder.forEach(function(lf){ eng._lpBase.connect(lf.frequency); });
-      eng._lpBase.connect(eng.resPeak.frequency); // resonance peak tracks cutoff
       eng._lpBase.start();
     }
     eng._lfoNode = eng.ctx.createOscillator();
@@ -1324,7 +1309,6 @@ function makeEngine2() {
       eng.lowpassNode.frequency.setTargetAtTime(safeFreq, eng.ctx.currentTime, 0.02);
     }
     if (eng.ladder) eng.ladder.forEach(function(lf){ lf.frequency.setTargetAtTime(safeFreq, eng.ctx.currentTime, 0.02); });
-    if (eng.resPeak) eng.resPeak.frequency.setTargetAtTime(safeFreq, eng.ctx.currentTime, 0.02);
     eng._lpBaseValue = safeFreq;
     var maxDepth = Math.max(0, safeFreq - 20);
     if (eng._lfoGain && eng._lfoGain.gain.value > maxDepth) {
@@ -1496,7 +1480,7 @@ function makeEngine2() {
     if (!d) return null;
     var param = null;
     if (d === "lp.freq")     param = eng._lpBase ? eng._lpBase.offset : (eng.lowpassNode ? eng.lowpassNode.frequency : null);
-    if (d === "lp.q")        param = eng.resPeak ? eng.resPeak.gain : null;
+    if (d === "lp.q")        param = (eng.ladder && eng.ladder[0]) ? eng.ladder[0].Q : null;
     if (d === "reverb.gain") param = eng.reverbGain ? eng.reverbGain.gain : null;
     if (d === "master.gain") param = eng.preReverbGain ? eng.preReverbGain.gain : null;
     if (d === "haas.gain")   param = (eng.oscR && eng.oscR.haasGain) ? eng.oscR.haasGain.gain : null;
@@ -1580,7 +1564,7 @@ function makeEngine2() {
     var depthScale = 1;
     var d = LFO_DESTS[cfg.dest];
     if (d === "lp.freq")     depthScale = 4000; // ±4000Hz max
-    if (d === "lp.q")        depthScale = 9;    // ±9dB resonance peak
+    if (d === "lp.q")        depthScale = 2;    // ±2 Q units
     if (d === "reverb.gain") depthScale = 0.4;
     if (d === "master.gain") depthScale = 0.3;
     if (d === "haas.gain")   depthScale = 0.5;
@@ -2293,12 +2277,13 @@ function App() {
     var x = Math.max(0, Math.min(1, (touch.clientX - rect.left) / rect.width));
     setLpQ(x);
     var eng = synthRef.current;
-    if (eng && eng.resPeak) {
+    if (eng && eng.ladder) {
       var t = eng.ctx.currentTime;
-      // Peak gain: 0 → 0dB (flat), 1 → +18dB (strong resonance)
-      eng.resPeak.gain.setTargetAtTime(x * 18, t, 0.05);
-      // Q tightens with resonance: 5 (wide) → 12 (narrow peak)
-      eng.resPeak.Q.setTargetAtTime(5 + x * 7, t, 0.05);
+      // Q range: 0.5 (flat) → 4.0 (resonant peak)
+      var q = 0.5 + x * 3.5;
+      eng.ladder.forEach(function(lf) {
+        lf.Q.setTargetAtTime(q, t, 0.05);
+      });
     }
   }, []);
 
@@ -2519,10 +2504,13 @@ function App() {
       el("canvas", { ref:captureRef, style:{ display:"none" } }),
       el("canvas", { ref:loopOverlayRef, style:{ position:"absolute", inset:0, width:"100%", height:"100%", pointerEvents:"none", display:looping?"block":"none" } }),
       el("button", { className:cx("cb",recording&&"rec"), onClick:handleRecord,
-        style:{ position:"absolute", top:6, right:8, fontSize:18, padding:"3px 8px",
-          lineHeight:1, background:"rgba(10,10,11,0.85)", backdropFilter:"blur(4px)",
-          display:"flex", alignItems:"center", justifyContent:"center" }
-      }, recording?"\u25cf":"\u25cb")
+        style:{ position:"absolute", top:6, left:8, fontSize:9, padding:"4px 10px",
+          letterSpacing:"0.08em", background:"rgba(10,10,11,0.85)", backdropFilter:"blur(4px)",
+          display:"flex", alignItems:"center", gap:5 }
+      },
+        el("span", { style:{ fontSize:11, lineHeight:1 } }, recording?"\u25cf":"\u25cb"),
+        el("span", null, "REC")
+      )
     ),
 
 
@@ -2560,7 +2548,7 @@ function App() {
       el("div", { style:{ display:"flex", alignItems:"center", padding:"2px 14px 1px", gap:8 } },
         el("span", { style:{ fontSize:8, color:"#2a2a2a", letterSpacing:"0.1em" } }, "RES"),
         el("span", { style:{ fontSize:11, color:"#6bb5ff", letterSpacing:"0.04em", minWidth:60 } },
-          Math.round(lpQ*100)+"%"
+          (0.5+lpQ*3.5).toFixed(1)+" Q"
         )
       ),
       el("div", {
