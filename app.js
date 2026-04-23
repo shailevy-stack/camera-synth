@@ -1,5 +1,5 @@
 // Camera Synth — v3.0.0
-var VERSION = "4.0.1";
+var VERSION = "4.0.2";
 
 var useState    = React.useState;
 var useEffect   = React.useEffect;
@@ -180,21 +180,27 @@ function makeEngine1() {
 
       // 4-pole ladder filter (Moog-style approximation)
       // 4 × 1-pole lowpass stages in series + resonance feedback
-      eng.ladder = [];
-      for (var li = 0; li < 4; li++) {
-        var lf = eng.ctx.createBiquadFilter();
-        lf.type = "lowpass";
-        lf.frequency.value = 2000;
-        lf.Q.value = 0; // Q driven entirely by _qBase
-        eng.ladder.push(lf);
-      }
-      for (var li = 0; li < 3; li++) eng.ladder[li].connect(eng.ladder[li+1]);
+      // 2-stage lowpass: stage1 has resonance (Q controlled), stage2 flat (24dB total)
+      eng.lowpassNode = eng.ctx.createBiquadFilter();
+      eng.lowpassNode.type = "lowpass";
+      eng.lowpassNode.frequency.value = 2000;
+      eng.lowpassNode.Q.value = 0; // driven by _qBase
+
+      eng.lowpassNode2 = eng.ctx.createBiquadFilter();
+      eng.lowpassNode2.type = "lowpass";
+      eng.lowpassNode2.frequency.value = 2000;
+      eng.lowpassNode2.Q.value = 0.707; // fixed flat slope
+
+      eng.lowpassNode.connect(eng.lowpassNode2);
+
+      // _qBase drives stage1 Q only — this is where resonance lives
       eng._qBase = eng.ctx.createConstantSource();
-      eng._qBase.offset.value = 0.5;
-      eng.ladder.forEach(function(lf){ eng._qBase.connect(lf.Q); });
+      eng._qBase.offset.value = 0.707; // flat default
+      eng._qBase.connect(eng.lowpassNode.Q);
       eng._qBase.start();
-      eng.lowpassNode  = eng.ladder[0];
-      eng.lowpassNode2 = eng.ladder[3];
+
+      // ladder alias for compatibility
+      eng.ladder = [eng.lowpassNode, eng.lowpassNode2];
       eng.combFilters[N - 1].connect(eng.lowpassNode);
       eng.combSidePanL.connect(eng.lowpassNode);
       eng.combSidePanR.connect(eng.lowpassNode);
@@ -409,7 +415,8 @@ function makeEngine1() {
     if (!eng._lpBase) {
       eng._lpBase = eng.ctx.createConstantSource();
       eng._lpBase.offset.value = 2000; // default
-      eng.ladder.forEach(function(lf){ eng._lpBase.connect(lf.frequency); });
+      eng._lpBase.connect(eng.lowpassNode.frequency);
+      eng._lpBase.connect(eng.lowpassNode2.frequency);
       eng._lpBase.start();
     }
 
@@ -435,7 +442,8 @@ function makeEngine1() {
     } else {
       eng.lowpassNode.frequency.setTargetAtTime(safeFreq, eng.ctx.currentTime, 0.02);
     }
-    if (eng.ladder) eng.ladder.forEach(function(lf){ lf.frequency.setTargetAtTime(safeFreq, eng.ctx.currentTime, 0.02); });
+    if (eng.lowpassNode)  eng.lowpassNode.frequency.setTargetAtTime(safeFreq, eng.ctx.currentTime, 0.02);
+    if (eng.lowpassNode2) eng.lowpassNode2.frequency.setTargetAtTime(safeFreq, eng.ctx.currentTime, 0.02);
     eng._lpBaseValue = safeFreq;
     // Clamp any active LFO gains targeting filter so they can't push below 30Hz
     var maxDepth = safeFreq - 30;
@@ -691,7 +699,7 @@ function makeEngine1() {
     var depthScale = 1;
     var d = LFO_DESTS[cfg.dest];
     if (d === "lp.freq")     depthScale = 4000; // ±4000Hz max
-    if (d === "lp.q")        depthScale = 2;    // ±2 Q units
+    if (d === "lp.q")        depthScale = 10;   // ±10 Q units
     if (d === "reverb.gain") depthScale = 0.4;
     if (d === "master.gain") depthScale = 0.3;
     if (d === "haas.gain")   depthScale = 0.5;
@@ -820,21 +828,27 @@ function makeEngine2() {
 
       // 4-pole ladder filter (Moog-style approximation)
       // 4 × 1-pole lowpass stages in series + resonance feedback
-      eng.ladder = [];
-      for (var li = 0; li < 4; li++) {
-        var lf = eng.ctx.createBiquadFilter();
-        lf.type = "lowpass";
-        lf.frequency.value = 2000;
-        lf.Q.value = 0; // Q driven entirely by _qBase
-        eng.ladder.push(lf);
-      }
-      for (var li = 0; li < 3; li++) eng.ladder[li].connect(eng.ladder[li+1]);
+      // 2-stage lowpass: stage1 has resonance (Q controlled), stage2 flat (24dB total)
+      eng.lowpassNode = eng.ctx.createBiquadFilter();
+      eng.lowpassNode.type = "lowpass";
+      eng.lowpassNode.frequency.value = 2000;
+      eng.lowpassNode.Q.value = 0; // driven by _qBase
+
+      eng.lowpassNode2 = eng.ctx.createBiquadFilter();
+      eng.lowpassNode2.type = "lowpass";
+      eng.lowpassNode2.frequency.value = 2000;
+      eng.lowpassNode2.Q.value = 0.707; // fixed flat slope
+
+      eng.lowpassNode.connect(eng.lowpassNode2);
+
+      // _qBase drives stage1 Q only — this is where resonance lives
       eng._qBase = eng.ctx.createConstantSource();
-      eng._qBase.offset.value = 0.5;
-      eng.ladder.forEach(function(lf){ eng._qBase.connect(lf.Q); });
+      eng._qBase.offset.value = 0.707; // flat default
+      eng._qBase.connect(eng.lowpassNode.Q);
       eng._qBase.start();
-      eng.lowpassNode  = eng.ladder[0];
-      eng.lowpassNode2 = eng.ladder[3];
+
+      // ladder alias for compatibility
+      eng.ladder = [eng.lowpassNode, eng.lowpassNode2];
       eng.combFilters[N-1].connect(eng.lowpassNode);
       eng.combSidePanL.connect(eng.lowpassNode);
       eng.combSidePanR.connect(eng.lowpassNode);
@@ -1283,7 +1297,8 @@ function makeEngine2() {
     if (!eng._lpBase) {
       eng._lpBase = eng.ctx.createConstantSource();
       eng._lpBase.offset.value = 2000;
-      eng.ladder.forEach(function(lf){ eng._lpBase.connect(lf.frequency); });
+      eng._lpBase.connect(eng.lowpassNode.frequency);
+      eng._lpBase.connect(eng.lowpassNode2.frequency);
       eng._lpBase.start();
     }
     eng._lfoNode = eng.ctx.createOscillator();
@@ -1307,7 +1322,8 @@ function makeEngine2() {
     } else {
       eng.lowpassNode.frequency.setTargetAtTime(safeFreq, eng.ctx.currentTime, 0.02);
     }
-    if (eng.ladder) eng.ladder.forEach(function(lf){ lf.frequency.setTargetAtTime(safeFreq, eng.ctx.currentTime, 0.02); });
+    if (eng.lowpassNode)  eng.lowpassNode.frequency.setTargetAtTime(safeFreq, eng.ctx.currentTime, 0.02);
+    if (eng.lowpassNode2) eng.lowpassNode2.frequency.setTargetAtTime(safeFreq, eng.ctx.currentTime, 0.02);
     eng._lpBaseValue = safeFreq;
     var maxDepth = Math.max(0, safeFreq - 20);
     if (eng._lfoGain && eng._lfoGain.gain.value > maxDepth) {
@@ -1563,7 +1579,7 @@ function makeEngine2() {
     var depthScale = 1;
     var d = LFO_DESTS[cfg.dest];
     if (d === "lp.freq")     depthScale = 4000; // ±4000Hz max
-    if (d === "lp.q")        depthScale = 2;    // ±2 Q units
+    if (d === "lp.q")        depthScale = 10;   // ±10 Q units
     if (d === "reverb.gain") depthScale = 0.4;
     if (d === "master.gain") depthScale = 0.3;
     if (d === "haas.gain")   depthScale = 0.5;
@@ -2269,8 +2285,8 @@ function App() {
     setLpQ(x);
     var eng = synthRef.current;
     if (eng && eng._qBase) {
-      // Q range: 0.5 (flat) → 8.0 (strong resonance)
-      var q = 0.5 + x * 7.5;
+      // Q: 0.707 (flat) → 20 (screaming resonance)
+      var q = 0.707 + x * 19.3;
       eng._qBase.offset.setTargetAtTime(q, eng.ctx.currentTime, 0.05);
     }
   }, []);
@@ -2530,7 +2546,7 @@ function App() {
       el("div", { style:{ display:"flex", alignItems:"center", padding:"2px 14px 1px", gap:8 } },
         el("span", { style:{ fontSize:8, color:"#2a2a2a", letterSpacing:"0.1em" } }, "RES"),
         el("span", { style:{ fontSize:11, color:"#6bb5ff", letterSpacing:"0.04em", minWidth:60 } },
-          (0.5+lpQ*7.5).toFixed(1)+" Q"
+          (0.707+lpQ*19.3).toFixed(1)+" Q"
         )
       ),
       el("div", {
