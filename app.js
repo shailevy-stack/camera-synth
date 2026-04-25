@@ -1,5 +1,5 @@
 // Camera Synth — v3.0.0
-var VERSION = "4.0.2";
+var VERSION = "4.0.3";
 
 var useState    = React.useState;
 var useEffect   = React.useEffect;
@@ -1102,11 +1102,12 @@ function makeEngine2() {
       makeCrossCarrier(eng.oscG, eng.oscR, "g");
       makeCrossCarrier(eng.oscG, eng.oscB, "g");
     } else if (matrix === "C") {
+      // Vegetation specialist: G is audible, R and B modulate it
+      silence(eng.oscR);
       silence(eng.oscB);
-      silence(eng.oscG);
-      centerPan(eng.oscR); // R is soloed — center it
-      makeCrossCarrier(eng.oscB, eng.oscG, "b");
-      makeCrossCarrier(eng.oscG, eng.oscR, "g");
+      centerPan(eng.oscG); // G is soloed — center it
+      makeCrossCarrier(eng.oscB, eng.oscG, "b"); // B → G freq
+      makeCrossCarrier(eng.oscR, eng.oscG, "r"); // R → G freq
     }
   };
 
@@ -1233,7 +1234,7 @@ function makeEngine2() {
     if (matrix === "B" || matrix === "C") {
       // Soloed carrier — derive width from combined color deviation of all channels
       var combinedWidth = Math.min(1, (Math.abs(relR) + Math.abs(relG) + Math.abs(relB)) / 3 * 8);
-      var soloVoice = matrix === "B" ? eng.oscB : eng.oscR;
+      var soloVoice = matrix === "B" ? eng.oscB : eng.oscG; // C: G is solo
       if (soloVoice && soloVoice.haasGain) {
         soloVoice.haasGain.gain.setTargetAtTime(combinedWidth * 0.7, t, 0.2);
       }
@@ -1241,6 +1242,26 @@ function makeEngine2() {
       if (eng.oscR && eng.oscR.haasGain) eng.oscR.haasGain.gain.setTargetAtTime(rWidth * 0.7, t, 0.2);
       if (eng.oscG && eng.oscG.haasGain) eng.oscG.haasGain.gain.setTargetAtTime(gWidth * 0.7, t, 0.2);
       if (eng.oscB && eng.oscB.haasGain) eng.oscB.haasGain.gain.setTargetAtTime(bWidth * 0.7, t, 0.2);
+    }
+
+    // Spatial centroid pan: color position in frame → operator stereo position
+    // centroid 0..1 (left→right) → pan -0.7..+0.7
+    if (centroidR !== undefined) {
+      var panR = (centroidR - 0.5) * 1.4;
+      var panG = (centroidG - 0.5) * 1.4;
+      var panB = (centroidB - 0.5) * 1.4;
+      if (matrix === "A") {
+        if (eng.oscR && eng.oscR.directPan) eng.oscR.directPan.pan.setTargetAtTime(panR, t, 0.3);
+        if (eng.oscG && eng.oscG.directPan) eng.oscG.directPan.pan.setTargetAtTime(panG, t, 0.3);
+        if (eng.oscB && eng.oscB.directPan) eng.oscB.directPan.pan.setTargetAtTime(panB, t, 0.3);
+      } else if (matrix === "B") {
+        if (eng.oscB && eng.oscB.directPan) eng.oscB.directPan.pan.setTargetAtTime(panB, t, 0.3);
+      } else if (matrix === "C") {
+        if (eng.oscG && eng.oscG.directPan) eng.oscG.directPan.pan.setTargetAtTime(panG, t, 0.3);
+      } else if (matrix === "D") {
+        if (eng.oscR && eng.oscR.directPan) eng.oscR.directPan.pan.setTargetAtTime(panR, t, 0.3);
+        if (eng.oscB && eng.oscB.directPan) eng.oscB.directPan.pan.setTargetAtTime(panB, t, 0.3);
+      }
     }
 
     // FM index: channel brightness × fmDepth × carrier frequency
@@ -1707,21 +1728,36 @@ function analyseFrame(canvas, ctx2d) {
     chromaContrast=Math.min(1,hVar*8);
   }
 
-  // 8 vertical slices
+  // 8 vertical slices — luma + per-color
   var slices=new Float32Array(8);
+  var slicesR=new Float32Array(8), slicesG=new Float32Array(8), slicesB=new Float32Array(8);
   for(var si=0;si<8;si++){
-    var sxS=Math.floor(si*w/8),sxE=Math.floor((si+1)*w/8),sSum=0,sCnt=0;
+    var sxS=Math.floor(si*w/8),sxE=Math.floor((si+1)*w/8);
+    var sSum=0,sRSum=0,sGSum=0,sBSum=0,sCnt=0;
     for(var sy=0;sy<h;sy+=4)for(var sx=sxS;sx<sxE;sx+=4){
       var spi=(sy*w+sx)*4;
-      sSum+=0.2126*(px[spi]/255)+0.7152*(px[spi+1]/255)+0.0722*(px[spi+2]/255);
-      sCnt++;
+      var sr=px[spi]/255,sg=px[spi+1]/255,sb=px[spi+2]/255;
+      sSum+=0.2126*sr+0.7152*sg+0.0722*sb;
+      sRSum+=sr; sGSum+=sg; sBSum+=sb; sCnt++;
     }
     slices[si]=sCnt>0?sSum/sCnt:0.5;
+    slicesR[si]=sCnt>0?sRSum/sCnt:0.5;
+    slicesG[si]=sCnt>0?sGSum/sCnt:0.5;
+    slicesB[si]=sCnt>0?sBSum/sCnt:0.5;
   }
+
+  // Spatial centroid per color channel: weighted average position 0..1 (left→right)
+  function centroid(s) {
+    var num=0,den=0;
+    for(var i=0;i<8;i++){num+=s[i]*i;den+=s[i];}
+    return den>0?num/(den*7):0.5; // normalize to 0..1
+  }
+  var centroidR=centroid(slicesR), centroidG=centroid(slicesG), centroidB=centroid(slicesB);
 
   return { luma:luma, hue:hue/360, saturation:sat, chromaContrast:chromaContrast,
            slices:slices, comX:comX, comY:comY, wavetable:wt,
-           avgR:avgR, avgG:avgG, avgB:avgB };
+           avgR:avgR, avgG:avgG, avgB:avgB,
+           centroidR:centroidR, centroidG:centroidG, centroidB:centroidB };
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -2841,7 +2877,7 @@ function App() {
         [
           { id:"A", svg:"<svg viewBox=\"0 0 72 46\" xmlns=\"http://www.w3.org/2000/svg\" style=\"width:100%;height:100%;display:block\"><rect x=\"8\" y=\"4\" width=\"12\" height=\"8\" rx=\"1.5\" fill=\"#ff6b6b15\" stroke=\"#ff6b6b\" stroke-width=\"0.8\" stroke-dasharray=\"2,1\"/><text x=\"14\" y=\"10.8\" text-anchor=\"middle\" fill=\"#ff6b6b\" font-size=\"5.5\" font-family=\"monospace\">r</text><line x1=\"14.0\" y1=\"12.0\" x2=\"14.0\" y2=\"16.0\" stroke=\"#555\" stroke-width=\"0.8\"/><polygon points=\"14.0,20.0 12.0,16.0 16.0,16.0\" fill=\"#555\"/><rect x=\"6\" y=\"20\" width=\"16\" height=\"10\" rx=\"2\" fill=\"#ff6b6b22\" stroke=\"#ff6b6b\" stroke-width=\"1.2\"/><text x=\"14\" y=\"28.5\" text-anchor=\"middle\" fill=\"#ff6b6b\" font-size=\"6.5\" font-family=\"monospace\" font-weight=\"bold\" >R</text><line x1=\"14\" y1=\"30\" x2=\"14\" y2=\"38\" stroke=\"#444\" stroke-width=\"1\" stroke-dasharray=\"2,1\"/><line x1=\"10\" y1=\"38\" x2=\"18\" y2=\"38\" stroke=\"#444\" stroke-width=\"1\"/><rect x=\"30\" y=\"4\" width=\"12\" height=\"8\" rx=\"1.5\" fill=\"#7fff6a15\" stroke=\"#7fff6a\" stroke-width=\"0.8\" stroke-dasharray=\"2,1\"/><text x=\"36\" y=\"10.8\" text-anchor=\"middle\" fill=\"#7fff6a\" font-size=\"5.5\" font-family=\"monospace\">g</text><line x1=\"36.0\" y1=\"12.0\" x2=\"36.0\" y2=\"16.0\" stroke=\"#555\" stroke-width=\"0.8\"/><polygon points=\"36.0,20.0 34.0,16.0 38.0,16.0\" fill=\"#555\"/><rect x=\"28\" y=\"20\" width=\"16\" height=\"10\" rx=\"2\" fill=\"#7fff6a22\" stroke=\"#7fff6a\" stroke-width=\"1.2\"/><text x=\"36\" y=\"28.5\" text-anchor=\"middle\" fill=\"#7fff6a\" font-size=\"6.5\" font-family=\"monospace\" font-weight=\"bold\" >G</text><line x1=\"36\" y1=\"30\" x2=\"36\" y2=\"38\" stroke=\"#444\" stroke-width=\"1\" stroke-dasharray=\"2,1\"/><line x1=\"32\" y1=\"38\" x2=\"40\" y2=\"38\" stroke=\"#444\" stroke-width=\"1\"/><rect x=\"52\" y=\"4\" width=\"12\" height=\"8\" rx=\"1.5\" fill=\"#6bb5ff15\" stroke=\"#6bb5ff\" stroke-width=\"0.8\" stroke-dasharray=\"2,1\"/><text x=\"58\" y=\"10.8\" text-anchor=\"middle\" fill=\"#6bb5ff\" font-size=\"5.5\" font-family=\"monospace\">b</text><line x1=\"58.0\" y1=\"12.0\" x2=\"58.0\" y2=\"16.0\" stroke=\"#555\" stroke-width=\"0.8\"/><polygon points=\"58.0,20.0 56.0,16.0 60.0,16.0\" fill=\"#555\"/><rect x=\"50\" y=\"20\" width=\"16\" height=\"10\" rx=\"2\" fill=\"#6bb5ff22\" stroke=\"#6bb5ff\" stroke-width=\"1.2\"/><text x=\"58\" y=\"28.5\" text-anchor=\"middle\" fill=\"#6bb5ff\" font-size=\"6.5\" font-family=\"monospace\" font-weight=\"bold\" >B</text><line x1=\"58\" y1=\"30\" x2=\"58\" y2=\"38\" stroke=\"#444\" stroke-width=\"1\" stroke-dasharray=\"2,1\"/><line x1=\"54\" y1=\"38\" x2=\"62\" y2=\"38\" stroke=\"#444\" stroke-width=\"1\"/><line x1=\"8\" y1=\"38\" x2=\"64\" y2=\"38\" stroke=\"#444\" stroke-width=\"0.8\"/></svg>" },
           { id:"B", svg:"<svg viewBox=\"0 0 72 46\" xmlns=\"http://www.w3.org/2000/svg\" style=\"width:100%;height:100%;display:block\"><rect x=\"8\" y=\"3\" width=\"12\" height=\"8\" rx=\"1.5\" fill=\"#ff6b6b15\" stroke=\"#ff6b6b\" stroke-width=\"0.8\" stroke-dasharray=\"2,1\"/><text x=\"14\" y=\"9.8\" text-anchor=\"middle\" fill=\"#ff6b6b\" font-size=\"5.5\" font-family=\"monospace\">r</text><line x1=\"14.0\" y1=\"11.0\" x2=\"14.0\" y2=\"15.0\" stroke=\"#555\" stroke-width=\"0.8\"/><polygon points=\"14.0,19.0 12.0,15.0 16.0,15.0\" fill=\"#555\"/><rect x=\"6\" y=\"19\" width=\"16\" height=\"10\" rx=\"2\" fill=\"#ff6b6b11\" stroke=\"#ff6b6b\" stroke-width=\"0.7\" stroke-dasharray=\"3,1\"/><text x=\"14\" y=\"27.5\" text-anchor=\"middle\" fill=\"#ff6b6b\" font-size=\"6.5\" font-family=\"monospace\" font-weight=\"bold\" opacity=\"0.4\">R</text><rect x=\"30\" y=\"3\" width=\"12\" height=\"8\" rx=\"1.5\" fill=\"#7fff6a15\" stroke=\"#7fff6a\" stroke-width=\"0.8\" stroke-dasharray=\"2,1\"/><text x=\"36\" y=\"9.8\" text-anchor=\"middle\" fill=\"#7fff6a\" font-size=\"5.5\" font-family=\"monospace\">g</text><line x1=\"36.0\" y1=\"11.0\" x2=\"36.0\" y2=\"15.0\" stroke=\"#555\" stroke-width=\"0.8\"/><polygon points=\"36.0,19.0 34.0,15.0 38.0,15.0\" fill=\"#555\"/><rect x=\"28\" y=\"19\" width=\"16\" height=\"10\" rx=\"2\" fill=\"#7fff6a11\" stroke=\"#7fff6a\" stroke-width=\"0.7\" stroke-dasharray=\"3,1\"/><text x=\"36\" y=\"27.5\" text-anchor=\"middle\" fill=\"#7fff6a\" font-size=\"6.5\" font-family=\"monospace\" font-weight=\"bold\" opacity=\"0.4\">G</text><rect x=\"52\" y=\"3\" width=\"12\" height=\"8\" rx=\"1.5\" fill=\"#6bb5ff15\" stroke=\"#6bb5ff\" stroke-width=\"0.8\" stroke-dasharray=\"2,1\"/><text x=\"58\" y=\"9.8\" text-anchor=\"middle\" fill=\"#6bb5ff\" font-size=\"5.5\" font-family=\"monospace\">b</text><line x1=\"58.0\" y1=\"11.0\" x2=\"58.0\" y2=\"15.0\" stroke=\"#555\" stroke-width=\"0.8\"/><polygon points=\"58.0,19.0 56.0,15.0 60.0,15.0\" fill=\"#555\"/><rect x=\"50\" y=\"19\" width=\"16\" height=\"10\" rx=\"2\" fill=\"#6bb5ff22\" stroke=\"#6bb5ff\" stroke-width=\"1.2\"/><text x=\"58\" y=\"27.5\" text-anchor=\"middle\" fill=\"#6bb5ff\" font-size=\"6.5\" font-family=\"monospace\" font-weight=\"bold\" >B</text><line x1=\"58\" y1=\"29\" x2=\"58\" y2=\"37\" stroke=\"#444\" stroke-width=\"1\" stroke-dasharray=\"2,1\"/><line x1=\"54\" y1=\"37\" x2=\"62\" y2=\"37\" stroke=\"#444\" stroke-width=\"1\"/><line x1=\"22.0\" y1=\"24.0\" x2=\"25.2\" y2=\"23.1\" stroke=\"#ff6b6bcc\" stroke-width=\"1.0\"/><polygon points=\"29.0,22.0 25.7,25.0 24.6,21.2\" fill=\"#ff6b6bcc\"/><line x1=\"44.0\" y1=\"24.0\" x2=\"47.2\" y2=\"23.1\" stroke=\"#7fff6acc\" stroke-width=\"1.0\"/><polygon points=\"51.0,22.0 47.7,25.0 46.6,21.2\" fill=\"#7fff6acc\"/><line x1=\"50\" y1=\"37\" x2=\"66\" y2=\"37\" stroke=\"#444\" stroke-width=\"0.8\"/></svg>" },
-          { id:"C", svg:"<svg viewBox=\"0 0 72 46\" xmlns=\"http://www.w3.org/2000/svg\" style=\"width:100%;height:100%;display:block\"><rect x=\"8\" y=\"3\" width=\"12\" height=\"8\" rx=\"1.5\" fill=\"#ff6b6b15\" stroke=\"#ff6b6b\" stroke-width=\"0.8\" stroke-dasharray=\"2,1\"/><text x=\"14\" y=\"9.8\" text-anchor=\"middle\" fill=\"#ff6b6b\" font-size=\"5.5\" font-family=\"monospace\">r</text><line x1=\"14.0\" y1=\"11.0\" x2=\"14.0\" y2=\"15.0\" stroke=\"#555\" stroke-width=\"0.8\"/><polygon points=\"14.0,19.0 12.0,15.0 16.0,15.0\" fill=\"#555\"/><rect x=\"6\" y=\"19\" width=\"16\" height=\"10\" rx=\"2\" fill=\"#ff6b6b22\" stroke=\"#ff6b6b\" stroke-width=\"1.2\"/><text x=\"14\" y=\"27.5\" text-anchor=\"middle\" fill=\"#ff6b6b\" font-size=\"6.5\" font-family=\"monospace\" font-weight=\"bold\">R</text><line x1=\"14\" y1=\"29\" x2=\"14\" y2=\"37\" stroke=\"#444\" stroke-width=\"1\" stroke-dasharray=\"2,1\"/><line x1=\"10\" y1=\"37\" x2=\"18\" y2=\"37\" stroke=\"#444\" stroke-width=\"1\"/><rect x=\"30\" y=\"3\" width=\"12\" height=\"8\" rx=\"1.5\" fill=\"#7fff6a15\" stroke=\"#7fff6a\" stroke-width=\"0.8\" stroke-dasharray=\"2,1\"/><text x=\"36\" y=\"9.8\" text-anchor=\"middle\" fill=\"#7fff6a\" font-size=\"5.5\" font-family=\"monospace\">g</text><line x1=\"36.0\" y1=\"11.0\" x2=\"36.0\" y2=\"15.0\" stroke=\"#555\" stroke-width=\"0.8\"/><polygon points=\"36.0,19.0 34.0,15.0 38.0,15.0\" fill=\"#555\"/><rect x=\"28\" y=\"19\" width=\"16\" height=\"10\" rx=\"2\" fill=\"#7fff6a11\" stroke=\"#7fff6a\" stroke-width=\"0.7\" stroke-dasharray=\"3,1\"/><text x=\"36\" y=\"27.5\" text-anchor=\"middle\" fill=\"#7fff6a\" font-size=\"6.5\" font-family=\"monospace\" font-weight=\"bold\" opacity=\"0.4\">G</text><rect x=\"52\" y=\"3\" width=\"12\" height=\"8\" rx=\"1.5\" fill=\"#6bb5ff15\" stroke=\"#6bb5ff\" stroke-width=\"0.8\" stroke-dasharray=\"2,1\"/><text x=\"58\" y=\"9.8\" text-anchor=\"middle\" fill=\"#6bb5ff\" font-size=\"5.5\" font-family=\"monospace\">b</text><line x1=\"58.0\" y1=\"11.0\" x2=\"58.0\" y2=\"15.0\" stroke=\"#555\" stroke-width=\"0.8\"/><polygon points=\"58.0,19.0 56.0,15.0 60.0,15.0\" fill=\"#555\"/><rect x=\"50\" y=\"19\" width=\"16\" height=\"10\" rx=\"2\" fill=\"#6bb5ff11\" stroke=\"#6bb5ff\" stroke-width=\"0.7\" stroke-dasharray=\"3,1\"/><text x=\"58\" y=\"27.5\" text-anchor=\"middle\" fill=\"#6bb5ff\" font-size=\"6.5\" font-family=\"monospace\" font-weight=\"bold\" opacity=\"0.4\">B</text><line x1=\"44.0\" y1=\"24.0\" x2=\"44.8\" y2=\"25.6\" stroke=\"#6bb5ffcc\" stroke-width=\"1.0\"/><polygon points=\"43.0,22.0 46.6,24.7 43.0,26.5\" fill=\"#6bb5ffcc\"/><line x1=\"22.0\" y1=\"24.0\" x2=\"22.8\" y2=\"25.6\" stroke=\"#7fff6acc\" stroke-width=\"1.0\"/><polygon points=\"21.0,22.0 24.6,24.7 21.0,26.5\" fill=\"#7fff6acc\"/><line x1=\"8\" y1=\"37\" x2=\"22\" y2=\"37\" stroke=\"#444\" stroke-width=\"0.8\"/></svg>" },
+          { id:"C", svg:"<svg viewBox=\"0 0 72 46\" xmlns=\"http://www.w3.org/2000/svg\" style=\"width:100%;height:100%;display:block\"><rect x=\"8\" y=\"3\" width=\"12\" height=\"8\" rx=\"1.5\" fill=\"#ff6b6b15\" stroke=\"#ff6b6b\" stroke-width=\"0.8\" stroke-dasharray=\"2,1\"/><text x=\"14\" y=\"9.8\" text-anchor=\"middle\" fill=\"#ff6b6b\" font-size=\"5.5\" font-family=\"monospace\">r</text><line x1=\"14.0\" y1=\"11.0\" x2=\"14.0\" y2=\"15.0\" stroke=\"#555\" stroke-width=\"0.8\"/><polygon points=\"14.0,19.0 12.0,15.0 16.0,15.0\" fill=\"#555\"/><rect x=\"6\" y=\"19\" width=\"16\" height=\"10\" rx=\"2\" fill=\"#ff6b6b11\" stroke=\"#ff6b6b\" stroke-width=\"0.7\" stroke-dasharray=\"3,1\"/><text x=\"14\" y=\"27.5\" text-anchor=\"middle\" fill=\"#ff6b6b\" font-size=\"6.5\" font-family=\"monospace\" font-weight=\"bold\" opacity=\"0.4\">R</text><rect x=\"30\" y=\"3\" width=\"12\" height=\"8\" rx=\"1.5\" fill=\"#7fff6a15\" stroke=\"#7fff6a\" stroke-width=\"0.8\" stroke-dasharray=\"2,1\"/><text x=\"36\" y=\"9.8\" text-anchor=\"middle\" fill=\"#7fff6a\" font-size=\"5.5\" font-family=\"monospace\">g</text><line x1=\"36.0\" y1=\"11.0\" x2=\"36.0\" y2=\"15.0\" stroke=\"#555\" stroke-width=\"0.8\"/><polygon points=\"36.0,19.0 34.0,15.0 38.0,15.0\" fill=\"#555\"/><rect x=\"28\" y=\"19\" width=\"16\" height=\"10\" rx=\"2\" fill=\"#7fff6a22\" stroke=\"#7fff6a\" stroke-width=\"1.2\"/><text x=\"36\" y=\"27.5\" text-anchor=\"middle\" fill=\"#7fff6a\" font-size=\"6.5\" font-family=\"monospace\" font-weight=\"bold\">G</text><line x1=\"36\" y1=\"29\" x2=\"36\" y2=\"37\" stroke=\"#444\" stroke-width=\"1\" stroke-dasharray=\"2,1\"/><line x1=\"32\" y1=\"37\" x2=\"40\" y2=\"37\" stroke=\"#444\" stroke-width=\"1\"/><rect x=\"52\" y=\"3\" width=\"12\" height=\"8\" rx=\"1.5\" fill=\"#6bb5ff15\" stroke=\"#6bb5ff\" stroke-width=\"0.8\" stroke-dasharray=\"2,1\"/><text x=\"58\" y=\"9.8\" text-anchor=\"middle\" fill=\"#6bb5ff\" font-size=\"5.5\" font-family=\"monospace\">b</text><line x1=\"58.0\" y1=\"11.0\" x2=\"58.0\" y2=\"15.0\" stroke=\"#555\" stroke-width=\"0.8\"/><polygon points=\"58.0,19.0 56.0,15.0 60.0,15.0\" fill=\"#555\"/><rect x=\"50\" y=\"19\" width=\"16\" height=\"10\" rx=\"2\" fill=\"#6bb5ff11\" stroke=\"#6bb5ff\" stroke-width=\"0.7\" stroke-dasharray=\"3,1\"/><text x=\"58\" y=\"27.5\" text-anchor=\"middle\" fill=\"#6bb5ff\" font-size=\"6.5\" font-family=\"monospace\" font-weight=\"bold\" opacity=\"0.4\">B</text><line x1=\"22.0\" y1=\"24.0\" x2=\"25.2\" y2=\"23.1\" stroke=\"#ff6b6bcc\" stroke-width=\"1.0\"/><polygon points=\"29.0,22.0 25.7,25.0 24.6,21.2\" fill=\"#ff6b6bcc\"/><line x1=\"50.0\" y1=\"24.0\" x2=\"46.8\" y2=\"23.1\" stroke=\"#6bb5ffcc\" stroke-width=\"1.0\"/><polygon points=\"43.0,22.0 47.4,21.2 46.3,25.0\" fill=\"#6bb5ffcc\"/><line x1=\"28\" y1=\"37\" x2=\"44\" y2=\"37\" stroke=\"#444\" stroke-width=\"0.8\"/></svg>" },
           { id:"D", svg:"<svg viewBox=\"0 0 72 46\" xmlns=\"http://www.w3.org/2000/svg\" style=\"width:100%;height:100%;display:block\"><rect x=\"8\" y=\"3\" width=\"12\" height=\"8\" rx=\"1.5\" fill=\"#ff6b6b15\" stroke=\"#ff6b6b\" stroke-width=\"0.8\" stroke-dasharray=\"2,1\"/><text x=\"14\" y=\"9.8\" text-anchor=\"middle\" fill=\"#ff6b6b\" font-size=\"5.5\" font-family=\"monospace\">r</text><line x1=\"14.0\" y1=\"11.0\" x2=\"14.0\" y2=\"15.0\" stroke=\"#555\" stroke-width=\"0.8\"/><polygon points=\"14.0,19.0 12.0,15.0 16.0,15.0\" fill=\"#555\"/><rect x=\"6\" y=\"19\" width=\"16\" height=\"10\" rx=\"2\" fill=\"#ff6b6b22\" stroke=\"#ff6b6b\" stroke-width=\"1.2\"/><text x=\"14\" y=\"27.5\" text-anchor=\"middle\" fill=\"#ff6b6b\" font-size=\"6.5\" font-family=\"monospace\" font-weight=\"bold\" >R</text><line x1=\"14\" y1=\"29\" x2=\"14\" y2=\"37\" stroke=\"#444\" stroke-width=\"1\" stroke-dasharray=\"2,1\"/><line x1=\"10\" y1=\"37\" x2=\"18\" y2=\"37\" stroke=\"#444\" stroke-width=\"1\"/><rect x=\"30\" y=\"3\" width=\"12\" height=\"8\" rx=\"1.5\" fill=\"#7fff6a15\" stroke=\"#7fff6a\" stroke-width=\"0.8\" stroke-dasharray=\"2,1\"/><text x=\"36\" y=\"9.8\" text-anchor=\"middle\" fill=\"#7fff6a\" font-size=\"5.5\" font-family=\"monospace\">g</text><line x1=\"36.0\" y1=\"11.0\" x2=\"36.0\" y2=\"15.0\" stroke=\"#555\" stroke-width=\"0.8\"/><polygon points=\"36.0,19.0 34.0,15.0 38.0,15.0\" fill=\"#555\"/><rect x=\"28\" y=\"19\" width=\"16\" height=\"10\" rx=\"2\" fill=\"#7fff6a11\" stroke=\"#7fff6a\" stroke-width=\"0.7\" stroke-dasharray=\"3,1\"/><text x=\"36\" y=\"27.5\" text-anchor=\"middle\" fill=\"#7fff6a\" font-size=\"6.5\" font-family=\"monospace\" font-weight=\"bold\" opacity=\"0.4\">G</text><rect x=\"52\" y=\"3\" width=\"12\" height=\"8\" rx=\"1.5\" fill=\"#6bb5ff15\" stroke=\"#6bb5ff\" stroke-width=\"0.8\" stroke-dasharray=\"2,1\"/><text x=\"58\" y=\"9.8\" text-anchor=\"middle\" fill=\"#6bb5ff\" font-size=\"5.5\" font-family=\"monospace\">b</text><line x1=\"58.0\" y1=\"11.0\" x2=\"58.0\" y2=\"15.0\" stroke=\"#555\" stroke-width=\"0.8\"/><polygon points=\"58.0,19.0 56.0,15.0 60.0,15.0\" fill=\"#555\"/><rect x=\"50\" y=\"19\" width=\"16\" height=\"10\" rx=\"2\" fill=\"#6bb5ff22\" stroke=\"#6bb5ff\" stroke-width=\"1.2\"/><text x=\"58\" y=\"27.5\" text-anchor=\"middle\" fill=\"#6bb5ff\" font-size=\"6.5\" font-family=\"monospace\" font-weight=\"bold\" >B</text><line x1=\"58\" y1=\"29\" x2=\"58\" y2=\"37\" stroke=\"#444\" stroke-width=\"1\" stroke-dasharray=\"2,1\"/><line x1=\"54\" y1=\"37\" x2=\"62\" y2=\"37\" stroke=\"#444\" stroke-width=\"1\"/><line x1=\"29.0\" y1=\"24.0\" x2=\"24.9\" y2=\"23.0\" stroke=\"#7fff6acc\" stroke-width=\"1.0\"/><polygon points=\"21.0,22.0 25.4,21.0 24.4,24.9\" fill=\"#7fff6acc\"/><line x1=\"43.0\" y1=\"24.0\" x2=\"47.1\" y2=\"23.0\" stroke=\"#7fff6acc\" stroke-width=\"1.0\"/><polygon points=\"51.0,22.0 47.6,24.9 46.6,21.0\" fill=\"#7fff6acc\"/><line x1=\"8\" y1=\"37\" x2=\"22\" y2=\"37\" stroke=\"#444\" stroke-width=\"0.8\"/><line x1=\"50\" y1=\"37\" x2=\"66\" y2=\"37\" stroke=\"#444\" stroke-width=\"0.8\"/></svg>" },
         ].map(function(m) {
           var active = (settings2.fmMatrix||"A") === m.id;
