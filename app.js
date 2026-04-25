@@ -1,5 +1,5 @@
 // Camera Synth — v3.0.0
-var VERSION = "4.0.3";
+var VERSION = "4.0.4";
 
 var useState    = React.useState;
 var useEffect   = React.useEffect;
@@ -2596,15 +2596,12 @@ function App() {
       ),
       el("div",{className:"sr",style:{paddingTop:3,paddingBottom:3}},
         el("label",null,"Scale"),
-        el("div",{style:{display:"flex",gap:2,alignItems:"center"}},
-          el("span",{style:{fontSize:9,color:"#7fff6a",marginRight:4}},settings1.quantize?settings1.scale:"off"),
-          el("button",{className:cx("sg",settings1.showScales&&"sel"),onClick:function(){setSettings1(function(s){var n=Object.assign({},s);n.showScales=!s.showScales;return n;});}},settings1.showScales?"▲":"▼")
-        )
+        el("span",{style:{fontSize:9,color:"#7fff6a"}},settings1.quantize?settings1.scale:"off")
       ),
-      settings1.showScales && el("div",{style:{paddingBottom:4,borderBottom:"1px solid #141414"}},
+      el("div",{style:{paddingBottom:4,borderBottom:"1px solid #141414"}},
         el("div",{style:{display:"flex",flexWrap:"wrap",gap:2,paddingTop:4}},
-          el("button",{className:cx("sg",!settings1.quantize&&"sel"),onClick:function(){setSettings1(function(s){var n=Object.assign({},s);n.quantize=false;n.showScales=false;return n;})}},"off"),
-          SCALE_NAMES.map(function(s){return el("button",{key:s,className:cx("sg",settings1.quantize&&settings1.scale===s&&"sel"),onClick:function(){setSettings1(function(st){var n=Object.assign({},st);n.scale=s;n.quantize=true;n.showScales=false;return n;})}},s);})
+          el("button",{className:cx("sg",!settings1.quantize&&"sel"),onClick:function(){setSettings1(function(s){var n=Object.assign({},s);n.quantize=false;return n;})}},"off"),
+          SCALE_NAMES.map(function(s){return el("button",{key:s,className:cx("sg",settings1.quantize&&settings1.scale===s&&"sel"),onClick:function(){setSettings1(function(st){var n=Object.assign({},st);n.scale=s;n.quantize=true;return n;})}},s);})
         )
       ),
       el("div",{className:"sr",style:{flexDirection:"column",alignItems:"flex-start",gap:3}},
@@ -2622,15 +2619,12 @@ function App() {
     showSettings && activeEngine==="2" && el("div", { style:{ padding:"8px 14px 14px", borderTop:"1px solid #141414", background:"#0c0c0d", overflowY:"auto", flexShrink:0, maxHeight:"42vh" } },
       el("div",{className:"sr",style:{paddingTop:3,paddingBottom:3}},
         el("label",null,"Scale"),
-        el("div",{style:{display:"flex",gap:2,alignItems:"center"}},
-          el("span",{style:{fontSize:9,color:"#7fff6a",marginRight:4}},settings2.quantize?settings2.scale:"off"),
-          el("button",{className:cx("sg",settings2.showScales&&"sel"),onClick:function(){setSettings2(function(s){var n=Object.assign({},s);n.showScales=!s.showScales;return n;});}},settings2.showScales?"▲":"▼")
-        )
+        el("span",{style:{fontSize:9,color:"#7fff6a"}},settings2.quantize?settings2.scale:"off")
       ),
-      settings2.showScales && el("div",{style:{paddingBottom:4,borderBottom:"1px solid #141414"}},
+      el("div",{style:{paddingBottom:4,borderBottom:"1px solid #141414"}},
         el("div",{style:{display:"flex",flexWrap:"wrap",gap:2,paddingTop:4}},
-          el("button",{className:cx("sg",!settings2.quantize&&"sel"),onClick:function(){setSettings2(function(s){var n=Object.assign({},s);n.quantize=false;n.showScales=false;return n;})}},"off"),
-          SCALE_NAMES.map(function(s){return el("button",{key:s,className:cx("sg",settings2.quantize&&settings2.scale===s&&"sel"),onClick:function(){setSettings2(function(st){var n=Object.assign({},st);n.scale=s;n.quantize=true;n.showScales=false;return n;})}},s);})
+          el("button",{className:cx("sg",!settings2.quantize&&"sel"),onClick:function(){setSettings2(function(s){var n=Object.assign({},s);n.quantize=false;return n;})}},"off"),
+          SCALE_NAMES.map(function(s){return el("button",{key:s,className:cx("sg",settings2.quantize&&settings2.scale===s&&"sel"),onClick:function(){setSettings2(function(st){var n=Object.assign({},st);n.scale=s;n.quantize=true;return n;})}},s);})
         )
       ),
       el("div",{className:"sr",style:{flexDirection:"column",alignItems:"flex-start",gap:3}},
