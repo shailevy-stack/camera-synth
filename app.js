@@ -1,5 +1,5 @@
 // Camera Synth — v3.0.0
-var VERSION = "4.0.7";
+var VERSION = "4.0.8";
 
 // Preload AudioWorklet module as soon as possible
 (function() {

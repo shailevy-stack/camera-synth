@@ -12,7 +12,9 @@ class LadderProcessor extends AudioWorkletProcessor {
 
   constructor() {
     super();
-    this._s = [0, 0, 0, 0]; // filter state
+    // Two sets of state for stereo (L and R)
+    this._sL = [0, 0, 0, 0];
+    this._sR = [0, 0, 0, 0];
     this._lastCutoff = -1;
     this._g = 0;
   }
@@ -22,42 +24,47 @@ class LadderProcessor extends AudioWorkletProcessor {
     return wc / (1 + wc);
   }
 
-  process(inputs, outputs, parameters) {
-    var input  = inputs[0];
-    var output = outputs[0];
-    if (!input || !input[0] || !output || !output[0]) return true;
-
-    var inp    = input[0];
-    var out    = output[0];
-    var cutoff = parameters.cutoff;
-    var res    = parameters.resonance;
-    var s      = this._s;
-
+  _processChannel(inp, out, s, cutoff, res) {
     var cutoffConst = cutoff.length === 1;
     var resConst    = res.length === 1;
-
     for (var i = 0; i < inp.length; i++) {
       var fc = cutoffConst ? cutoff[0] : cutoff[i];
       var r  = resConst    ? res[0]    : res[i];
-
       if (fc !== this._lastCutoff) {
         this._g = this._coeff(fc);
         this._lastCutoff = fc;
       }
-      var g = this._g;
-
-      // Feedback: r maps 0..1 → 0..4 (self-oscillation at 4.0)
-      // Use curve so resonance peak is audible from ~0.3
+      var g  = this._g;
       var fb = r * r * 4.0;
       var x  = inp[i] - fb * s[3];
-
-      // 4 cascaded one-pole stages — no soft clip (limiter handles output)
       s[0] += g * (x    - s[0]);
       s[1] += g * (s[0] - s[1]);
       s[2] += g * (s[1] - s[2]);
       s[3] += g * (s[2] - s[3]);
-
       out[i] = s[3];
+    }
+  }
+
+  process(inputs, outputs, parameters) {
+    var inChans  = inputs[0]  || [];
+    var outChans = outputs[0] || [];
+    if (!inChans.length || !outChans.length) return true;
+
+    var cutoff = parameters.cutoff;
+    var res    = parameters.resonance;
+
+    // Process L channel
+    if (inChans[0] && outChans[0]) {
+      this._processChannel(inChans[0], outChans[0], this._sL, cutoff, res);
+    }
+    // Process R channel — if mono input, copy L output to R
+    if (outChans[1]) {
+      if (inChans[1]) {
+        this._processChannel(inChans[1], outChans[1], this._sR, cutoff, res);
+      } else if (outChans[0]) {
+        // Mono input — copy processed L to R
+        outChans[1].set(outChans[0]);
+      }
     }
 
     return true;
