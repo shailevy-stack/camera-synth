@@ -1,5 +1,5 @@
 // Camera Synth — v3.0.0
-var VERSION = "4.0.5";
+var VERSION = "4.0.6";
 
 var useState    = React.useState;
 var useEffect   = React.useEffect;
@@ -2604,7 +2604,17 @@ function App() {
       el("div", { style:{ display:"flex", alignItems:"center", padding:"2px 14px 1px", gap:8 } },
         el("span", { style:{ fontSize:8, color:"#2a2a2a", letterSpacing:"0.1em" } }, "RES"),
         el("span", { style:{ fontSize:11, color:"#6bb5ff", letterSpacing:"0.04em", minWidth:60 } },
-          activeEngine==="2"&&(eng2Ref.current&&eng2Ref.current._useLadder)?Math.round(lpQ*95)+"%":(0.707+lpQ*19.3).toFixed(1)+" Q"
+          (function(){
+            var eng = activeEngine==="1" ? eng1Ref.current : eng2Ref.current;
+            var useLdr = eng && eng._useLadder;
+            return useLdr ? Math.round(lpQ*100)+"%" : (0.707+lpQ*19.3).toFixed(1)+" Q";
+          })()
+        ),
+        el("span", { style:{ fontSize:7, color:"#1a2a1a", letterSpacing:"0.08em", marginLeft:"auto" } },
+          (function(){
+            var eng = activeEngine==="1" ? eng1Ref.current : eng2Ref.current;
+            return (eng && eng._useLadder) ? "LDR" : "BIQ";
+          })()
         )
       ),
       el("div", {
