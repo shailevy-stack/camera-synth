@@ -1,5 +1,31 @@
 // Camera Synth — v3.0.0
-var VERSION = "4.0.6";
+var VERSION = "4.0.7";
+
+// Preload AudioWorklet module as soon as possible
+(function() {
+  try {
+    var AC = window.AudioContext || window.webkitAudioContext;
+    if (AC && AC.prototype && window.AudioWorkletNode) {
+      // Create a temporary context just to load the module
+      var tmpCtx = new AC();
+      window._ladderReady = tmpCtx.audioWorklet.addModule('ladder-processor.js')
+        .then(function() {
+          // Store the context for reuse — don't close it
+          window._ladderTmpCtx = tmpCtx;
+          return true;
+        })
+        .catch(function(e) {
+          console.warn('Ladder preload failed:', e);
+          try { tmpCtx.close(); } catch(_) {}
+          return false;
+        });
+    } else {
+      window._ladderReady = Promise.resolve(false);
+    }
+  } catch(e) {
+    window._ladderReady = Promise.resolve(false);
+  }
+})();
 
 var useState    = React.useState;
 var useEffect   = React.useEffect;
@@ -138,17 +164,21 @@ function makeEngine1() {
     },
   };
 
-  eng.init = function() {
+  eng.init = async function() {
     if (eng.ctx) return;
     try {
       var AC  = window.AudioContext || window.webkitAudioContext;
       eng.ctx = new AC();
       var sr  = eng.ctx.sampleRate;
-      // Load ladder worklet
-      if (!window._ladderWorkletLoaded && eng.ctx.audioWorklet) {
-        window._ladderWorkletLoaded = eng.ctx.audioWorklet.addModule('ladder-processor.js')
-          .catch(function(e){ console.warn('Ladder worklet load failed:', e); window._ladderWorkletLoaded = null; });
-      }
+      // Await worklet — it was preloaded at startup
+      var ladderAvailable = false;
+      try {
+        ladderAvailable = await (window._ladderReady || Promise.resolve(false));
+        // If preloaded on a different context, re-register on this context
+        if (ladderAvailable && eng.ctx !== window._ladderTmpCtx) {
+          await eng.ctx.audioWorklet.addModule('ladder-processor.js');
+        }
+      } catch(e) { ladderAvailable = false; }
       // Algorithmic reverb (Schroeder)
       // Convolution reverb
       var buf = eng.ctx.createBuffer(2, REVERB_IR.len, eng.ctx.sampleRate);
@@ -186,7 +216,7 @@ function makeEngine1() {
       // 4-pole ladder filter (Moog-style approximation)
       // 4 × 1-pole lowpass stages in series + resonance feedback
       // Ladder filter — AudioWorklet (Stilson/Smith) with biquad fallback
-      var useLadder = eng.ctx.audioWorklet && window._ladderWorkletLoaded;
+      var useLadder = ladderAvailable;
       if (useLadder) {
         try {
           eng.ladderNode = new AudioWorkletNode(eng.ctx, 'ladder-processor', {
@@ -821,16 +851,19 @@ function makeEngine2() {
     },
   };
 
-  eng.init = function() {
+  eng.init = async function() {
     if (eng.ctx) return;
     try {
       var AC = window.AudioContext || window.webkitAudioContext;
       eng.ctx = new AC();
       var sr  = eng.ctx.sampleRate;
-      if (!window._ladderWorkletLoaded && eng.ctx.audioWorklet) {
-        window._ladderWorkletLoaded = eng.ctx.audioWorklet.addModule('ladder-processor.js')
-          .catch(function(e){ console.warn('Ladder worklet load failed:', e); window._ladderWorkletLoaded = null; });
-      }
+      var ladderAvailable = false;
+      try {
+        ladderAvailable = await (window._ladderReady || Promise.resolve(false));
+        if (ladderAvailable && eng.ctx !== window._ladderTmpCtx) {
+          await eng.ctx.audioWorklet.addModule('ladder-processor.js');
+        }
+      } catch(e) { ladderAvailable = false; }
       // Convolution reverb
       var buf = eng.ctx.createBuffer(2, REVERB_IR.len, eng.ctx.sampleRate);
       buf.getChannelData(0).set(REVERB_IR.L);
@@ -859,7 +892,7 @@ function makeEngine2() {
       // 4-pole ladder filter (Moog-style approximation)
       // 4 × 1-pole lowpass stages in series + resonance feedback
       // Ladder filter — AudioWorklet (Stilson/Smith) with biquad fallback
-      var useLadder = eng.ctx.audioWorklet && window._ladderWorkletLoaded;
+      var useLadder = ladderAvailable;
       if (useLadder) {
         try {
           eng.ladderNode = new AudioWorkletNode(eng.ctx, 'ladder-processor', {
@@ -2180,7 +2213,7 @@ function App() {
     // If previous was running, init and start new one
     if (prev && prev.active) {
       prev.setSoundOn(false);
-      if (!next.ctx) next.init();
+      if (!next.ctx) { next.init().then(function(){ synthRef.current = next; }); return; }
       next.setSoundOn(true);
       setSoundOn(true);
     }
@@ -2309,10 +2342,10 @@ function App() {
     return function(){alive=false;cancelAnimationFrame(rafRef.current);};
   }, [soundOn]);
 
-  var handleSound = useCallback(function() {
+  var handleSound = useCallback(async function() {
     var eng=synthRef.current;
     if(!eng)return;
-    if(!eng.ctx){eng.init();setEngReady(true);}
+    if(!eng.ctx){await eng.init();setEngReady(true);}
     var next=!soundOn;
     eng.setSoundOn(next);
     setSoundOn(next);
