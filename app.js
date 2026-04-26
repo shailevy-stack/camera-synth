@@ -1,5 +1,5 @@
 // Camera Synth — v3.0.0
-var VERSION = "4.0.4";
+var VERSION = "4.0.5";
 
 var useState    = React.useState;
 var useEffect   = React.useEffect;
@@ -144,6 +144,11 @@ function makeEngine1() {
       var AC  = window.AudioContext || window.webkitAudioContext;
       eng.ctx = new AC();
       var sr  = eng.ctx.sampleRate;
+      // Load ladder worklet
+      if (!window._ladderWorkletLoaded && eng.ctx.audioWorklet) {
+        window._ladderWorkletLoaded = eng.ctx.audioWorklet.addModule('ladder-processor.js')
+          .catch(function(e){ console.warn('Ladder worklet load failed:', e); window._ladderWorkletLoaded = null; });
+      }
       // Algorithmic reverb (Schroeder)
       // Convolution reverb
       var buf = eng.ctx.createBuffer(2, REVERB_IR.len, eng.ctx.sampleRate);
@@ -180,27 +185,40 @@ function makeEngine1() {
 
       // 4-pole ladder filter (Moog-style approximation)
       // 4 × 1-pole lowpass stages in series + resonance feedback
-      // 2-stage lowpass: stage1 has resonance (Q controlled), stage2 flat (24dB total)
-      eng.lowpassNode = eng.ctx.createBiquadFilter();
-      eng.lowpassNode.type = "lowpass";
-      eng.lowpassNode.frequency.value = 2000;
-      eng.lowpassNode.Q.value = 0; // driven by _qBase
-
-      eng.lowpassNode2 = eng.ctx.createBiquadFilter();
-      eng.lowpassNode2.type = "lowpass";
-      eng.lowpassNode2.frequency.value = 2000;
-      eng.lowpassNode2.Q.value = 0.707; // fixed flat slope
-
-      eng.lowpassNode.connect(eng.lowpassNode2);
-
-      // _qBase drives stage1 Q only — this is where resonance lives
+      // Ladder filter — AudioWorklet (Stilson/Smith) with biquad fallback
+      var useLadder = eng.ctx.audioWorklet && window._ladderWorkletLoaded;
+      if (useLadder) {
+        try {
+          eng.ladderNode = new AudioWorkletNode(eng.ctx, 'ladder-processor', {
+            numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [2],
+            parameterData: { cutoff: 2000, resonance: 0 }
+          });
+          eng.lowpassNode  = eng.ladderNode;
+          eng.lowpassNode2 = eng.ladderNode; // single node, same input/output
+          eng._useLadder   = true;
+        } catch(e) {
+          useLadder = false;
+          console.warn('Ladder worklet init failed, using biquad:', e);
+        }
+      }
+      if (!useLadder) {
+        eng.lowpassNode = eng.ctx.createBiquadFilter();
+        eng.lowpassNode.type = "lowpass";
+        eng.lowpassNode.frequency.value = 2000;
+        eng.lowpassNode.Q.value = 0;
+        eng.lowpassNode2 = eng.ctx.createBiquadFilter();
+        eng.lowpassNode2.type = "lowpass";
+        eng.lowpassNode2.frequency.value = 2000;
+        eng.lowpassNode2.Q.value = 0.707;
+        eng.lowpassNode.connect(eng.lowpassNode2);
+        eng._useLadder = false;
+      }
+      // _qBase — drives Q/resonance (biquad fallback) or resonance param (ladder)
       eng._qBase = eng.ctx.createConstantSource();
-      eng._qBase.offset.value = 0.707; // flat default
-      eng._qBase.connect(eng.lowpassNode.Q);
+      eng._qBase.offset.value = 0;
+      if (!eng._useLadder) eng._qBase.connect(eng.lowpassNode.Q);
       eng._qBase.start();
-
-      // ladder alias for compatibility
-      eng.ladder = [eng.lowpassNode, eng.lowpassNode2];
+      eng.ladder = [eng.lowpassNode];
       eng.combFilters[N - 1].connect(eng.lowpassNode);
       eng.combSidePanL.connect(eng.lowpassNode);
       eng.combSidePanR.connect(eng.lowpassNode);
@@ -266,7 +284,7 @@ function makeEngine1() {
 
       // Signal chain:
       // Signal chain: dry → master direct, wet → diffusion → master
-      eng.lowpassNode.connect(eng.preReverbGain);
+      eng.lowpassNode2.connect(eng.preReverbGain);
       eng.preReverbGain.connect(eng.seqAmpGain);
       // Signal chain: seqAmpGain → dry+wet delay → master
       // Diffusion on wet output: each repeat gets all-pass smeared
@@ -415,8 +433,12 @@ function makeEngine1() {
     if (!eng._lpBase) {
       eng._lpBase = eng.ctx.createConstantSource();
       eng._lpBase.offset.value = 2000; // default
-      eng._lpBase.connect(eng.lowpassNode.frequency);
-      eng._lpBase.connect(eng.lowpassNode2.frequency);
+      if (eng._useLadder && eng.ladderNode) {
+        eng._lpBase.connect(eng.ladderNode.parameters.get('cutoff'));
+      } else {
+        eng._lpBase.connect(eng.lowpassNode.frequency);
+        eng._lpBase.connect(eng.lowpassNode2.frequency);
+      }
       eng._lpBase.start();
     }
 
@@ -442,8 +464,12 @@ function makeEngine1() {
     } else {
       eng.lowpassNode.frequency.setTargetAtTime(safeFreq, eng.ctx.currentTime, 0.02);
     }
-    if (eng.lowpassNode)  eng.lowpassNode.frequency.setTargetAtTime(safeFreq, eng.ctx.currentTime, 0.02);
-    if (eng.lowpassNode2) eng.lowpassNode2.frequency.setTargetAtTime(safeFreq, eng.ctx.currentTime, 0.02);
+    if (eng._useLadder && eng.ladderNode) {
+      eng.ladderNode.parameters.get('cutoff').setTargetAtTime(safeFreq, eng.ctx.currentTime, 0.02);
+    } else {
+      if (eng.lowpassNode)  eng.lowpassNode.frequency.setTargetAtTime(safeFreq, eng.ctx.currentTime, 0.02);
+      if (eng.lowpassNode2) eng.lowpassNode2.frequency.setTargetAtTime(safeFreq, eng.ctx.currentTime, 0.02);
+    }
     eng._lpBaseValue = safeFreq;
     // Clamp any active LFO gains targeting filter so they can't push below 30Hz
     var maxDepth = safeFreq - 30;
@@ -614,8 +640,8 @@ function makeEngine1() {
     var d = LFO_DESTS[dest];
     if (!d) return null;
     var param = null;
-    if (d === "lp.freq")     param = eng._lpBase ? eng._lpBase.offset : (eng.lowpassNode ? eng.lowpassNode.frequency : null);
-    if (d === "lp.q")        param = eng._qBase ? eng._qBase.offset : null;
+    if (d === "lp.freq")     param = eng._lpBase ? eng._lpBase.offset : (eng._useLadder && eng.ladderNode ? eng.ladderNode.parameters.get("cutoff") : (eng.lowpassNode ? eng.lowpassNode.frequency : null));
+    if (d === "lp.q")        param = (eng._useLadder && eng.ladderNode) ? eng.ladderNode.parameters.get("resonance") : (eng._qBase ? eng._qBase.offset : null);
     if (d === "reverb.gain") param = eng.reverbGain ? eng.reverbGain.gain : null;
     if (d === "master.gain") param = eng.preReverbGain ? eng.preReverbGain.gain : null;
     if (d === "haas.gain")   param = (eng.oscR && eng.oscR.haasGain) ? eng.oscR.haasGain.gain : null;
@@ -801,6 +827,10 @@ function makeEngine2() {
       var AC = window.AudioContext || window.webkitAudioContext;
       eng.ctx = new AC();
       var sr  = eng.ctx.sampleRate;
+      if (!window._ladderWorkletLoaded && eng.ctx.audioWorklet) {
+        window._ladderWorkletLoaded = eng.ctx.audioWorklet.addModule('ladder-processor.js')
+          .catch(function(e){ console.warn('Ladder worklet load failed:', e); window._ladderWorkletLoaded = null; });
+      }
       // Convolution reverb
       var buf = eng.ctx.createBuffer(2, REVERB_IR.len, eng.ctx.sampleRate);
       buf.getChannelData(0).set(REVERB_IR.L);
@@ -828,27 +858,40 @@ function makeEngine2() {
 
       // 4-pole ladder filter (Moog-style approximation)
       // 4 × 1-pole lowpass stages in series + resonance feedback
-      // 2-stage lowpass: stage1 has resonance (Q controlled), stage2 flat (24dB total)
-      eng.lowpassNode = eng.ctx.createBiquadFilter();
-      eng.lowpassNode.type = "lowpass";
-      eng.lowpassNode.frequency.value = 2000;
-      eng.lowpassNode.Q.value = 0; // driven by _qBase
-
-      eng.lowpassNode2 = eng.ctx.createBiquadFilter();
-      eng.lowpassNode2.type = "lowpass";
-      eng.lowpassNode2.frequency.value = 2000;
-      eng.lowpassNode2.Q.value = 0.707; // fixed flat slope
-
-      eng.lowpassNode.connect(eng.lowpassNode2);
-
-      // _qBase drives stage1 Q only — this is where resonance lives
+      // Ladder filter — AudioWorklet (Stilson/Smith) with biquad fallback
+      var useLadder = eng.ctx.audioWorklet && window._ladderWorkletLoaded;
+      if (useLadder) {
+        try {
+          eng.ladderNode = new AudioWorkletNode(eng.ctx, 'ladder-processor', {
+            numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [2],
+            parameterData: { cutoff: 2000, resonance: 0 }
+          });
+          eng.lowpassNode  = eng.ladderNode;
+          eng.lowpassNode2 = eng.ladderNode; // single node, same input/output
+          eng._useLadder   = true;
+        } catch(e) {
+          useLadder = false;
+          console.warn('Ladder worklet init failed, using biquad:', e);
+        }
+      }
+      if (!useLadder) {
+        eng.lowpassNode = eng.ctx.createBiquadFilter();
+        eng.lowpassNode.type = "lowpass";
+        eng.lowpassNode.frequency.value = 2000;
+        eng.lowpassNode.Q.value = 0;
+        eng.lowpassNode2 = eng.ctx.createBiquadFilter();
+        eng.lowpassNode2.type = "lowpass";
+        eng.lowpassNode2.frequency.value = 2000;
+        eng.lowpassNode2.Q.value = 0.707;
+        eng.lowpassNode.connect(eng.lowpassNode2);
+        eng._useLadder = false;
+      }
+      // _qBase — drives Q/resonance (biquad fallback) or resonance param (ladder)
       eng._qBase = eng.ctx.createConstantSource();
-      eng._qBase.offset.value = 0.707; // flat default
-      eng._qBase.connect(eng.lowpassNode.Q);
+      eng._qBase.offset.value = 0;
+      if (!eng._useLadder) eng._qBase.connect(eng.lowpassNode.Q);
       eng._qBase.start();
-
-      // ladder alias for compatibility
-      eng.ladder = [eng.lowpassNode, eng.lowpassNode2];
+      eng.ladder = [eng.lowpassNode];
       eng.combFilters[N-1].connect(eng.lowpassNode);
       eng.combSidePanL.connect(eng.lowpassNode);
       eng.combSidePanR.connect(eng.lowpassNode);
@@ -891,7 +934,7 @@ function makeEngine2() {
       eng.delayWetL.connect(eng.delayWet);
       eng.delayWetR.connect(eng.delayWet);
 
-      eng.lowpassNode.connect(eng.preReverbGain);
+      eng.lowpassNode2.connect(eng.preReverbGain);
       eng.preReverbGain.connect(eng.seqAmpGain);
       // Signal chain: seqAmpGain → dry+wet delay → master
       // Diffusion on wet output: each repeat gets all-pass smeared
@@ -1298,8 +1341,12 @@ function makeEngine2() {
     if (!eng._lpBase) {
       eng._lpBase = eng.ctx.createConstantSource();
       eng._lpBase.offset.value = 2000;
-      eng._lpBase.connect(eng.lowpassNode.frequency);
-      eng._lpBase.connect(eng.lowpassNode2.frequency);
+      if (eng._useLadder && eng.ladderNode) {
+        eng._lpBase.connect(eng.ladderNode.parameters.get('cutoff'));
+      } else {
+        eng._lpBase.connect(eng.lowpassNode.frequency);
+        eng._lpBase.connect(eng.lowpassNode2.frequency);
+      }
       eng._lpBase.start();
     }
     eng._lfoNode = eng.ctx.createOscillator();
@@ -1323,8 +1370,12 @@ function makeEngine2() {
     } else {
       eng.lowpassNode.frequency.setTargetAtTime(safeFreq, eng.ctx.currentTime, 0.02);
     }
-    if (eng.lowpassNode)  eng.lowpassNode.frequency.setTargetAtTime(safeFreq, eng.ctx.currentTime, 0.02);
-    if (eng.lowpassNode2) eng.lowpassNode2.frequency.setTargetAtTime(safeFreq, eng.ctx.currentTime, 0.02);
+    if (eng._useLadder && eng.ladderNode) {
+      eng.ladderNode.parameters.get('cutoff').setTargetAtTime(safeFreq, eng.ctx.currentTime, 0.02);
+    } else {
+      if (eng.lowpassNode)  eng.lowpassNode.frequency.setTargetAtTime(safeFreq, eng.ctx.currentTime, 0.02);
+      if (eng.lowpassNode2) eng.lowpassNode2.frequency.setTargetAtTime(safeFreq, eng.ctx.currentTime, 0.02);
+    }
     eng._lpBaseValue = safeFreq;
     var maxDepth = Math.max(0, safeFreq - 20);
     if (eng._lfoGain && eng._lfoGain.gain.value > maxDepth) {
@@ -1495,8 +1546,8 @@ function makeEngine2() {
     var d = LFO_DESTS[dest];
     if (!d) return null;
     var param = null;
-    if (d === "lp.freq")     param = eng._lpBase ? eng._lpBase.offset : (eng.lowpassNode ? eng.lowpassNode.frequency : null);
-    if (d === "lp.q")        param = eng._qBase ? eng._qBase.offset : null;
+    if (d === "lp.freq")     param = eng._lpBase ? eng._lpBase.offset : (eng._useLadder && eng.ladderNode ? eng.ladderNode.parameters.get("cutoff") : (eng.lowpassNode ? eng.lowpassNode.frequency : null));
+    if (d === "lp.q")        param = (eng._useLadder && eng.ladderNode) ? eng.ladderNode.parameters.get("resonance") : (eng._qBase ? eng._qBase.offset : null);
     if (d === "reverb.gain") param = eng.reverbGain ? eng.reverbGain.gain : null;
     if (d === "master.gain") param = eng.preReverbGain ? eng.preReverbGain.gain : null;
     if (d === "haas.gain")   param = (eng.oscR && eng.oscR.haasGain) ? eng.oscR.haasGain.gain : null;
@@ -2286,10 +2337,15 @@ function App() {
     var x = Math.max(0, Math.min(1, (touch.clientX - rect.left) / rect.width));
     setLpQ(x);
     var eng = synthRef.current;
-    if (eng && eng._qBase) {
-      // Q: 0.707 (flat) → 20 (screaming resonance)
-      var q = 0.707 + x * 19.3;
-      eng._qBase.offset.setTargetAtTime(q, eng.ctx.currentTime, 0.05);
+    if (eng) {
+      var t = eng.ctx.currentTime;
+      if (eng._useLadder && eng.ladderNode) {
+        // Worklet resonance: 0 (flat) → 0.95 (near self-oscillation)
+        eng.ladderNode.parameters.get('resonance').setTargetAtTime(x * 0.95, t, 0.05);
+      } else if (eng._qBase) {
+        var q = 0.707 + x * 19.3;
+        eng._qBase.offset.setTargetAtTime(q, t, 0.05);
+      }
     }
   }, []);
 
@@ -2548,7 +2604,7 @@ function App() {
       el("div", { style:{ display:"flex", alignItems:"center", padding:"2px 14px 1px", gap:8 } },
         el("span", { style:{ fontSize:8, color:"#2a2a2a", letterSpacing:"0.1em" } }, "RES"),
         el("span", { style:{ fontSize:11, color:"#6bb5ff", letterSpacing:"0.04em", minWidth:60 } },
-          (0.707+lpQ*19.3).toFixed(1)+" Q"
+          activeEngine==="2"&&(eng2Ref.current&&eng2Ref.current._useLadder)?Math.round(lpQ*95)+"%":(0.707+lpQ*19.3).toFixed(1)+" Q"
         )
       ),
       el("div", {
