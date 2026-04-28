@@ -1,5 +1,5 @@
 // Camera Synth — v3.0.0
-var VERSION = "4.0.9";
+var VERSION = "4.1.0";
 
 // Preload AudioWorklet module as soon as possible
 (function() {
@@ -3161,9 +3161,10 @@ function App() {
       mainView,
   
     // ── MAP PAGE ─────────────────────────────────────────────
+
     showMap && el("div", { style:{
       position:"absolute", inset:0, background:"#0a0a0b", zIndex:20,
-      display:"flex", flexDirection:"column", overflowY:"auto",
+      display:"flex", flexDirection:"column",
       paddingBottom:"env(safe-area-inset-bottom,0px)"
     }},
 
@@ -3171,138 +3172,152 @@ function App() {
       el("div", { style:{ display:"flex", justifyContent:"space-between", alignItems:"center",
         padding:"10px 14px 6px", paddingTop:"max(env(safe-area-inset-top,10px),10px)",
         borderBottom:"1px solid #141414", flexShrink:0 }},
-        el("span", { style:{ fontSize:10, letterSpacing:"0.2em", color:"#7fff6a", textTransform:"uppercase" }}, "Signal Map"),
+        el("span", { style:{ fontSize:10, letterSpacing:"0.2em", color:"#7fff6a", textTransform:"uppercase" }},
+          activeEngine==="1" ? "Signal Map \u2014 CamSynth 1" : "Signal Map \u2014 CamSynth 2"
+        ),
         el("button", { className:"cb on", onClick:function(){setShowMap(false);}, style:{ letterSpacing:"0.1em" }}, "\u2190 BACK")
       ),
 
-      el("div", { style:{ padding:"12px 14px", overflowY:"auto" }},
+      el("div", { style:{ padding:"12px 14px", overflowY:"auto", flex:1 }},
 
-        // ── SIGNAL FLOW ────────────────────────────────────────
+        // ── SIGNAL FLOW SVG (shared) ───────────────────────────
         el("div", { style:{ fontSize:7, color:"#333", letterSpacing:"0.15em", textTransform:"uppercase", marginBottom:8 }}, "Signal Flow"),
-
-        // Flow diagram — SVG
         el("div", { dangerouslySetInnerHTML:{ __html:
           '<svg viewBox="0 0 320 52" xmlns="http://www.w3.org/2000/svg" style="width:100%;display:block;margin-bottom:14px">' +
-          // Nodes
           '<rect x="0" y="16" width="46" height="20" rx="2" fill="#111" stroke="#333" stroke-width="1"/>' +
           '<text x="23" y="29" text-anchor="middle" fill="#555" font-size="6" font-family="monospace">CAMERA</text>' +
           '<rect x="56" y="16" width="46" height="20" rx="2" fill="#111" stroke="#333" stroke-width="1"/>' +
           '<text x="79" y="29" text-anchor="middle" fill="#555" font-size="6" font-family="monospace">ANALYSE</text>' +
-          '<rect x="112" y="6" width="46" height="40" rx="2" fill="#111" stroke="#1e2e1e" stroke-width="1"/>' +
-          '<text x="135" y="20" text-anchor="middle" fill="#7fff6a" font-size="6" font-family="monospace">R G B</text>' +
-          '<text x="135" y="30" text-anchor="middle" fill="#444" font-size="5" font-family="monospace">operators</text>' +
-          '<text x="135" y="39" text-anchor="middle" fill="#333" font-size="5" font-family="monospace">FM matrix</text>' +
+          (activeEngine==="1" ?
+            '<rect x="112" y="6" width="46" height="40" rx="2" fill="#111" stroke="#1e2e1e" stroke-width="1"/>' +
+            '<text x="135" y="20" text-anchor="middle" fill="#7fff6a" font-size="6" font-family="monospace">WVTBL</text>' +
+            '<text x="135" y="30" text-anchor="middle" fill="#444" font-size="5" font-family="monospace">oscillator</text>' +
+            '<text x="135" y="39" text-anchor="middle" fill="#333" font-size="5" font-family="monospace">+ comb EQ</text>'
+          :
+            '<rect x="112" y="6" width="46" height="40" rx="2" fill="#111" stroke="#1e2e1e" stroke-width="1"/>' +
+            '<text x="135" y="20" text-anchor="middle" fill="#7fff6a" font-size="6" font-family="monospace">R G B</text>' +
+            '<text x="135" y="30" text-anchor="middle" fill="#444" font-size="5" font-family="monospace">operators</text>' +
+            '<text x="135" y="39" text-anchor="middle" fill="#333" font-size="5" font-family="monospace">FM matrix</text>'
+          ) +
           '<rect x="168" y="16" width="40" height="20" rx="2" fill="#111" stroke="#0d1a2a" stroke-width="1"/>' +
           '<text x="188" y="29" text-anchor="middle" fill="#6bb5ff" font-size="6" font-family="monospace">FILTER</text>' +
           '<rect x="218" y="16" width="34" height="20" rx="2" fill="#111" stroke="#1a1a1a" stroke-width="1"/>' +
           '<text x="235" y="29" text-anchor="middle" fill="#555" font-size="6" font-family="monospace">FX</text>' +
           '<rect x="262" y="16" width="40" height="20" rx="2" fill="#111" stroke="#1a2a1a" stroke-width="1"/>' +
           '<text x="282" y="29" text-anchor="middle" fill="#7fff6a" font-size="6" font-family="monospace">OUT</text>' +
-          // Arrows
-          '<line x1="46" y1="26" x2="54" y2="26" stroke="#333" stroke-width="1"/>' +
-          '<polygon points="55,26 52,24.5 52,27.5" fill="#333"/>' +
-          '<line x1="102" y1="26" x2="110" y2="26" stroke="#333" stroke-width="1"/>' +
-          '<polygon points="111,26 108,24.5 108,27.5" fill="#333"/>' +
-          '<line x1="158" y1="26" x2="166" y2="26" stroke="#333" stroke-width="1"/>' +
-          '<polygon points="167,26 164,24.5 164,27.5" fill="#333"/>' +
-          '<line x1="208" y1="26" x2="216" y2="26" stroke="#333" stroke-width="1"/>' +
-          '<polygon points="217,26 214,24.5 214,27.5" fill="#333"/>' +
-          '<line x1="252" y1="26" x2="260" y2="26" stroke="#333" stroke-width="1"/>' +
-          '<polygon points="261,26 258,24.5 258,27.5" fill="#333"/>' +
+          '<line x1="46" y1="26" x2="54" y2="26" stroke="#333" stroke-width="1"/><polygon points="55,26 52,24.5 52,27.5" fill="#333"/>' +
+          '<line x1="102" y1="26" x2="110" y2="26" stroke="#333" stroke-width="1"/><polygon points="111,26 108,24.5 108,27.5" fill="#333"/>' +
+          '<line x1="158" y1="26" x2="166" y2="26" stroke="#333" stroke-width="1"/><polygon points="167,26 164,24.5 164,27.5" fill="#333"/>' +
+          '<line x1="208" y1="26" x2="216" y2="26" stroke="#333" stroke-width="1"/><polygon points="217,26 214,24.5 214,27.5" fill="#333"/>' +
+          '<line x1="252" y1="26" x2="260" y2="26" stroke="#333" stroke-width="1"/><polygon points="261,26 258,24.5 258,27.5" fill="#333"/>' +
           '</svg>'
         }}),
 
-        // ── CAMERA DATA → SOUND ────────────────────────────────
-        el("div", { style:{ fontSize:7, color:"#333", letterSpacing:"0.15em", textTransform:"uppercase", marginBottom:6 }}, "Camera Data \u2192 Sound"),
+        // ── ENGINE-SPECIFIC CONTENT ───────────────────────────
+        activeEngine==="1" ? el("div", null,
 
-        // Table rows
-        ...[
-          ["LUMA", "Overall brightness", "Waveform morph (sine\u2192square) on all operators"],
-          ["HUE", "Dominant color angle", "Base pitch offset within current scale"],
-          ["CHROMA", "Color saturation variance", "Stereo width via comb filter spacing"],
-          ["AVG R", "Red channel brightness", "R operator: FM depth + waveform morph"],
-          ["AVG G", "Green channel brightness", "G operator: FM depth + waveform morph"],
-          ["AVG B", "Blue channel brightness", "B operator: FM depth + waveform morph"],
-          ["REL R", "Red vs luma deviation", "R operator: pitch sweep within interval"],
-          ["REL G", "Green vs luma deviation", "G operator: pitch sweep within interval"],
-          ["REL B", "Blue vs luma deviation", "B operator: pitch sweep within interval"],
-          ["SLICES", "8 horizontal luma zones", "Comb filter peaking EQ gains (spatial timbre)"],
-        ].map(function(row, i) {
-          return el("div", { key:i, style:{ display:"flex", gap:8, padding:"4px 0",
-            borderBottom:"1px solid #0e0e0f" }},
-            el("span", { style:{ fontSize:7, color:"#6bb5ff", letterSpacing:"0.08em", minWidth:52, flexShrink:0 }}, row[0]),
-            el("span", { style:{ fontSize:7, color:"#2a2a2a", minWidth:90, flexShrink:0 }}, row[1]),
-            el("span", { style:{ fontSize:7, color:"#444", flex:1 }}, row[2])
-          );
-        }),
+          el("div", { style:{ fontSize:7, color:"#333", letterSpacing:"0.15em", textTransform:"uppercase", marginBottom:6 }}, "Camera Data \u2192 Sound"),
 
-        // ── USER CONTROLS ──────────────────────────────────────
-        el("div", { style:{ fontSize:7, color:"#333", letterSpacing:"0.15em", textTransform:"uppercase", marginTop:14, marginBottom:6 }}, "User Controls"),
+          ...[
+            ["LUMA", "Overall brightness", "Oscillator pitch base (80\u2013400Hz fundamental) + wavetable amplitude gate"],
+            ["HUE rate", "Speed of hue change", "LFO rate — fast color shifts = faster modulation"],
+            ["CHROMA", "Color saturation variance", "Comb filter Q width (resonance of harmonic peaks)"],
+            ["SLICES", "8 horizontal luma zones", "Each slice drives gain of corresponding comb filter harmonic"],
+            ["WAVETABLE", "Full frame scan", "Frame brightness pattern → oscillator waveform shape (morphed continuously)"],
+          ].map(function(row, i) {
+            return el("div", { key:i, style:{ display:"flex", gap:8, padding:"4px 0", borderBottom:"1px solid #0e0e0f" }},
+              el("span", { style:{ fontSize:7, color:"#6bb5ff", letterSpacing:"0.08em", minWidth:60, flexShrink:0 }}, row[0]),
+              el("span", { style:{ fontSize:7, color:"#2a2a2a", minWidth:90, flexShrink:0 }}, row[1]),
+              el("span", { style:{ fontSize:7, color:"#444", flex:1 }}, row[2])
+            );
+          }),
 
-        ...[
-          ["PITCH", "Ribbon", "Base pitch — all operators transpose together"],
-          ["FILTER", "Ribbon", "Lowpass cutoff 20Hz\u201312kHz (24dB/oct, 2-stage)"],
-          ["RES", "Ribbon", "Resonant peak at cutoff (Q 0.7\u201320)"],
-          ["FM DEPTH", "Slider", "Scales all FM modulation indices"],
-          ["FM SHAPE", "Slider", "Modulator waveform sine\u2192triangle\u2192square"],
-          ["INTERVAL R/G/B", "Buttons", "Pitch ratio of each operator relative to base"],
-          ["C:M RATIO", "Buttons", "Carrier:modulator frequency ratio per operator"],
-          ["LFO 1/2", "Rate+Depth", "Modulates: filter cutoff, resonance, FM depth, amp, reverb"],
-          ["DELAY", "Mix+Feedback+Width", "Ping-pong stereo delay"],
-          ["REVERB", "Mix", "Hall convolution reverb (send)"],
-          ["SEQ", "Steps+BPM", "Step sequencer with AHR envelope per step"],
-        ].map(function(row, i) {
-          return el("div", { key:i, style:{ display:"flex", gap:8, padding:"4px 0",
-            borderBottom:"1px solid #0e0e0f" }},
-            el("span", { style:{ fontSize:7, color:"#7fff6a", letterSpacing:"0.08em", minWidth:52, flexShrink:0 }}, row[0]),
-            el("span", { style:{ fontSize:7, color:"#2a2a2a", minWidth:90, flexShrink:0 }}, row[1]),
-            el("span", { style:{ fontSize:7, color:"#444", flex:1 }}, row[2])
-          );
-        }),
+          el("div", { style:{ fontSize:7, color:"#333", letterSpacing:"0.15em", textTransform:"uppercase", marginTop:14, marginBottom:6 }}, "Synthesis Architecture"),
+          el("div", { style:{ fontSize:7, color:"#3a3a3a", lineHeight:1.9, marginBottom:12 }},
+            "A single wavetable oscillator (or unison stack with detune) scans a waveform derived from the camera frame. The frame is analysed into a brightness profile that becomes the waveform shape — every frame the waveform morphs toward the new scan. Luma gates the amplitude so dark scenes fade the sound. 8 comb filters tuned to harmonics of the fundamental are each driven by the corresponding spatial slice, creating a spatial-to-spectral mapping where the horizontal distribution of brightness in the frame shapes the harmonic content."
+          ),
 
-        // ── FM MATRICES ────────────────────────────────────────
-        el("div", { style:{ fontSize:7, color:"#333", letterSpacing:"0.15em", textTransform:"uppercase", marginTop:14, marginBottom:8 }}, "FM Matrices"),
+          el("div", { style:{ fontSize:7, color:"#333", letterSpacing:"0.15em", textTransform:"uppercase", marginBottom:6 }}, "User Controls"),
+          ...[
+            ["PITCH",    "Ribbon",   "Base pitch — all voices transpose together"],
+            ["FILTER",   "Ribbon",   "Lowpass cutoff 20Hz\u201312kHz"],
+            ["RES",      "Ribbon",   "Filter resonance"],
+            ["UNISON",   "Buttons",  "Number of detuned oscillator voices (1\u20138)"],
+            ["DETUNE",   "Slider",   "Spread of unison voices in cents"],
+            ["LFO 1/2",  "Rate+Depth","Modulates: filter cutoff, resonance, amplitude, reverb"],
+            ["DELAY",    "Mix+FB+Width", "Ping-pong stereo delay"],
+            ["REVERB",   "Mix",      "Hall convolution reverb (send)"],
+            ["SEQ",      "Steps+BPM","Step sequencer with AHR envelope"],
+          ].map(function(row, i) {
+            return el("div", { key:i, style:{ display:"flex", gap:8, padding:"4px 0", borderBottom:"1px solid #0e0e0f" }},
+              el("span", { style:{ fontSize:7, color:"#7fff6a", letterSpacing:"0.08em", minWidth:60, flexShrink:0 }}, row[0]),
+              el("span", { style:{ fontSize:7, color:"#2a2a2a", minWidth:90, flexShrink:0 }}, row[1]),
+              el("span", { style:{ fontSize:7, color:"#444", flex:1 }}, row[2])
+            );
+          })
 
-        ...[
-          {
-            id:"A", name:"Independent",
-            routing:"r\u2192R\u2192out  g\u2192G\u2192out  b\u2192B\u2192out",
-            desc:"All 3 operators audible. Each self-modulates only. RGB brightness drives FM depth independently per channel. Widest stereo — each operator panned by color deviation.",
-            color:"#7fff6a"
-          },
-          {
-            id:"B", name:"Chain \u2014 Sky",
-            routing:"r\u2192R\u2192G\u2192B\u2192out  (g,b self-mod)",
-            desc:"Only B audible. R modulates G, G modulates B. Red brightness shapes G\u2019s timbre, green enriches B, blue drives B\u2019s own FM. Pan follows blue centroid. Best for skies, water, distance.",
-            color:"#6bb5ff"
-          },
-          {
-            id:"C", name:"Reverse Chain \u2014 Earth",
-            routing:"b\u2192G\u2192R\u2192out  (r,g self-mod)",
-            desc:"Only R audible. B modulates G, G modulates R. Blue and green feed into red. Pan follows red centroid. Rich in earthy, warm tones.",
-            color:"#ff6b6b"
-          },
-          {
-            id:"D", name:"G Master Modulator",
-            routing:"g\u2192G\u2192(R freq + B freq)  R\u2192out  B\u2192out",
-            desc:"G is a shared modulator — not audible. R and B are both carriers. Green brightness drives how much G modulates both R and B simultaneously. R and B pan to their color centroids.",
-            color:"#7fff6a"
-          },
-        ].map(function(m) {
-          return el("div", { key:m.id, style:{ borderLeft:"2px solid "+m.color+"44",
-            paddingLeft:10, marginBottom:12 }},
-            el("div", { style:{ display:"flex", alignItems:"baseline", gap:8, marginBottom:3 }},
-              el("span", { style:{ fontSize:9, color:m.color, letterSpacing:"0.1em", fontFamily:"monospace" }}, m.id),
-              el("span", { style:{ fontSize:8, color:"#555", letterSpacing:"0.05em" }}, m.name)
-            ),
-            el("div", { style:{ fontSize:7, color:"#2a3a2a", fontFamily:"monospace", marginBottom:4, letterSpacing:"0.04em" }}, m.routing),
-            el("div", { style:{ fontSize:7, color:"#3a3a3a", lineHeight:1.7 }}, m.desc)
-          );
-        }),
+        ) : el("div", null,
 
-        el("div", { style:{ height:20 }}) // bottom breathing room
+          el("div", { style:{ fontSize:7, color:"#333", letterSpacing:"0.15em", textTransform:"uppercase", marginBottom:6 }}, "Camera Data \u2192 Sound"),
+
+          ...[
+            ["AVG R/G/B", "Channel brightness", "FM modulation depth + waveform morph per operator"],
+            ["REL R/G/B", "Channel vs luma",    "Pitch sweep of each operator within its interval range"],
+            ["LUMA",      "Overall brightness",  "Waveform morph gate (brightness\u00b3)"],
+            ["CHROMA",    "Saturation variance", "Haas stereo width of upper comb harmonics"],
+            ["SLICES",    "8 horizontal zones",  "Comb filter harmonic gains (spatial timbre)"],
+          ].map(function(row, i) {
+            return el("div", { key:i, style:{ display:"flex", gap:8, padding:"4px 0", borderBottom:"1px solid #0e0e0f" }},
+              el("span", { style:{ fontSize:7, color:"#6bb5ff", letterSpacing:"0.08em", minWidth:60, flexShrink:0 }}, row[0]),
+              el("span", { style:{ fontSize:7, color:"#2a2a2a", minWidth:90, flexShrink:0 }}, row[1]),
+              el("span", { style:{ fontSize:7, color:"#444", flex:1 }}, row[2])
+            );
+          }),
+
+          el("div", { style:{ fontSize:7, color:"#333", letterSpacing:"0.15em", textTransform:"uppercase", marginTop:14, marginBottom:6 }}, "User Controls"),
+          ...[
+            ["PITCH",      "Ribbon",       "Base pitch — all operators transpose together"],
+            ["FILTER",     "Ribbon",       "Lowpass cutoff 20Hz\u201312kHz (ladder filter)"],
+            ["RES",        "Ribbon",       "Resonant peak at cutoff (0\u2192self-oscillation)"],
+            ["FM DEPTH",   "Slider",       "Scales all FM modulation indices"],
+            ["FM SHAPE",   "Slider",       "Modulator waveform sine\u2192triangle\u2192square"],
+            ["INTERVAL",   "Buttons",      "Pitch ratio of each operator relative to base"],
+            ["C:M RATIO",  "Buttons",      "Carrier:modulator frequency ratio per operator"],
+            ["LFO 1/2",    "Rate+Depth",   "Modulates: filter cutoff, resonance, FM depth, amp, reverb"],
+            ["DELAY",      "Mix+FB+Width", "Ping-pong stereo delay"],
+            ["REVERB",     "Mix",          "Hall convolution reverb (send)"],
+            ["SEQ",        "Steps+BPM",    "Step sequencer with AHR envelope"],
+          ].map(function(row, i) {
+            return el("div", { key:i, style:{ display:"flex", gap:8, padding:"4px 0", borderBottom:"1px solid #0e0e0f" }},
+              el("span", { style:{ fontSize:7, color:"#7fff6a", letterSpacing:"0.08em", minWidth:60, flexShrink:0 }}, row[0]),
+              el("span", { style:{ fontSize:7, color:"#2a2a2a", minWidth:90, flexShrink:0 }}, row[1]),
+              el("span", { style:{ fontSize:7, color:"#444", flex:1 }}, row[2])
+            );
+          }),
+
+          el("div", { style:{ fontSize:7, color:"#333", letterSpacing:"0.15em", textTransform:"uppercase", marginTop:14, marginBottom:8 }}, "FM Matrices"),
+          ...[
+            { id:"A", name:"Independent",       color:"#7fff6a", routing:"r\u2192R\u2192out  g\u2192G\u2192out  b\u2192B\u2192out",           desc:"All 3 operators audible. Each self-modulates only. Widest stereo." },
+            { id:"B", name:"Chain \u2014 Sky",  color:"#6bb5ff", routing:"r\u2192R\u2192G\u2192B\u2192out",                                   desc:"Only B audible. R modulates G, G modulates B. Best for skies and water." },
+            { id:"C", name:"Reverse Chain",     color:"#ff6b6b", routing:"b\u2192G\u2192R\u2192out",                                         desc:"Only R audible. B and G feed into red carrier. Warm, earthy tones." },
+            { id:"D", name:"G Master Mod",      color:"#7fff6a", routing:"g\u2192G\u2192(R+B freq)  R\u2192out  B\u2192out",                  desc:"G modulates both R and B. Green brightness drives cross-modulation depth." },
+          ].map(function(m) {
+            return el("div", { key:m.id, style:{ borderLeft:"2px solid "+m.color+"44", paddingLeft:10, marginBottom:10 }},
+              el("div", { style:{ display:"flex", alignItems:"baseline", gap:8, marginBottom:2 }},
+                el("span", { style:{ fontSize:9, color:m.color, letterSpacing:"0.1em", fontFamily:"monospace" }}, m.id),
+                el("span", { style:{ fontSize:8, color:"#555" }}, m.name)
+              ),
+              el("div", { style:{ fontSize:7, color:"#2a3a2a", fontFamily:"monospace", marginBottom:3 }}, m.routing),
+              el("div", { style:{ fontSize:7, color:"#3a3a3a", lineHeight:1.7 }}, m.desc)
+            );
+          })
+        ),
+
+        el("div", { style:{ height:20 }})
       )
     ),
+
+
     showAdv && el("div", { style:{ position:"absolute", inset:0, background:"#0a0a0b", zIndex:10, display:"flex", flexDirection:"column", overflow:"hidden", touchAction:"pan-y" } },
         advView
       ),
