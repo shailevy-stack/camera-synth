@@ -1,5 +1,5 @@
 // Camera Synth — v3.0.0
-var VERSION = "4.1.1";
+var VERSION = "4.1.2";
 
 // Preload AudioWorklet module as soon as possible
 (function() {
@@ -3178,12 +3178,12 @@ function App() {
         el("button", { className:"cb on", onClick:function(){setShowMap(false);}, style:{ letterSpacing:"0.1em" }}, "\u2190 BACK")
       ),
 
-      el("div", { style:{ padding:"12px 14px", overflowY:"auto", flex:1 }},
+      el("div", { style:{ padding:"6px 14px", overflowY:"auto", flex:1 }},
 
         // ── SIGNAL FLOW SVG (shared) ───────────────────────────
-        el("div", { style:{ fontSize:7, color:"#666", letterSpacing:"0.15em", textTransform:"uppercase", marginBottom:8 }}, "Signal Flow"),
+        el("div", { style:{ fontSize:7, color:"#666", letterSpacing:"0.15em", textTransform:"uppercase", marginBottom:4 }}, "Signal Flow"),
         el("div", { dangerouslySetInnerHTML:{ __html:
-          '<svg viewBox="0 0 320 52" xmlns="http://www.w3.org/2000/svg" style="width:100%;display:block;margin-bottom:14px">' +
+          '<svg viewBox="0 0 320 52" xmlns="http://www.w3.org/2000/svg" style="width:100%;display:block;margin-bottom:8px">' +
           '<rect x="0" y="16" width="46" height="20" rx="2" fill="#111" stroke="#666" stroke-width="1"/>' +
           '<text x="23" y="29" text-anchor="middle" fill="#555" font-size="6" font-family="monospace">CAMERA</text>' +
           '<rect x="56" y="16" width="46" height="20" rx="2" fill="#111" stroke="#666" stroke-width="1"/>' +
@@ -3216,7 +3216,7 @@ function App() {
         // ── ENGINE-SPECIFIC CONTENT ───────────────────────────
         activeEngine==="1" ? el("div", null,
 
-          el("div", { style:{ fontSize:7, color:"#666", letterSpacing:"0.15em", textTransform:"uppercase", marginBottom:6 }}, "Camera Data \u2192 Sound"),
+          el("div", { style:{ fontSize:7, color:"#666", letterSpacing:"0.15em", textTransform:"uppercase", marginBottom:4 }}, "Camera Data \u2192 Sound"),
 
           ...[
             ["LUMA", "Overall brightness", "Oscillator pitch base (80\u2013400Hz fundamental) + wavetable amplitude gate"],
@@ -3258,7 +3258,7 @@ function App() {
 
         ) : el("div", null,
 
-          el("div", { style:{ fontSize:7, color:"#666", letterSpacing:"0.15em", textTransform:"uppercase", marginBottom:6 }}, "Camera Data \u2192 Sound"),
+          el("div", { style:{ fontSize:7, color:"#666", letterSpacing:"0.15em", textTransform:"uppercase", marginBottom:4 }}, "Camera Data \u2192 Sound"),
 
           ...[
             ["AVG R/G/B", "Channel brightness", "FM modulation depth + waveform morph per operator"],
