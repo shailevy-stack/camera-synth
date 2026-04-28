@@ -1,5 +1,5 @@
 // Camera Synth — v3.0.0
-var VERSION = "4.0.8";
+var VERSION = "4.0.9";
 
 // Preload AudioWorklet module as soon as possible
 (function() {
@@ -2557,7 +2557,7 @@ function App() {
           el("span", { style:{ fontSize:11, color:"#7fff6a", letterSpacing:"0.04em", minWidth:34 } }, noteName),
           el("span", { style:{ fontSize:8, color:"rgba(255,255,255,0.1)", marginLeft:"auto" } }, settings.quantize?settings.scale:"free")
         ),
-        el("div", { ref:ribbonRef, onMouseDown:function(e){handleRibbon(e);}, onMouseMove:function(e){if(e.buttons)handleRibbon(e);}, onMouseUp:function(){ribbonRectRef.current=null;}, onTouchStart:function(e){handleRibbon(e);}, onTouchMove:function(e){handleRibbon(e);}, onTouchEnd:function(){ribbonRectRef.current=null;},
+        el("div", { ref:ribbonRef, onMouseDown:function(e){handleRibbon(e);}, onMouseMove:function(e){if(e.buttons)handleRibbon(e);}, onMouseUp:function(){ribbonRectRef.current=null;}, onTouchStart:function(e){handleRibbon(e);}, onTouchMove:function(e){handleRibbon(e);}, onTouchEnd:function(e){e.preventDefault();},
           style:{ height:30, background:"rgba(7,12,7,0.85)", borderTop:"1px solid rgba(20,28,20,0.8)", position:"relative", cursor:"crosshair" } },
           Array.from({length:pr+1},function(_,i){
             var midi = settings.pitchMin + i;
@@ -2618,7 +2618,7 @@ function App() {
       el("div", {
         ref:lpRibbonRef,
         onMouseDown:handleLpRibbon, onMouseMove:function(e){if(e.buttons)handleLpRibbon(e);},
-        onTouchStart:handleLpRibbon, onTouchMove:handleLpRibbon,
+        onTouchStart:handleLpRibbon, onTouchMove:handleLpRibbon, onTouchEnd:function(e){e.preventDefault();},
         style:{ height:32, position:"relative", cursor:"crosshair",
           background:"linear-gradient(90deg, #050a14 0%, #0a1628 30%, #0d2040 60%, #1a3a6a 80%, #2050a0 100%)",
           borderTop:"1px solid #141c24", borderBottom:"1px solid #141c24" }
@@ -2653,7 +2653,7 @@ function App() {
       el("div", {
         ref:lpResRef,
         onMouseDown:handleLpRes, onMouseMove:function(e){if(e.buttons)handleLpRes(e);},
-        onTouchStart:handleLpRes, onTouchMove:handleLpRes,
+        onTouchStart:handleLpRes, onTouchMove:handleLpRes, onTouchEnd:function(e){e.preventDefault();},
         style:{ height:24, position:"relative", cursor:"crosshair",
           background:"linear-gradient(90deg, #050a14 0%, #0d2040 60%, #1a3a8a 100%)",
           borderTop:"1px solid #141c24", borderBottom:"1px solid #141c24" }
