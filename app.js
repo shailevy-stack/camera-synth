@@ -1,5 +1,5 @@
 // Camera Synth — v3.0.0
-var VERSION = "4.1.0";
+var VERSION = "4.1.1";
 
 // Preload AudioWorklet module as soon as possible
 (function() {
@@ -3181,23 +3181,23 @@ function App() {
       el("div", { style:{ padding:"12px 14px", overflowY:"auto", flex:1 }},
 
         // ── SIGNAL FLOW SVG (shared) ───────────────────────────
-        el("div", { style:{ fontSize:7, color:"#333", letterSpacing:"0.15em", textTransform:"uppercase", marginBottom:8 }}, "Signal Flow"),
+        el("div", { style:{ fontSize:7, color:"#666", letterSpacing:"0.15em", textTransform:"uppercase", marginBottom:8 }}, "Signal Flow"),
         el("div", { dangerouslySetInnerHTML:{ __html:
           '<svg viewBox="0 0 320 52" xmlns="http://www.w3.org/2000/svg" style="width:100%;display:block;margin-bottom:14px">' +
-          '<rect x="0" y="16" width="46" height="20" rx="2" fill="#111" stroke="#333" stroke-width="1"/>' +
+          '<rect x="0" y="16" width="46" height="20" rx="2" fill="#111" stroke="#666" stroke-width="1"/>' +
           '<text x="23" y="29" text-anchor="middle" fill="#555" font-size="6" font-family="monospace">CAMERA</text>' +
-          '<rect x="56" y="16" width="46" height="20" rx="2" fill="#111" stroke="#333" stroke-width="1"/>' +
+          '<rect x="56" y="16" width="46" height="20" rx="2" fill="#111" stroke="#666" stroke-width="1"/>' +
           '<text x="79" y="29" text-anchor="middle" fill="#555" font-size="6" font-family="monospace">ANALYSE</text>' +
           (activeEngine==="1" ?
             '<rect x="112" y="6" width="46" height="40" rx="2" fill="#111" stroke="#1e2e1e" stroke-width="1"/>' +
             '<text x="135" y="20" text-anchor="middle" fill="#7fff6a" font-size="6" font-family="monospace">WVTBL</text>' +
-            '<text x="135" y="30" text-anchor="middle" fill="#444" font-size="5" font-family="monospace">oscillator</text>' +
-            '<text x="135" y="39" text-anchor="middle" fill="#333" font-size="5" font-family="monospace">+ comb EQ</text>'
+            '<text x="135" y="30" text-anchor="middle" fill="#555" font-size="5" font-family="monospace">oscillator</text>' +
+            '<text x="135" y="39" text-anchor="middle" fill="#666" font-size="5" font-family="monospace">+ comb EQ</text>'
           :
             '<rect x="112" y="6" width="46" height="40" rx="2" fill="#111" stroke="#1e2e1e" stroke-width="1"/>' +
             '<text x="135" y="20" text-anchor="middle" fill="#7fff6a" font-size="6" font-family="monospace">R G B</text>' +
-            '<text x="135" y="30" text-anchor="middle" fill="#444" font-size="5" font-family="monospace">operators</text>' +
-            '<text x="135" y="39" text-anchor="middle" fill="#333" font-size="5" font-family="monospace">FM matrix</text>'
+            '<text x="135" y="30" text-anchor="middle" fill="#555" font-size="5" font-family="monospace">operators</text>' +
+            '<text x="135" y="39" text-anchor="middle" fill="#666" font-size="5" font-family="monospace">FM matrix</text>'
           ) +
           '<rect x="168" y="16" width="40" height="20" rx="2" fill="#111" stroke="#0d1a2a" stroke-width="1"/>' +
           '<text x="188" y="29" text-anchor="middle" fill="#6bb5ff" font-size="6" font-family="monospace">FILTER</text>' +
@@ -3205,18 +3205,18 @@ function App() {
           '<text x="235" y="29" text-anchor="middle" fill="#555" font-size="6" font-family="monospace">FX</text>' +
           '<rect x="262" y="16" width="40" height="20" rx="2" fill="#111" stroke="#1a2a1a" stroke-width="1"/>' +
           '<text x="282" y="29" text-anchor="middle" fill="#7fff6a" font-size="6" font-family="monospace">OUT</text>' +
-          '<line x1="46" y1="26" x2="54" y2="26" stroke="#333" stroke-width="1"/><polygon points="55,26 52,24.5 52,27.5" fill="#333"/>' +
-          '<line x1="102" y1="26" x2="110" y2="26" stroke="#333" stroke-width="1"/><polygon points="111,26 108,24.5 108,27.5" fill="#333"/>' +
-          '<line x1="158" y1="26" x2="166" y2="26" stroke="#333" stroke-width="1"/><polygon points="167,26 164,24.5 164,27.5" fill="#333"/>' +
-          '<line x1="208" y1="26" x2="216" y2="26" stroke="#333" stroke-width="1"/><polygon points="217,26 214,24.5 214,27.5" fill="#333"/>' +
-          '<line x1="252" y1="26" x2="260" y2="26" stroke="#333" stroke-width="1"/><polygon points="261,26 258,24.5 258,27.5" fill="#333"/>' +
+          '<line x1="46" y1="26" x2="54" y2="26" stroke="#666" stroke-width="1"/><polygon points="55,26 52,24.5 52,27.5" fill="#666"/>' +
+          '<line x1="102" y1="26" x2="110" y2="26" stroke="#666" stroke-width="1"/><polygon points="111,26 108,24.5 108,27.5" fill="#666"/>' +
+          '<line x1="158" y1="26" x2="166" y2="26" stroke="#666" stroke-width="1"/><polygon points="167,26 164,24.5 164,27.5" fill="#666"/>' +
+          '<line x1="208" y1="26" x2="216" y2="26" stroke="#666" stroke-width="1"/><polygon points="217,26 214,24.5 214,27.5" fill="#666"/>' +
+          '<line x1="252" y1="26" x2="260" y2="26" stroke="#666" stroke-width="1"/><polygon points="261,26 258,24.5 258,27.5" fill="#666"/>' +
           '</svg>'
         }}),
 
         // ── ENGINE-SPECIFIC CONTENT ───────────────────────────
         activeEngine==="1" ? el("div", null,
 
-          el("div", { style:{ fontSize:7, color:"#333", letterSpacing:"0.15em", textTransform:"uppercase", marginBottom:6 }}, "Camera Data \u2192 Sound"),
+          el("div", { style:{ fontSize:7, color:"#666", letterSpacing:"0.15em", textTransform:"uppercase", marginBottom:6 }}, "Camera Data \u2192 Sound"),
 
           ...[
             ["LUMA", "Overall brightness", "Oscillator pitch base (80\u2013400Hz fundamental) + wavetable amplitude gate"],
@@ -3227,17 +3227,17 @@ function App() {
           ].map(function(row, i) {
             return el("div", { key:i, style:{ display:"flex", gap:8, padding:"4px 0", borderBottom:"1px solid #0e0e0f" }},
               el("span", { style:{ fontSize:7, color:"#6bb5ff", letterSpacing:"0.08em", minWidth:60, flexShrink:0 }}, row[0]),
-              el("span", { style:{ fontSize:7, color:"#2a2a2a", minWidth:90, flexShrink:0 }}, row[1]),
-              el("span", { style:{ fontSize:7, color:"#444", flex:1 }}, row[2])
+              el("span", { style:{ fontSize:7, color:"#666", minWidth:90, flexShrink:0 }}, row[1]),
+              el("span", { style:{ fontSize:7, color:"#888", flex:1 }}, row[2])
             );
           }),
 
-          el("div", { style:{ fontSize:7, color:"#333", letterSpacing:"0.15em", textTransform:"uppercase", marginTop:14, marginBottom:6 }}, "Synthesis Architecture"),
-          el("div", { style:{ fontSize:7, color:"#3a3a3a", lineHeight:1.9, marginBottom:12 }},
+          el("div", { style:{ fontSize:7, color:"#666", letterSpacing:"0.15em", textTransform:"uppercase", marginTop:14, marginBottom:6 }}, "Synthesis Architecture"),
+          el("div", { style:{ fontSize:7, color:"#777", lineHeight:1.9, marginBottom:12 }},
             "A single wavetable oscillator (or unison stack with detune) scans a waveform derived from the camera frame. The frame is analysed into a brightness profile that becomes the waveform shape — every frame the waveform morphs toward the new scan. Luma gates the amplitude so dark scenes fade the sound. 8 comb filters tuned to harmonics of the fundamental are each driven by the corresponding spatial slice, creating a spatial-to-spectral mapping where the horizontal distribution of brightness in the frame shapes the harmonic content."
           ),
 
-          el("div", { style:{ fontSize:7, color:"#333", letterSpacing:"0.15em", textTransform:"uppercase", marginBottom:6 }}, "User Controls"),
+          el("div", { style:{ fontSize:7, color:"#666", letterSpacing:"0.15em", textTransform:"uppercase", marginBottom:6 }}, "User Controls"),
           ...[
             ["PITCH",    "Ribbon",   "Base pitch — all voices transpose together"],
             ["FILTER",   "Ribbon",   "Lowpass cutoff 20Hz\u201312kHz"],
@@ -3251,14 +3251,14 @@ function App() {
           ].map(function(row, i) {
             return el("div", { key:i, style:{ display:"flex", gap:8, padding:"4px 0", borderBottom:"1px solid #0e0e0f" }},
               el("span", { style:{ fontSize:7, color:"#7fff6a", letterSpacing:"0.08em", minWidth:60, flexShrink:0 }}, row[0]),
-              el("span", { style:{ fontSize:7, color:"#2a2a2a", minWidth:90, flexShrink:0 }}, row[1]),
-              el("span", { style:{ fontSize:7, color:"#444", flex:1 }}, row[2])
+              el("span", { style:{ fontSize:7, color:"#666", minWidth:90, flexShrink:0 }}, row[1]),
+              el("span", { style:{ fontSize:7, color:"#888", flex:1 }}, row[2])
             );
           })
 
         ) : el("div", null,
 
-          el("div", { style:{ fontSize:7, color:"#333", letterSpacing:"0.15em", textTransform:"uppercase", marginBottom:6 }}, "Camera Data \u2192 Sound"),
+          el("div", { style:{ fontSize:7, color:"#666", letterSpacing:"0.15em", textTransform:"uppercase", marginBottom:6 }}, "Camera Data \u2192 Sound"),
 
           ...[
             ["AVG R/G/B", "Channel brightness", "FM modulation depth + waveform morph per operator"],
@@ -3269,12 +3269,12 @@ function App() {
           ].map(function(row, i) {
             return el("div", { key:i, style:{ display:"flex", gap:8, padding:"4px 0", borderBottom:"1px solid #0e0e0f" }},
               el("span", { style:{ fontSize:7, color:"#6bb5ff", letterSpacing:"0.08em", minWidth:60, flexShrink:0 }}, row[0]),
-              el("span", { style:{ fontSize:7, color:"#2a2a2a", minWidth:90, flexShrink:0 }}, row[1]),
-              el("span", { style:{ fontSize:7, color:"#444", flex:1 }}, row[2])
+              el("span", { style:{ fontSize:7, color:"#666", minWidth:90, flexShrink:0 }}, row[1]),
+              el("span", { style:{ fontSize:7, color:"#888", flex:1 }}, row[2])
             );
           }),
 
-          el("div", { style:{ fontSize:7, color:"#333", letterSpacing:"0.15em", textTransform:"uppercase", marginTop:14, marginBottom:6 }}, "User Controls"),
+          el("div", { style:{ fontSize:7, color:"#666", letterSpacing:"0.15em", textTransform:"uppercase", marginTop:14, marginBottom:6 }}, "User Controls"),
           ...[
             ["PITCH",      "Ribbon",       "Base pitch — all operators transpose together"],
             ["FILTER",     "Ribbon",       "Lowpass cutoff 20Hz\u201312kHz (ladder filter)"],
@@ -3290,12 +3290,12 @@ function App() {
           ].map(function(row, i) {
             return el("div", { key:i, style:{ display:"flex", gap:8, padding:"4px 0", borderBottom:"1px solid #0e0e0f" }},
               el("span", { style:{ fontSize:7, color:"#7fff6a", letterSpacing:"0.08em", minWidth:60, flexShrink:0 }}, row[0]),
-              el("span", { style:{ fontSize:7, color:"#2a2a2a", minWidth:90, flexShrink:0 }}, row[1]),
-              el("span", { style:{ fontSize:7, color:"#444", flex:1 }}, row[2])
+              el("span", { style:{ fontSize:7, color:"#666", minWidth:90, flexShrink:0 }}, row[1]),
+              el("span", { style:{ fontSize:7, color:"#888", flex:1 }}, row[2])
             );
           }),
 
-          el("div", { style:{ fontSize:7, color:"#333", letterSpacing:"0.15em", textTransform:"uppercase", marginTop:14, marginBottom:8 }}, "FM Matrices"),
+          el("div", { style:{ fontSize:7, color:"#666", letterSpacing:"0.15em", textTransform:"uppercase", marginTop:14, marginBottom:8 }}, "FM Matrices"),
           ...[
             { id:"A", name:"Independent",       color:"#7fff6a", routing:"r\u2192R\u2192out  g\u2192G\u2192out  b\u2192B\u2192out",           desc:"All 3 operators audible. Each self-modulates only. Widest stereo." },
             { id:"B", name:"Chain \u2014 Sky",  color:"#6bb5ff", routing:"r\u2192R\u2192G\u2192B\u2192out",                                   desc:"Only B audible. R modulates G, G modulates B. Best for skies and water." },
@@ -3307,8 +3307,8 @@ function App() {
                 el("span", { style:{ fontSize:9, color:m.color, letterSpacing:"0.1em", fontFamily:"monospace" }}, m.id),
                 el("span", { style:{ fontSize:8, color:"#555" }}, m.name)
               ),
-              el("div", { style:{ fontSize:7, color:"#2a3a2a", fontFamily:"monospace", marginBottom:3 }}, m.routing),
-              el("div", { style:{ fontSize:7, color:"#3a3a3a", lineHeight:1.7 }}, m.desc)
+              el("div", { style:{ fontSize:7, color:"#668866", fontFamily:"monospace", marginBottom:3 }}, m.routing),
+              el("div", { style:{ fontSize:7, color:"#777", lineHeight:1.7 }}, m.desc)
             );
           })
         ),
